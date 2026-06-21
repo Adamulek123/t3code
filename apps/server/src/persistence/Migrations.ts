@@ -53,6 +53,7 @@ import Migration0026V2 from "./Migrations/033_OrchestrationV2.ts";
 import Migration0034V2 from "./Migrations/034_OrchestrationV2Subagents.ts";
 import Migration0035V2 from "./Migrations/035_OrchestrationV2Foundation.ts";
 import Migration036V2 from "./Migrations/036_OrchestrationV2ProviderSessionBindings.ts";
+import Migration037V2 from "./Migrations/037_OrchestrationV2ThreadLaunchWorkflows.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -105,6 +106,7 @@ export const migrationEntries = [
   [38, "OrchestrationV2Subagents", Migration0034V2],
   [39, "OrchestrationV2Foundation", Migration0035V2],
   [40, "OrchestrationV2ProviderSessionBindings", Migration036V2],
+  [41, "OrchestrationV2ThreadLaunchWorkflows", Migration037V2],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
