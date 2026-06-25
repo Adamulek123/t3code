@@ -1,6 +1,7 @@
 import type {
   EnvironmentId,
   ModelSelection,
+  OrchestrationV2ProjectedTurnItem,
   PreviewAnnotationPayload,
   ProviderApprovalDecision,
   ProviderInteractionMode,
@@ -219,7 +220,11 @@ import { type AppModelOption, getAppModelOptionsForInstance } from "../../modelS
 import type { UnifiedSettings } from "@t3tools/contracts/settings";
 import type { SessionPhase, Thread } from "../../types";
 import type { PendingUserInputDraftAnswer } from "../../pendingUserInput";
-import type { PendingApproval, PendingUserInput } from "../../session-logic";
+import type {
+  LatestProposedPlanState,
+  PendingApproval,
+  PendingUserInput,
+} from "../../session-logic";
 import { resolveComposerDispatchMode, type ComposerDispatchMode } from "./composerDispatch";
 import {
   deriveLatestContextWindowSnapshot,
@@ -582,7 +587,7 @@ export interface ChatComposerProps {
 
   // Plan
   showPlanFollowUpPrompt: boolean;
-  activeProposedPlan: Thread["proposedPlans"][number] | null;
+  activeProposedPlan: LatestProposedPlanState | null;
   activePlan: { runId?: RunId | null } | null;
   sidebarProposedPlan: { runId?: RunId | null } | null;
   planSidebarLabel: string;
@@ -599,7 +604,7 @@ export interface ChatComposerProps {
   activeThreadModelSelection: ModelSelection | null | undefined;
 
   // Context window
-  activeThreadWorkEntries: Thread["workEntries"] | undefined;
+  activeThreadVisibleTurnItems: ReadonlyArray<OrchestrationV2ProjectedTurnItem> | undefined;
 
   // Misc
   resolvedTheme: "light" | "dark";
@@ -696,7 +701,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     providerStatuses,
     activeProjectDefaultModelSelection,
     activeThreadModelSelection,
-    activeThreadWorkEntries,
+    activeThreadVisibleTurnItems,
     resolvedTheme,
     settings,
     keybindings,
@@ -975,8 +980,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // Context window
   // ------------------------------------------------------------------
   const activeContextWindow = useMemo(
-    () => deriveLatestContextWindowSnapshot(activeThreadWorkEntries ?? []),
-    [activeThreadWorkEntries],
+    () => deriveLatestContextWindowSnapshot(activeThreadVisibleTurnItems ?? []),
+    [activeThreadVisibleTurnItems],
   );
   const activeThreadProviderDisplayName = useMemo(() => {
     if (!activeThreadModelSelection) return null;
