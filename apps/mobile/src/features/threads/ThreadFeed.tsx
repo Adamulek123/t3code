@@ -90,6 +90,7 @@ import { markdownFileIconSource } from "@t3tools/mobile-markdown-text/file-icons
 import { resolveMarkdownLinkPresentation } from "@t3tools/mobile-markdown-text/links";
 import {
   deriveThreadFeedPresentation,
+  threadFeedRunIsUnsettled,
   type ThreadFeedEntry,
   type ThreadFeedLatestRun,
 } from "../../lib/threadActivity";
@@ -215,6 +216,7 @@ function AssistantForkButton(props: {
             targetThreadId,
             runId,
             title: `${props.sourceTitle} fork`,
+            creationSource: "mobile",
           },
         })
           .then(async (result) => {
@@ -1652,11 +1654,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     }
     return new Set(terminalIdsByTurn.values());
   }, [props.feed]);
-  const unsettledTurnId =
-    props.latestRun &&
-    (props.latestRun.completedAt === null || props.latestRun.status === "running")
-      ? props.latestRun.runId
-      : null;
+  const unsettledTurnId = threadFeedRunIsUnsettled(props.latestRun) ? props.latestRun.runId : null;
 
   useEffect(() => {
     const previous = previousLatestTurnRef.current;
