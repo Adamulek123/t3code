@@ -84,7 +84,7 @@ import {
 } from "../sidebarProjectGrouping";
 import { legacyProjectCwdPreferenceKey, useUiStateStore } from "../uiStateStore";
 import { useThreadSelectionStore } from "../threadSelectionStore";
-import { useThreadActions } from "../hooks/useThreadActions";
+import { useMarkThreadUnread, useThreadActions } from "../hooks/useThreadActions";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { openCommandPalette } from "../commandPaletteBus";
 import { startNewThreadFromContext } from "../lib/chatThreadActions";
@@ -118,7 +118,7 @@ import {
   resolveAdjacentThreadId,
   resolveSettledTimestamp,
   resolveSidebarV2Status,
-  searchSidebarThreadsByTitle,
+  resolveThreadLastVisitedAt,
   resolveWorkingStartedAt,
   shouldNavigateAfterProjectRemoval,
   sortSidebarV2ProjectGroups,
@@ -452,8 +452,8 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
     [thread.environmentId, thread.id],
   );
   const threadKey = scopedThreadKey(threadRef);
-  const isRegeneratingTitle = thread.titleRegeneration != null;
-  const lastVisitedAt = useUiStateStore((state) => state.threadLastVisitedAtById[threadKey]);
+  const localLastVisitedAt = useUiStateStore((state) => state.threadLastVisitedAtById[threadKey]);
+  const lastVisitedAt = resolveThreadLastVisitedAt(thread.lastVisitedAt, localLastVisitedAt);
   const isSelected = useThreadSelectionStore((state) => state.selectedThreadKeys.has(threadKey));
   const openPrLink = useOpenPrLink();
   const runningTerminalIds = useThreadRunningTerminalIds({
@@ -1209,6 +1209,7 @@ export default function SidebarV2() {
     unpinThread,
     deleteThread,
   } = useThreadActions();
+  const markThreadUnread = useMarkThreadUnread();
   const updateThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
@@ -1271,7 +1272,6 @@ export default function SidebarV2() {
   const setSelectionAnchor = useThreadSelectionStore((s) => s.setAnchor);
   const toggleThreadSelection = useThreadSelectionStore((s) => s.toggleThread);
   const rangeSelectTo = useThreadSelectionStore((s) => s.rangeSelectTo);
-  const markThreadUnread = useUiStateStore((s) => s.markThreadUnread);
   const routeTarget = useParams({
     strict: false,
     select: (params) => resolveThreadRouteTarget(params),
@@ -2284,7 +2284,8 @@ export default function SidebarV2() {
       if (clicked.value === "mark-unread") {
         for (const threadKey of threadKeys) {
           const thread = threadByKeyRef.current.get(threadKey);
-          markThreadUnread(threadKey, thread?.latestTurn?.completedAt);
+          if (!thread) continue;
+          markThreadUnread(scopeThreadRef(thread.environmentId, thread.id));
         }
         clearSelection();
         return;
@@ -2509,25 +2510,7 @@ export default function SidebarV2() {
             return;
           }
           case "mark-unread":
-            markThreadUnread(threadKey, thread.latestTurn?.completedAt);
-            return;
-          case "copy-path":
-            if (!threadWorkspacePath) {
-              toastManager.add(
-                stackedThreadToast({
-                  type: "error",
-                  title: "Path unavailable",
-                  description: "This thread does not have a workspace path to copy.",
-                }),
-              );
-              return;
-            }
-            copyPathToClipboard(threadWorkspacePath, { path: threadWorkspacePath });
-            return;
-          case "copy-branch":
-            if (thread.branch) {
-              copyBranchToClipboard(thread.branch, { branch: thread.branch });
-            }
+            markThreadUnread(threadRef);
             return;
           case "delete": {
             if (confirmThreadDelete) {
