@@ -2275,6 +2275,7 @@ function ChatViewContent(props: ChatViewProps) {
           : {
               attempts: serverProjection.attempts,
               nodes: serverProjection.nodes,
+              plans: serverProjection.plans,
             }),
       }),
     [optimisticUserMessages, serverVisibleTurnItems, serverProjection, timelineAttachmentUrlById],
