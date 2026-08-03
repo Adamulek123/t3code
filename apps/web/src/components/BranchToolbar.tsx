@@ -12,7 +12,7 @@ import {
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useComposerDraftStore, type DraftId } from "../composerDraftStore";
-import { useProject, useThreadShell } from "../state/entities";
+import { useProject, useThreadShell, useThreadShellsForProjectRefs } from "../state/entities";
 import { useIsMobile } from "../hooks/useMediaQuery";
 import {
   type EnvMode,
@@ -334,7 +334,6 @@ export const BranchToolbar = memo(function BranchToolbar({
   const draftThread = useComposerDraftStore((store) =>
     draftId ? store.getDraftSession(draftId) : store.getDraftThreadByRef(threadRef),
   );
-  const serverThread = useThread(threadRef, { waitForShell: draftThread !== null });
   const setDraftThreadContext = useComposerDraftStore((store) => store.setDraftThreadContext);
   const activeProjectRef = serverThread
     ? scopeProjectRef(serverThread.environmentId, serverThread.projectId)
@@ -413,6 +412,8 @@ export const BranchToolbar = memo(function BranchToolbar({
             activeWorktreePath={activeWorktreePath}
             workspaceRoot={activeProject.workspaceRoot}
             onEnvModeChange={onEnvModeChange}
+            previousWorktreeLabel={previousWorktreeLabel}
+            onUsePreviousWorktree={onUsePreviousWorktree}
           />
         ) : null}
         {panelSection !== "workspace" ? (
@@ -437,11 +438,15 @@ export const BranchToolbar = memo(function BranchToolbar({
   }
 
   return (
+<<<<<<< HEAD
     <div
       ref={setStripElement}
       data-compact={labelsOverflow ? "" : undefined}
       className="chat-composer-context-strip group/composer-context -mt-4 mx-auto flex w-[calc(100%-2.75rem)] max-w-[calc(48rem-2.75rem)] items-center gap-2 ps-1 pe-2 pt-5 pb-1"
     >
+=======
+    <div className="chat-composer-context-strip -mt-4 mx-auto flex w-[calc(100%-2.75rem)] max-w-[calc(48rem-2.75rem)] items-center gap-2 ps-1 pe-2 pt-5 pb-1">
+>>>>>>> 2152c2ebce (fix: reconcile rebase with latest main)
       {isMobile ? (
         <MobileRunContextSelector
           envLocked={envLocked}
