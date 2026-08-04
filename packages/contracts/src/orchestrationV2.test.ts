@@ -549,7 +549,6 @@ describe("orchestration V2 contracts", () => {
         updatedAt: DateTime.formatIso(now),
       },
     });
-    const turnItem = Schema.decodeUnknownSync(OrchestrationV2TurnItem)({
     const turnItem = decodeOrchestrationV2TurnItem({
       id: "turn-item-subagent-1",
       type: "subagent",
