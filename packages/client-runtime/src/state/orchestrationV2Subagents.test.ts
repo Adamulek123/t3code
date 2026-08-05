@@ -370,6 +370,40 @@ describe("deriveOrchestrationV2SubagentPanelState", () => {
     expect(finished.settledCount).toBe(1);
   });
 
+  it("orders and groups without ES2023 change-by-copy array methods", () => {
+    // client-runtime is mobile-reachable and Hermes lacks toSorted/toReversed;
+    // deleting them proves this module never reaches for one.
+    const descriptor = Object.getOwnPropertyDescriptor(Array.prototype, "toSorted");
+    Reflect.deleteProperty(Array.prototype, "toSorted");
+    try {
+      const workflow = agent("workflow-1", {
+        kind: "workflow",
+        workflow: { phases: [{ index: 0, title: "Work" }] },
+      });
+      const member = (id: string, agentIndex: number) =>
+        agent(id, {
+          kind: "workflow_agent",
+          workflowMembership: {
+            workflowSubagentId: workflowId,
+            agentIndex,
+            phaseIndex: 0,
+            attempt: 1,
+          },
+        });
+      const subagents = [workflow, member("second", 1), member("first", 0)];
+
+      const panel = deriveOrchestrationV2SubagentPanelState({ subagents, activations: [] });
+      expect(panel.groups[0]?.phases[0]?.agents.map((a) => String(a.id))).toEqual([
+        "first",
+        "second",
+      ]);
+      const card = deriveOrchestrationV2WorkflowRunCard({ coordinatorId: workflowId, subagents });
+      expect(card?.phases[0]?.agents.map((a) => String(a.id))).toEqual(["first", "second"]);
+    } finally {
+      if (descriptor) Reflect.defineProperty(Array.prototype, "toSorted", descriptor);
+    }
+  });
+
   it("formats compact token counts", () => {
     expect(formatSubagentTokenCount(999)).toBe("999");
     expect(formatSubagentTokenCount(1_200)).toBe("1.2k");

@@ -81,9 +81,11 @@ export function deriveOrchestrationV2SubagentPanelState(input: {
     const members = membersByWorkflow.get(workflow.id) ?? [];
     membersByWorkflow.delete(workflow.id);
     const phases = (workflow.workflow?.phases ?? []).map((phase) => {
+      // .sort() on filter's fresh array, not .toSorted(): Hermes lacks the
+      // ES2023 change-by-copy methods and this module is mobile-reachable.
       const agents = members
         .filter((agent) => agent.workflowMembership?.phaseIndex === phase.index)
-        .toSorted(
+        .sort(
           (left, right) =>
             (left.workflowMembership?.agentIndex ?? 0) -
             (right.workflowMembership?.agentIndex ?? 0),
@@ -190,7 +192,7 @@ export function deriveOrchestrationV2WorkflowRunCard(input: {
         agent.kind !== "workflow" &&
         agent.workflowMembership?.workflowSubagentId === coordinator.id,
     )
-    .toSorted(
+    .sort(
       (left, right) =>
         (left.workflowMembership?.agentIndex ?? 0) - (right.workflowMembership?.agentIndex ?? 0),
     );
