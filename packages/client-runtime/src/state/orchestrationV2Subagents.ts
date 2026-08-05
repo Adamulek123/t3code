@@ -35,9 +35,13 @@ export const isSettledOrchestrationV2Subagent = (agent: OrchestrationV2Subagent)
   agent.status === "cancelled" ||
   agent.status === "interrupted";
 
-const phaseStatus = (agents: ReadonlyArray<OrchestrationV2Subagent>) =>
+// An empty phase is pending only while the workflow can still populate it; a
+// settled coordinator will never spawn its members, so the phase is done.
+const phaseStatus = (agents: ReadonlyArray<OrchestrationV2Subagent>, workflowSettled: boolean) =>
   agents.length === 0
-    ? ("pending" as const)
+    ? workflowSettled
+      ? ("done" as const)
+      : ("pending" as const)
     : agents.every(isSettledOrchestrationV2Subagent)
       ? ("done" as const)
       : agents.every((agent) => agent.status === "pending")
@@ -84,7 +88,11 @@ export function deriveOrchestrationV2SubagentPanelState(input: {
             (left.workflowMembership?.agentIndex ?? 0) -
             (right.workflowMembership?.agentIndex ?? 0),
         );
-      return { ...phase, status: phaseStatus(agents), agents };
+      return {
+        ...phase,
+        status: phaseStatus(agents, isSettledOrchestrationV2Subagent(workflow)),
+        agents,
+      };
     });
     const phasedIds = new Set(phases.flatMap((phase) => phase.agents.map((agent) => agent.id)));
     return {
@@ -188,7 +196,11 @@ export function deriveOrchestrationV2WorkflowRunCard(input: {
     );
   const phases = (coordinator.workflow?.phases ?? []).map((phase) => {
     const agents = members.filter((agent) => agent.workflowMembership?.phaseIndex === phase.index);
-    return { ...phase, status: phaseStatus(agents), agents };
+    return {
+      ...phase,
+      status: phaseStatus(agents, isSettledOrchestrationV2Subagent(coordinator)),
+      agents,
+    };
   });
   const phasedIds = new Set(phases.flatMap((phase) => phase.agents.map((agent) => agent.id)));
   // The coordinator's usage already covers its members (the panel derivation

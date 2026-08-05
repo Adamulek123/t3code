@@ -182,6 +182,38 @@ describe("deriveOrchestrationV2SubagentPanelState", () => {
     ]);
   });
 
+  it("marks empty phases done once the workflow settles", () => {
+    // A settled coordinator will never populate a phase it skipped; leaving
+    // it "pending" showed a completed workflow still waiting on one.
+    const result = deriveOrchestrationV2SubagentPanelState({
+      subagents: [
+        agent("workflow-1", {
+          kind: "workflow",
+          status: "completed",
+          workflow: {
+            phases: [
+              { index: 0, title: "Work" },
+              { index: 1, title: "Report" },
+            ],
+          },
+        }),
+        agent("member", {
+          kind: "workflow_agent",
+          status: "completed",
+          workflowMembership: {
+            workflowSubagentId: workflowId,
+            agentIndex: 0,
+            phaseIndex: 0,
+            attempt: 1,
+          },
+        }),
+      ],
+      activations: [],
+    });
+
+    expect(result.groups[0]?.phases.map((phase) => phase.status)).toEqual(["done", "done"]);
+  });
+
   it("distinguishes unavailable usage from a reported zero", () => {
     const unavailable = deriveOrchestrationV2SubagentPanelState({
       subagents: [agent("unreported")],
