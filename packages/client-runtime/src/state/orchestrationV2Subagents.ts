@@ -116,13 +116,26 @@ export function deriveOrchestrationV2SubagentPanelState(input: {
       ? []
       : [agent.usage.totalTokens];
   });
-  // Count the workers, plus any coordinator that has no members yet. A
-  // coordinator with members is represented by them and would double-count;
-  // one without is the only row on the thread, and omitting it reported
-  // "0 active" while a workflow was visibly running.
-  const counted = input.subagents.filter(
-    (agent) => agent.kind !== "workflow" || !memberTotalsByWorkflow.has(agent.id),
+  // Count the workers, plus any coordinator whose members are not carrying
+  // the work right now. A coordinator with an active member is represented by
+  // it and would double-count — but between phases (all members settled,
+  // coordinator still running) and before the first member spawns, the
+  // coordinator is the only live row, and omitting it reported "0 active"
+  // while a workflow was visibly running. A settled coordinator with members
+  // stays excluded: they represent its final state.
+  const workflowsWithActiveMembers = new Set(
+    workers.flatMap((agent) =>
+      agent.workflowMembership !== null &&
+      (agent.status === "pending" || agent.status === "running" || agent.status === "waiting")
+        ? [agent.workflowMembership.workflowSubagentId]
+        : [],
+    ),
   );
+  const counted = input.subagents.filter((agent) => {
+    if (agent.kind !== "workflow") return true;
+    if (workflowsWithActiveMembers.has(agent.id)) return false;
+    return !memberTotalsByWorkflow.has(agent.id) || !isSettledOrchestrationV2Subagent(agent);
+  });
   return {
     groups,
     activationsBySubagentId,

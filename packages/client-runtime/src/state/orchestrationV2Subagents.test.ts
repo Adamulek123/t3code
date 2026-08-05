@@ -264,6 +264,80 @@ describe("deriveOrchestrationV2SubagentPanelState", () => {
     expect(running.groups[0]?.workflow?.id).toBe(workflowId);
   });
 
+  it("keeps a running coordinator counted while its members are all settled", () => {
+    // Between phases every member of the finished phase is settled while the
+    // next phase's members do not exist yet; the coordinator is the only live
+    // row and dropping it read "0 active" for a workflow visibly running.
+    const betweenPhases = deriveOrchestrationV2SubagentPanelState({
+      subagents: [
+        agent("workflow-1", {
+          kind: "workflow",
+          status: "running",
+          workflow: { phases: [{ index: 0, title: "Research" }] },
+        }),
+        agent("member-done", {
+          kind: "workflow_agent",
+          status: "completed",
+          workflowMembership: {
+            workflowSubagentId: workflowId,
+            agentIndex: 0,
+            phaseIndex: 0,
+            attempt: 1,
+          },
+        }),
+      ],
+      activations: [],
+    });
+    expect(betweenPhases.activeCount).toBe(1);
+
+    // An active member takes over the representation again.
+    const memberActive = deriveOrchestrationV2SubagentPanelState({
+      subagents: [
+        agent("workflow-1", {
+          kind: "workflow",
+          status: "running",
+          workflow: { phases: [{ index: 0, title: "Research" }] },
+        }),
+        agent("member-running", {
+          kind: "workflow_agent",
+          status: "running",
+          workflowMembership: {
+            workflowSubagentId: workflowId,
+            agentIndex: 0,
+            phaseIndex: 0,
+            attempt: 1,
+          },
+        }),
+      ],
+      activations: [],
+    });
+    expect(memberActive.activeCount).toBe(1);
+
+    // A settled coordinator stays represented by its settled members.
+    const finished = deriveOrchestrationV2SubagentPanelState({
+      subagents: [
+        agent("workflow-1", {
+          kind: "workflow",
+          status: "completed",
+          workflow: { phases: [{ index: 0, title: "Research" }] },
+        }),
+        agent("member-done", {
+          kind: "workflow_agent",
+          status: "completed",
+          workflowMembership: {
+            workflowSubagentId: workflowId,
+            agentIndex: 0,
+            phaseIndex: 0,
+            attempt: 1,
+          },
+        }),
+      ],
+      activations: [],
+    });
+    expect(finished.activeCount).toBe(0);
+    expect(finished.settledCount).toBe(1);
+  });
+
   it("formats compact token counts", () => {
     expect(formatSubagentTokenCount(999)).toBe("999");
     expect(formatSubagentTokenCount(1_200)).toBe("1.2k");
