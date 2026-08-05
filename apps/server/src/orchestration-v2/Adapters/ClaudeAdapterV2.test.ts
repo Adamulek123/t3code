@@ -1669,6 +1669,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                 offer: () => Effect.void,
                 setModel: () => Effect.void,
                 interrupt: Effect.void,
+                stopTask: () => Effect.void,
                 // End the message stream so interruptTurn's closed wait resolves
                 // via stream exit finalize (interrupted status clears roster).
                 close: Queue.shutdown(sdkMessages),
@@ -1794,6 +1795,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                     offer: () => Effect.void,
                     setModel: () => Effect.void,
                     interrupt: Effect.void,
+                    stopTask: () => Effect.void,
                     close: Queue.shutdown(queue),
                   };
                 }),
@@ -3788,6 +3790,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                   offer: () => Effect.void,
                   setModel: () => Effect.void,
                   interrupt: Effect.void,
+                  stopTask: () => Effect.void,
                   // End this process stream so openQuery can replace it.
                   close: Queue.shutdown(sdkMessages),
                 };
@@ -4054,6 +4057,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                     offer: () => Effect.void,
                     setModel: () => Effect.void,
                     interrupt: Effect.void,
+                    stopTask: () => Effect.void,
                     close: Queue.shutdown(sdkMessages),
                   };
                 }),
@@ -4286,6 +4290,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                     offer: () => Effect.void,
                     setModel: () => Effect.void,
                     interrupt: Effect.void,
+                    stopTask: () => Effect.void,
                     close: Queue.shutdown(sdkMessages),
                   };
                 }),
@@ -4482,6 +4487,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                     offer: () => Effect.void,
                     setModel: () => Effect.void,
                     interrupt: Effect.void,
+                    stopTask: () => Effect.void,
                     close: Queue.shutdown(sdkMessages),
                   };
                 });
@@ -4618,6 +4624,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                     offer: () => Effect.void,
                     setModel: () => Effect.void,
                     interrupt: Effect.void,
+                    stopTask: () => Effect.void,
                     close: Queue.shutdown(sdkMessages),
                   };
                 });

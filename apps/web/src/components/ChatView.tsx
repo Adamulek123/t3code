@@ -6264,7 +6264,6 @@ function ChatViewContent(props: ChatViewProps) {
           onToggle={toggleRightPanelMaximized}
         />
       ) : null}
-    <div className="workspace-titlebar-controls z-50 gap-1 [-webkit-app-region:no-drag]">
       {panelToggleControls}
     </div>
   );
@@ -6693,7 +6692,7 @@ function ChatViewContent(props: ChatViewProps) {
           mode="inline"
           maximized={rightPanelMaximized}
           inlineSize={previewPanelInlineSize}
-          layoutControls={panelLayoutControls}
+          layoutControls={rightPanelLayoutControls}
           surfaces={rightPanelState.surfaces}
           activeSurfaceId={activeRightPanelSurface?.id ?? null}
           pendingSurfaceIds={pendingFileSurfaceIds}

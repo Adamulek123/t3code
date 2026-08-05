@@ -416,7 +416,6 @@ export function makeProviderEventRoutingState(input: {
     inheritedBackgroundTurnItems: new Map(
       (input.inheritedBackgroundTurnItems ?? []).map((item) => [item.id, item.runId]),
     ),
-    ownedSubagentIds: new Set(input.relatedSubagentIds ?? []),
     ownedSubagentIds: new Set((input.reactivatableSubagentSeeds ?? []).map((seed) => seed.id)),
     reactivatableBaselines: new Map(
       (input.reactivatableSubagentSeeds ?? []).map((seed) => [seed.id, seed.activationCount]),
@@ -447,7 +446,6 @@ export function routeProviderEvent(
     ownedProviderTurnIds: new Set([...state.ownedProviderTurnIds, providerTurnId]),
     rootProviderTurnId: root ? providerTurnId : state.rootProviderTurnId,
   });
-  const ownsSubagent = (subagentId: NodeId): boolean => state.ownedSubagentIds.has(subagentId);
   const drivesSubagent = (subagentId: NodeId): boolean =>
     state.activatedSubagentIds.has(subagentId);
   /**
@@ -581,7 +579,11 @@ export function routeProviderEvent(
         // A reused subagent's row and its timeline item are emitted together;
         // routing only the row would advance the agent while its item stayed
         // frozen on the spawning run.
-        (event.turnItem.type === "subagent" && ownsSubagent(event.turnItem.subagentId))
+        // A reused subagent's row and its timeline item are emitted together;
+        // routing only the row would advance the agent while its item stayed
+        // frozen on the spawning run. Proof of driving is required for the
+        // same reason as the row route.
+        (event.turnItem.type === "subagent" && drivesSubagent(event.turnItem.subagentId))
       ) {
         return [true, state];
       }
@@ -603,14 +605,6 @@ export function routeProviderEvent(
       inheritedBackgroundTurnItems.delete(event.turnItem.id);
       return [true, { ...state, inheritedBackgroundTurnItems }];
     }
-          ownsChildThread(event.turnItem.threadId) ||
-          // A reused subagent's row and its timeline item are emitted together;
-          // routing only the row would advance the agent while its item stayed
-          // frozen on the spawning run. Proof of driving is required for the
-          // same reason as the row route.
-          (event.turnItem.type === "subagent" && drivesSubagent(event.turnItem.subagentId)),
-        state,
-      ];
     case "plan.updated":
       return [ownsRun(event.plan.runId) || ownsChildThread(event.plan.threadId), state];
     case "runtime_request.updated":

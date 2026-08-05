@@ -13,7 +13,7 @@ layer("037_038_OrchestrationV2", (it) => {
     Effect.sync(() => {
       assert.deepStrictEqual(
         migrationEntries.map(([id]) => id),
-        Array.from({ length: 45 }, (_, index) => index + 1),
+        Array.from({ length: 46 }, (_, index) => index + 1),
       );
     }),
   );
@@ -182,9 +182,7 @@ it.effect("upgrades a database already at released main migration 036", () =>
     assert.ok(snoozeColumns.some((column) => column.name === "snoozed_until"));
     assert.ok(snoozeColumns.some((column) => column.name === "snoozed_at"));
 
-apps/server/src/persistence/Migrations/037_038_OrchestrationV2.test.ts
     yield* runMigrations({ toMigrationInclusive: 46 });
-    yield* runMigrations({ toMigrationInclusive: 45 });
 
     const migrations = yield* sql<{
       readonly migration_id: number;

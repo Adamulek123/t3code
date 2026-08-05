@@ -6632,6 +6632,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                   parentProjection.thread.providerInstanceId,
                 occurredAt: now,
                 payload: completionPlan.message,
+              },
+            ]),
         ...(terminalActivation === null
           ? []
           : [
