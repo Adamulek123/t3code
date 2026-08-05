@@ -102,7 +102,6 @@ import {
   THREAD_DETAILS_PANEL_SPLIT_SEPARATOR_CLASS,
 } from "./chat/threadDetailsPanelStyles";
 import { getSourceControlPresentation } from "~/sourceControlPresentation";
-import { openPullRequestLink } from "~/lib/openPullRequestLink";
 
 interface GitActionsControlProps {
   gitCwd: string | null;
@@ -256,7 +255,6 @@ function getMenuActionDisabledReason({
 
   const hasBranch = gitStatus.refName !== null;
   const hasChanges = gitStatus.hasWorkingTreeChanges;
-  const hasOpenPr = gitStatus.pr?.state === "open";
   const isAhead = gitStatus.aheadCount > 0;
   const isBehind = gitStatus.behindCount > 0;
   const terminology = getSourceControlPresentation(gitStatus.sourceControlProvider).terminology;
@@ -287,9 +285,6 @@ function getMenuActionDisabledReason({
     return "Push is currently unavailable.";
   }
 
-  if (hasOpenPr) {
-    return `View ${terminology.singular} is currently unavailable.`;
-  }
   if (!hasBranch) {
     return `Detached HEAD: checkout a refName before creating a ${terminology.singular}.`;
   }
@@ -334,7 +329,6 @@ function GitQuickActionIcon({
   className?: string;
 }) {
   const iconClassName = className;
-  if (quickAction.kind === "open_pr") return <SourceControlIcon className={iconClassName} />;
   if (quickAction.kind === "open_publish") return <CloudUploadIcon className={iconClassName} />;
   if (quickAction.kind === "run_pull") return <InfoIcon className={iconClassName} />;
   if (quickAction.kind === "run_action") {
@@ -376,10 +370,12 @@ function GitActionProgressButtonContent({
       aria-atomic="false"
       aria-live="polite"
       className={cn(
-        "grid min-w-0 flex-1 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-2.5 gap-y-0.5",
+        "grid min-w-0 flex-1 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-2.5",
         // Pin the title row to the button's minimum content height (min-height
         // minus vertical padding) so revealing the output row extends the
         // button downward without re-centering — the title must not shift.
+        // No row gap: the collapsed output row must contribute zero height so
+        // the single-line running button matches the static button exactly.
         isPanel ? "grid-rows-[1.75rem]" : "grid-rows-[1.25rem] sm:grid-rows-[1rem]",
       )}
       role="status"
@@ -402,7 +398,7 @@ function GitActionProgressButtonContent({
       >
         <div className="min-h-0 overflow-hidden">
           <p
-            className="truncate text-left text-[11px] font-normal text-muted-foreground"
+            className="truncate pt-0.5 text-left text-[11px] font-normal text-muted-foreground"
             title={progress.output ?? undefined}
           >
             {progress.output}
@@ -1238,38 +1234,6 @@ export default function GitActionsControl({
     };
   }, [activeEnvironmentId, gitCwd, refreshVcsStatus]);
 
-  const openExistingPr = useCallback(async () => {
-    const api = readLocalApi();
-    if (!api) {
-      toastManager.add({
-        type: "error",
-        title: "Link opening is unavailable.",
-        data: threadToastData,
-      });
-      return;
-    }
-    const prUrl = gitStatusForActions?.pr?.state === "open" ? gitStatusForActions.pr.url : null;
-    if (!prUrl) {
-      toastManager.add({
-        type: "error",
-        title: "No open pull request found.",
-        data: threadToastData,
-      });
-      return;
-    }
-    void openPullRequestLink(api.shell, prUrl).catch((err: unknown) => {
-      console.error(err);
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Unable to open pull request link",
-          description: err instanceof Error ? err.message : "An error occurred.",
-          ...(threadToastData !== undefined ? { data: threadToastData } : {}),
-        }),
-      );
-    });
-  }, [gitStatusForActions, threadToastData]);
-
   runGitActionWithToast = useEffectEvent(
     async ({
       action,
@@ -1456,10 +1420,6 @@ export default function GitActionsControl({
   };
 
   const runQuickAction = () => {
-    if (quickAction.kind === "open_pr") {
-      void openExistingPr();
-      return;
-    }
     if (quickAction.kind === "open_publish") {
       setIsPublishDialogOpen(true);
       return;
@@ -1521,10 +1481,6 @@ export default function GitActionsControl({
 
   const openDialogForMenuItem = (item: GitActionMenuItem) => {
     if (item.disabled) return;
-    if (item.kind === "open_pr") {
-      void openExistingPr();
-      return;
-    }
     if (item.dialogAction === "push") {
       void runGitActionWithToast({ action: "push" });
       return;
