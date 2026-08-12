@@ -18,7 +18,7 @@ function ReleaseNotesLink({
 }) {
   return (
     <button
-      className="ml-2 inline-flex cursor-pointer items-center gap-1 align-baseline text-muted-foreground underline decoration-dotted underline-offset-4 transition-colors hover:text-foreground"
+      className="ml-2 inline-flex cursor-pointer items-center gap-1 align-middle text-muted-foreground underline decoration-dotted underline-offset-4 transition-colors hover:text-foreground"
       onClick={() => {
         void (async () => {
           try {

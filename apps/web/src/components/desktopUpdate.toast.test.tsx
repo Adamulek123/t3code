@@ -12,7 +12,10 @@ vi.mock("./ui/toast", () => ({
 
 import { showDesktopUpdateDownloadedToast } from "./desktopUpdate.toast";
 
-type ClickableElement = ReactElement<{ readonly onClick?: () => void }>;
+type ClickableElement = ReactElement<{
+  readonly className?: string;
+  readonly onClick?: () => void;
+}>;
 
 /** Walks the rendered description, invoking function components, to find the link button. */
 function findReleaseNotesLink(node: ReactNode): ClickableElement | null {
@@ -62,6 +65,12 @@ function downloadedState(overrides: Partial<DesktopUpdateState> = {}): DesktopUp
 describe("showDesktopUpdateDownloadedToast", () => {
   beforeEach(() => {
     testState.addToast.mockReset();
+  });
+
+  it("aligns the release notes link with the surrounding text", () => {
+    showDesktopUpdateDownloadedToast({ openExternal: vi.fn() }, downloadedState());
+
+    expect(findReleaseNotesLink(getDescription())?.props.className).toContain("align-middle");
   });
 
   it("opens the downloaded version's release notes", async () => {
