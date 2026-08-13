@@ -99,6 +99,8 @@ const DIFF_CACHE_TTL = Duration.seconds(60);
 const COMMIT_DIFF_CACHE_TTL = Duration.minutes(10);
 /** Sized like the client's own stale time; a row's counts move only when somebody pushes. */
 const LIST_STATS_CACHE_TTL = Duration.seconds(60);
+/** A diff can stay interactive while its next cached value is fetched off the critical path. */
+const DIFF_STALE_WINDOW = Duration.minutes(10);
 /** How long one host's signed-in login is believed without asking its CLI again. */
 const VIEWER_CACHE_TTL = Duration.minutes(10);
 const LIST_CACHE_CAPACITY = 64;
@@ -1677,6 +1679,35 @@ export const make = Effect.gen(function* () {
       return { stats: stats.flat() };
     });
 
+  const context = yield* Effect.context<never>();
+  const runFork = Effect.runForkWith(context);
+
+  /**
+   * The diff is not live-polled and is expensive enough to keep its stale-while-revalidate path.
+   * Explicit refreshes and mutations still strand held values through the reference epoch.
+   */
+  const staleDiff = (() => {
+    const staleMs = Duration.toMillis(DIFF_STALE_WINDOW);
+    const held = new Map<string, { readonly at: number; readonly value: PullRequestDiffResult }>();
+    const record = (key: string, value: PullRequestDiffResult) =>
+      Effect.map(Clock.currentTimeMillis, (at) => {
+        held.delete(key);
+        if (held.size >= DIFF_CACHE_CAPACITY) {
+          const oldest = held.keys().next().value;
+          if (oldest !== undefined) held.delete(oldest);
+        }
+        held.set(key, { at, value });
+      });
+    return <E>(key: string, read: Effect.Effect<PullRequestDiffResult, E>) => {
+      const recorded = read.pipe(Effect.tap((value) => record(key, value)));
+      return Effect.flatMap(Clock.currentTimeMillis, (now) => {
+        const snapshot = held.get(key);
+        if (snapshot === undefined || now - snapshot.at > staleMs) return recorded;
+        return Effect.sync(() => runFork(Effect.ignore(recorded))).pipe(Effect.as(snapshot.value));
+      });
+    };
+  })();
+
   // Epochs are the invalidation mechanism: a key carries its scope's epoch, so bumping the
   // epoch strands every entry made under the old one — no enumerating a cache whose keys
   // (cursors, commits) nothing holds a list of. The counter is shared and monotonic so a
@@ -1856,7 +1887,7 @@ export const make = Effect.gen(function* () {
       input.cursor ?? null,
       input.commit ?? null,
     ]);
-    return Cache.get(diffCache, key);
+    return staleDiff(key, Cache.get(diffCache, key));
   };
 
   const listStatsCache = yield* Cache.makeWith(
