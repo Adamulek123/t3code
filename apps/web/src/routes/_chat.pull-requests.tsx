@@ -1392,6 +1392,11 @@ function PullRequestsRouteView() {
               <LoaderIcon aria-hidden className="size-3.5 animate-spin" />
               Loading more
             </span>
+          ) : !canContinue && pageSize >= MAX_PAGE_SIZE ? (
+            <span>
+              Showing the first {MAX_PAGE_SIZE} pull requests. Narrow the filters or search to see
+              more.
+            </span>
           ) : null}
         </div>
       ) : null}
