@@ -1703,6 +1703,9 @@ export const make = Effect.gen(function* () {
       return Effect.flatMap(Clock.currentTimeMillis, (now) => {
         const snapshot = held.get(key);
         if (snapshot === undefined || now - snapshot.at > staleMs) return recorded;
+        // Run as its own fiber rather than a child: the caller is answered and gone before the
+        // refresh lands. The read still coalesces on the cache key, so ten stale reads in one
+        // window cost one host request — and a failed refresh costs nothing but the retry.
         return Effect.sync(() => runFork(Effect.ignore(recorded))).pipe(Effect.as(snapshot.value));
       });
     };
