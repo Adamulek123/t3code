@@ -119,7 +119,7 @@ function PullRequestRowImpl({
           )}
           {matchedElsewhere ? (
             <span className="shrink-0 rounded-full border border-border/60 px-1.5 text-[10px]">
-              matched in the description
+              matched in pull request details
             </span>
           ) : null}
         </PullRequestMetaLine>
