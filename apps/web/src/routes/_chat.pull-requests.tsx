@@ -702,23 +702,30 @@ function PullRequestsRouteView() {
   // from the first moment rather than the second: a button that stays live through the slow half
   // of its own work is a button that gets pressed again, and buys the whole cascade twice.
   const [invalidating, setInvalidating] = useState(false);
+  const refreshInFlightRef = useRef(false);
   const refreshFromHost = async () => {
+    if (refreshInFlightRef.current) return;
+    refreshInFlightRef.current = true;
     setInvalidating(true);
     try {
-      // Every environment the page is reading, since what the reader pressed refresh for is the
-      // list in front of them rather than whichever machine happens to be first.
-      await Promise.all(
-        queryEnvironmentIds.map((environmentId) => invalidate({ environmentId, input: {} })),
-      );
+      try {
+        // Every environment the page is reading, since what the reader pressed refresh for is the
+        // list in front of them rather than whichever machine happens to be first.
+        await Promise.all(
+          queryEnvironmentIds.map((environmentId) => invalidate({ environmentId, input: {} })),
+        );
+      } finally {
+        refreshList();
+        baselineQuery.refresh();
+        authoredQuery.refresh();
+        reviewingQuery.refresh();
+        statsQuery.refresh();
+        setDetailRefreshToken((token) => token + 1);
+      }
     } finally {
+      refreshInFlightRef.current = false;
       setInvalidating(false);
     }
-    refreshList();
-    baselineQuery.refresh();
-    authoredQuery.refresh();
-    reviewingQuery.refresh();
-    statsQuery.refresh();
-    setDetailRefreshToken((token) => token + 1);
   };
   const refreshing = invalidating || listQuery.isPending;
 
@@ -1870,6 +1877,7 @@ function PullRequestsColumn({
           size="icon-sm"
           variant="ghost"
           aria-label="Refresh pull requests"
+          disabled={refreshing}
           onClick={onRefresh}
         >
           <RefreshCwIcon className={cn("size-4", refreshing && "animate-spin")} />

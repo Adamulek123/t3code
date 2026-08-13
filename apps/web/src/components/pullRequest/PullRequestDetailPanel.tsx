@@ -531,10 +531,23 @@ export function PullRequestDetailPanel({
   // and at worst answer from it.
   const invalidate = useAtomCommand(pullRequestEnvironment.invalidate, { reportFailure: false });
   const [refreshToken, setRefreshToken] = useState(0);
+  const [refreshingFromHost, setRefreshingFromHost] = useState(false);
+  const refreshInFlightRef = useRef(false);
   const refreshFromHost = useCallback(async () => {
-    await invalidate({ environmentId, input: { reference } });
-    refreshDetail();
-    setRefreshToken((token) => token + 1);
+    if (refreshInFlightRef.current) return;
+    refreshInFlightRef.current = true;
+    setRefreshingFromHost(true);
+    try {
+      try {
+        await invalidate({ environmentId, input: { reference } });
+      } finally {
+        refreshDetail();
+        setRefreshToken((token) => token + 1);
+      }
+    } finally {
+      refreshInFlightRef.current = false;
+      setRefreshingFromHost(false);
+    }
   }, [environmentId, invalidate, reference, refreshDetail]);
   // A refresh asked for by the page: the detail, and through the token below, the diff with it.
   const appliedForcedToken = useRef(forcedRefreshToken);
@@ -1143,7 +1156,10 @@ export function PullRequestDetailPanel({
                   <MoreHorizontalIcon className="size-4" />
                 </MenuTrigger>
                 <MenuPopup align="end" side="bottom" className="min-w-72">
-                  <MenuItem disabled={detailQuery.isPending} onClick={() => void refreshFromHost()}>
+                  <MenuItem
+                    disabled={refreshingFromHost || detailQuery.isPending}
+                    onClick={() => void refreshFromHost()}
+                  >
                     <RefreshCwIcon className="size-3.5" />
                     Refresh
                   </MenuItem>
