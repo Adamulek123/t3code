@@ -60,6 +60,7 @@ import {
   PullRequestFiltersMenu,
   PullRequestSearchInput,
   pullRequestHostLabel,
+  pullRequestProjectKey,
   type PullRequestExpectedHost,
   type PullRequestFilterOption,
 } from "../components/pullRequest/PullRequestListFilters";
@@ -1253,7 +1254,11 @@ function PullRequestsRouteView() {
     () =>
       new Map(
         listErrors.map(
-          (error) => [`${error.environmentId} ${error.projectId}`, error.message] as const,
+          (error) =>
+            [
+              pullRequestProjectKey({ id: error.projectId, environmentId: error.environmentId }),
+              error.message,
+            ] as const,
         ),
       ),
     [listErrors],
