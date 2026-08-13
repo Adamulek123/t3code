@@ -247,7 +247,7 @@ export function PullRequestFiltersMenu({
    * the reader is already choosing between projects, rather than as a count above the list
    * that says something is missing without saying which.
    */
-  unavailable: ReadonlyMap<ProjectId, string>;
+  unavailable: ReadonlyMap<string, string>;
   /** The environment comes with the project id, since picking a row picks a specific server's copy of it. */
   onProject: (projectId: ProjectId | undefined, environmentId: EnvironmentId | undefined) => void;
 }) {
@@ -379,10 +379,12 @@ export function PullRequestFiltersMenu({
               as a broken menu rather than as a workspace with three unreadable repositories. */}
           {projects
             .toSorted(
-              (left, right) => Number(unavailable.has(left.id)) - Number(unavailable.has(right.id)),
+              (left, right) =>
+                Number(unavailable.has(projectMenuValue(left))) -
+                Number(unavailable.has(projectMenuValue(right))),
             )
             .map((project) => {
-              const reason = unavailable.get(project.id);
+              const reason = unavailable.get(projectMenuValue(project));
               return (
                 <MenuRadioItem
                   key={projectMenuValue(project)}
