@@ -79,6 +79,12 @@ const MULTI_CLICK_SELECTION_ACTION_DELAY_MS = 260;
 
 export type TerminalContextMenuAction = "add-to-chat" | "copy" | "paste";
 
+export function shouldRestoreTerminalFocusAfterMenuAction(
+  action: TerminalContextMenuAction | null,
+): boolean {
+  return action === "copy" || action === "paste";
+}
+
 interface TerminalSelectionAction {
   readonly position: { x: number; y: number };
   readonly clipboardText: string;
@@ -621,18 +627,17 @@ export function TerminalViewport({
             if (terminalMenuAbortController === abortController) {
               terminalMenuAbortController = null;
               selectionActionMenuOpenRef.current = false;
-              terminalRef.current?.focus();
             }
           });
         if (requestId !== selectionActionRequestIdRef.current || clicked === null) {
           return;
         }
-        await performTerminalMenuAction(
-          clicked,
-          nextAction,
-          () =>
-            requestId === selectionActionRequestIdRef.current && !abortController.signal.aborted,
-        );
+        const isCurrent = () =>
+          requestId === selectionActionRequestIdRef.current && !abortController.signal.aborted;
+        await performTerminalMenuAction(clicked, nextAction, isCurrent);
+        if (shouldRestoreTerminalFocusAfterMenuAction(clicked) && isCurrent()) {
+          terminalRef.current?.focus();
+        }
       };
 
       const showTerminalContextMenu = async (event: MouseEvent) => {
@@ -659,14 +664,14 @@ export function TerminalViewport({
             if (terminalMenuAbortController === abortController) {
               terminalMenuAbortController = null;
               selectionActionMenuOpenRef.current = false;
-              terminalRef.current?.focus();
             }
           });
-        await performTerminalMenuAction(clicked, selectionAction, () => {
-          return (
-            requestId === selectionActionRequestIdRef.current && !abortController.signal.aborted
-          );
-        });
+        const isCurrent = () =>
+          requestId === selectionActionRequestIdRef.current && !abortController.signal.aborted;
+        await performTerminalMenuAction(clicked, selectionAction, isCurrent);
+        if (shouldRestoreTerminalFocusAfterMenuAction(clicked) && isCurrent()) {
+          terminalRef.current?.focus();
+        }
       };
 
       const sendTerminalInput = async (data: string, fallbackError: string) => {
