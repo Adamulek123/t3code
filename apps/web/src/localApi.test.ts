@@ -96,6 +96,15 @@ describe("LocalApi", () => {
     expect(dismissContextMenuMock).toHaveBeenCalledOnce();
   });
 
+  it("dismisses a styled context menu with a desktop bridge", async () => {
+    testWindow().desktopBridge = {} as DesktopBridge;
+    const { createLocalApi } = await import("./localApi");
+
+    await createLocalApi().contextMenu.close();
+
+    expect(dismissContextMenuMock).toHaveBeenCalledOnce();
+  });
+
   it("uses the themed confirmation host when it is available", async () => {
     requestConfirmDialogMock.mockResolvedValue(true);
     const { createLocalApi } = await import("./localApi");
