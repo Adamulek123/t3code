@@ -848,6 +848,7 @@ export class GhosttyTerminalSurface {
 
   paste(data: string): void {
     if (this.disposed || data.length === 0) return;
+    this.pasteShortcutToken += 1;
     this.options.onData(this.core.encodePaste(data));
   }
 
@@ -925,7 +926,6 @@ export class GhosttyTerminalSurface {
         void clipboard.readText().then(
           (text) => {
             if (this.disposed || this.pasteShortcutToken !== token) return;
-            this.pasteShortcutToken += 1;
             this.paste(text);
           },
           () => {
@@ -1004,7 +1004,6 @@ export class GhosttyTerminalSurface {
     if (data.length === 0) return;
     // The native paste won the race with actual text; a pending clipboard read
     // must not double. An empty native paste leaves the read as the only path.
-    this.pasteShortcutToken += 1;
     this.paste(data);
   };
 
