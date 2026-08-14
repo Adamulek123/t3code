@@ -334,6 +334,7 @@ describe("contextMenuAcceleratorAction", () => {
   const event = (overrides: Partial<Parameters<typeof contextMenuAcceleratorAction>[1]> = {}) => ({
     altKey: false,
     ctrlKey: false,
+    isComposing: false,
     key: "",
     metaKey: false,
     shiftKey: false,
@@ -370,5 +371,14 @@ describe("contextMenuAcceleratorAction", () => {
       contextMenuAcceleratorAction(items, event({ key: "c", ctrlKey: true, shiftKey: true })),
     ).toBeNull();
     expect(contextMenuAcceleratorAction(items, event({ key: "c", ctrlKey: true }))).toBeNull();
+  });
+
+  it("does not activate shortcuts during IME composition", () => {
+    expect(
+      contextMenuAcceleratorAction(
+        [{ id: "copy", label: "Copy", accelerator: "Ctrl+Shift+C" }],
+        event({ key: "c", ctrlKey: true, shiftKey: true, isComposing: true }),
+      ),
+    ).toBeNull();
   });
 });

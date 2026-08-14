@@ -118,8 +118,9 @@ export function dismissContextMenu(): void {
 
 export function contextMenuAcceleratorAction<T extends string>(
   items: readonly ContextMenuItem<T>[],
-  event: Pick<KeyboardEvent, "altKey" | "ctrlKey" | "key" | "metaKey" | "shiftKey">,
+  event: Pick<KeyboardEvent, "altKey" | "ctrlKey" | "isComposing" | "key" | "metaKey" | "shiftKey">,
 ): T | null {
+  if (event.isComposing) return null;
   for (const item of items) {
     if (item.disabled) continue;
     if (item.children) {
@@ -185,6 +186,7 @@ export function showContextMenuFallback<T extends string>(
     const onAbort = () => cleanup(null);
 
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.isComposing) return;
       if (event.key === "Escape") {
         event.preventDefault();
         cleanup(null);

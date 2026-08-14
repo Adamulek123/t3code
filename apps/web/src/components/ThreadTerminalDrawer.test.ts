@@ -4,10 +4,20 @@ import {
   resolveTerminalSelectionActionPosition,
   shouldHandleTerminalExit,
   shouldHandleTerminalSelectionMouseUp,
+  shouldRestoreTerminalFocusAfterMenuAction,
   terminalContextMenuItems,
   terminalSelectionActionDelayForClickCount,
   terminalSelectionLineRange,
 } from "./ThreadTerminalDrawer";
+
+describe("shouldRestoreTerminalFocusAfterMenuAction", () => {
+  it("restores focus only after terminal-local actions", () => {
+    expect(shouldRestoreTerminalFocusAfterMenuAction("copy")).toBe(true);
+    expect(shouldRestoreTerminalFocusAfterMenuAction("paste")).toBe(true);
+    expect(shouldRestoreTerminalFocusAfterMenuAction("add-to-chat")).toBe(false);
+    expect(shouldRestoreTerminalFocusAfterMenuAction(null)).toBe(false);
+  });
+});
 
 describe("terminalContextMenuItems", () => {
   it("offers terminal actions and disables selection-only actions without a selection", () => {
