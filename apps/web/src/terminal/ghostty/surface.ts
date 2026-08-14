@@ -464,6 +464,7 @@ export interface GhosttyTerminalSurfaceOptions {
   readonly onResize: (cols: number, rows: number) => void;
   readonly onSelectionChange: () => void;
   readonly onCopy: (text: string) => void;
+  readonly onContextMenu?: (event: MouseEvent) => void;
   readonly beforeKey: (event: KeyboardEvent) => boolean;
   readonly onLinkActivate: (text: string, event: MouseEvent) => void;
 }
@@ -845,6 +846,11 @@ export class GhosttyTerminalSurface {
     this.requestRender();
   }
 
+  paste(data: string): void {
+    if (this.disposed || data.length === 0) return;
+    this.options.onData(this.core.encodePaste(data));
+  }
+
   scrollToBottom(): void {
     this.core.scrollToBottom();
     this.forceFullRender = true;
@@ -920,7 +926,7 @@ export class GhosttyTerminalSurface {
           (text) => {
             if (this.disposed || this.pasteShortcutToken !== token) return;
             this.pasteShortcutToken += 1;
-            if (text.length > 0) this.options.onData(this.core.encodePaste(text));
+            this.paste(text);
           },
           () => {
             // Clipboard read denied; the native paste event remains the path.
@@ -999,7 +1005,7 @@ export class GhosttyTerminalSurface {
     // The native paste won the race with actual text; a pending clipboard read
     // must not double. An empty native paste leaves the read as the only path.
     this.pasteShortcutToken += 1;
-    this.options.onData(this.core.encodePaste(data));
+    this.paste(data);
   };
 
   private readonly onCompositionStart = () => {
@@ -1308,9 +1314,11 @@ export class GhosttyTerminalSurface {
   };
 
   private readonly onContextMenu = (event: MouseEvent) => {
+    event.preventDefault();
     if (shouldReportTerminalMouse(this.core.isMouseTracking(), event)) {
-      event.preventDefault();
+      return;
     }
+    this.options.onContextMenu?.(event);
   };
 
   private readonly onScrollbarPointerDown = (event: PointerEvent) => {

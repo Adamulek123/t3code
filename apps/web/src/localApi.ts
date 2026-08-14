@@ -35,11 +35,19 @@ function createBrowserLocalApi(): LocalApi {
       show: async <T extends string>(
         items: readonly ContextMenuItem<T>[],
         position?: { x: number; y: number },
+        options?: {
+          readonly presentation?: "native" | "styled";
+          readonly signal?: AbortSignal;
+        },
       ): Promise<T | null> => {
-        if (window.desktopBridge) {
+        if (window.desktopBridge && options?.presentation !== "styled") {
           return window.desktopBridge.showContextMenu(items, position) as Promise<T | null>;
         }
-        return showContextMenuFallback(items, position);
+        return showContextMenuFallback(
+          items,
+          position,
+          options?.signal ? { signal: options.signal } : undefined,
+        );
       },
     },
     persistence: {
