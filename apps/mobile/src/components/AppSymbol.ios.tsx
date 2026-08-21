@@ -1,3 +1,4 @@
+import IconTerminal2 from "@tabler/icons-react-native/IconTerminal2";
 import { SymbolView as ExpoSymbolView, type SymbolViewProps } from "expo-symbols";
 import { withUniwind } from "uniwind";
 
@@ -9,6 +10,19 @@ export type AppSymbolName = SymbolViewProps["name"];
  * Metro does not initialize the icon package when iOS renders SF Symbols.
  */
 function AppSymbolView(props: SymbolViewProps) {
+  const symbolName = typeof props.name === "string" ? props.name : props.name.ios;
+  if (symbolName === "terminal") {
+    return (
+      <IconTerminal2
+        accessibilityLabel={props.accessibilityLabel}
+        color={props.tintColor}
+        size={props.size}
+        strokeWidth={2}
+        style={props.style}
+        testID={props.testID}
+      />
+    );
+  }
   return <ExpoSymbolView {...props} />;
 }
 
