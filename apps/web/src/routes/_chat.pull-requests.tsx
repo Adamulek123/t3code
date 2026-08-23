@@ -643,8 +643,8 @@ function PullRequestsRouteView() {
   // changed. Do not race a warm list hit against that read, and never ask an environment whose
   // identity check failed: every listing is keyed under the identity this page just verified.
   const verifiedEnvironmentIds = useMemo(
-    () => new Set(viewerQuery.environmentIds),
-    [viewerQuery.environmentIds],
+    () => new Set(viewerQuery.isPending ? [] : viewerQuery.environmentIds),
+    [viewerQuery.environmentIds, viewerQuery.isPending],
   );
   const verifiedListTargets = useMemo(
     () => listTargets.filter(({ environmentId }) => verifiedEnvironmentIds.has(environmentId)),
