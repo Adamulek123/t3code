@@ -425,7 +425,7 @@ export function showContextMenuFallback<T extends string>(
           accelerator.className =
             "ms-auto shrink-0 font-medium font-sans text-secondary-label text-xs tracking-widest";
           accelerator.style.cssText =
-            "margin-inline-start:auto;flex-shrink:0;color:var(--secondary-label);font-family:var(--font-sans,system-ui,sans-serif);font-size:0.75rem;font-weight:500;letter-spacing:0.1em;";
+            "margin-inline-start:auto;flex-shrink:0;color:var(--contrast-secondary-label);font-family:var(--font-sans,system-ui,sans-serif);font-size:0.75rem;font-weight:500;letter-spacing:0.1em;";
           accelerator.textContent = formatContextMenuAccelerator(item.accelerator);
           button.appendChild(accelerator);
         }
