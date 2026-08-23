@@ -1105,7 +1105,7 @@ function PullRequestsRouteView() {
       listData?.truncated !== true ||
       viewerQuery.isPending ||
       listQuery.isPending ||
-      listError !== null ||
+      listQuery.error !== null ||
       // The rows on screen belong to the previous question, so nothing about them says where
       // this one carries on from. Growing the page under them would answer neither.
       showingCarried ||
@@ -1132,7 +1132,7 @@ function PullRequestsRouteView() {
     filterKey,
     canContinue,
     listData?.truncated,
-    listError,
+    listQuery.error,
     listQuery.isPending,
     pageSize,
     showingCarried,
