@@ -113,7 +113,13 @@ export interface MergedPullRequestListView {
 /** Fresh host identities, scoped by environment so equal hostnames on two servers stay distinct. */
 export function usePullRequestViewers(
   targets: ReadonlyArray<EnvironmentQueryTarget<PullRequestViewerInput>>,
-): { readonly viewers: Readonly<Record<string, string>> | null; readonly isPending: boolean } {
+): {
+  readonly viewers: Readonly<Record<string, string>> | null;
+  readonly environmentIds: ReadonlyArray<EnvironmentId>;
+  readonly error: string | null;
+  readonly isPending: boolean;
+  readonly refresh: () => void;
+} {
   const query = usePullRequestViewersQuery(targets);
   const viewers = useMemo(
     () =>
@@ -128,7 +134,17 @@ export function usePullRequestViewers(
           ),
     [query.values],
   );
-  return { viewers, isPending: query.isPending };
+  const environmentIds = useMemo(
+    () => query.values.map(([environmentId]) => environmentId),
+    [query.values],
+  );
+  return {
+    viewers,
+    environmentIds,
+    error: query.error,
+    isPending: query.isPending,
+    refresh: query.refresh,
+  };
 }
 
 /** One listing per environment, merged into the single list the page renders. */

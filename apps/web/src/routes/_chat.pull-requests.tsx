@@ -640,10 +640,17 @@ function PullRequestsRouteView() {
   );
   const viewerQuery = usePullRequestViewers(viewerTargets);
   // The fresh viewer read also invalidates server-side listing caches when the CLI account has
-  // changed. Do not race a warm list hit against that read: once this gate opens, every listing
-  // is keyed under the identity the page just verified.
-  const viewerVerified = !viewerQuery.isPending && viewerQuery.viewers !== null;
-  const listQuery = usePullRequestList(viewerVerified ? listTargets : NO_LIST_TARGETS);
+  // changed. Do not race a warm list hit against that read, and never ask an environment whose
+  // identity check failed: every listing is keyed under the identity this page just verified.
+  const verifiedEnvironmentIds = useMemo(
+    () => new Set(viewerQuery.environmentIds),
+    [viewerQuery.environmentIds],
+  );
+  const verifiedListTargets = useMemo(
+    () => listTargets.filter(({ environmentId }) => verifiedEnvironmentIds.has(environmentId)),
+    [listTargets, verifiedEnvironmentIds],
+  );
+  const listQuery = usePullRequestList(verifiedListTargets);
 
   /**
    * The same filters with nothing typed, read whether or not anything is. It is the same atom the
@@ -679,7 +686,11 @@ function PullRequestsRouteView() {
       search.state,
     ],
   );
-  const baselineQuery = usePullRequestList(viewerVerified ? baselineTargets : NO_LIST_TARGETS);
+  const verifiedBaselineTargets = useMemo(
+    () => baselineTargets.filter(({ environmentId }) => verifiedEnvironmentIds.has(environmentId)),
+    [baselineTargets, verifiedEnvironmentIds],
+  );
+  const baselineQuery = usePullRequestList(verifiedBaselineTargets);
   // The priority groups' own reads. The feed below is paginated by recency, so an older authored
   // or review-requested row can be missing from its first page; partitioned from these
   // server-filtered reads instead, the priority view is complete up front and a continuation can
@@ -714,12 +725,22 @@ function PullRequestsRouteView() {
     search.host,
     search.state,
   ]);
-  const authoredQuery = usePullRequestList(
-    viewerVerified ? partitionTargets.authored : NO_LIST_TARGETS,
+  const verifiedAuthoredTargets = useMemo(
+    () =>
+      partitionTargets.authored.filter(({ environmentId }) =>
+        verifiedEnvironmentIds.has(environmentId),
+      ),
+    [partitionTargets.authored, verifiedEnvironmentIds],
   );
-  const reviewingQuery = usePullRequestList(
-    viewerVerified ? partitionTargets.reviewing : NO_LIST_TARGETS,
+  const verifiedReviewingTargets = useMemo(
+    () =>
+      partitionTargets.reviewing.filter(({ environmentId }) =>
+        verifiedEnvironmentIds.has(environmentId),
+      ),
+    [partitionTargets.reviewing, verifiedEnvironmentIds],
   );
+  const authoredQuery = usePullRequestList(verifiedAuthoredTargets);
+  const reviewingQuery = usePullRequestList(verifiedReviewingTargets);
   // The header's refresh punches through the server's cache before re-reading; the error and
   // empty states retry plainly, because a failure is never cached.
   const invalidate = useAtomCommand(pullRequestEnvironment.invalidate, { reportFailure: false });
@@ -743,6 +764,7 @@ function PullRequestsRouteView() {
       setInvalidating(false);
     }
     refreshList();
+    viewerQuery.refresh();
     baselineQuery.refresh();
     authoredQuery.refresh();
     reviewingQuery.refresh();
@@ -907,7 +929,8 @@ function PullRequestsRouteView() {
   const showingCarried = answered === null && carried !== null;
   const loadingMore = listQuery.isPending && listData !== null;
   /** Nothing read and nothing to carry, which is the one thing skeletons are for. */
-  const firstLoad = listQuery.isPending && listData === null;
+  const firstLoad = (viewerQuery.isPending || listQuery.isPending) && listData === null;
+  const listError = viewerQuery.error ?? listQuery.error;
 
   // `ordered` is declared above, ahead of the snapshot write, but grown here from this round's
   // own answer.
@@ -1363,8 +1386,14 @@ function PullRequestsRouteView() {
         />
       ) : firstLoad ? (
         <PullRequestListGhost rows={7} />
-      ) : listQuery.error && listData === null ? (
-        <PullRequestsUnavailableState error={listQuery.error} onRetry={() => listQuery.refresh()} />
+      ) : listError && listData === null ? (
+        <PullRequestsUnavailableState
+          error={listError}
+          onRetry={() => {
+            viewerQuery.refresh();
+            listQuery.refresh();
+          }}
+        />
       ) : carriedToNothing ? (
         <PullRequestListGhost rows={7} />
       ) : entries.length === 0 ? (
