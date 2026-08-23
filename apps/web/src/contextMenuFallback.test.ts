@@ -389,6 +389,23 @@ describe("showContextMenuFallback", () => {
     await expect(selectionPromise).resolves.toBe("copy:branch");
     expect(invoker.focused).toBe(true);
   });
+
+  it("can leave focus restoration to the caller", async () => {
+    const invoker = (document as unknown as FakeDocument).createElement("button");
+    (document as unknown as FakeDocument).body.appendChild(invoker);
+    invoker.focus();
+    const selectionPromise = showContextMenuFallback(
+      [{ id: "add-to-chat", label: "Add to chat" }],
+      undefined,
+      { restoreFocus: false },
+    );
+    const action = findButton("Add to chat");
+    action?.focus();
+    action?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
+    await expect(selectionPromise).resolves.toBe("add-to-chat");
+    expect(invoker.focused).toBe(false);
+  });
 });
 
 describe("dismissContextMenu", () => {

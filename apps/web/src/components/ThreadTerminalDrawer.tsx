@@ -651,7 +651,12 @@ export function TerminalViewport({
               canCopy: true,
             }),
             nextAction.position,
-            { layout: "compact", presentation: "styled", signal: abortController.signal },
+            {
+              layout: "compact",
+              presentation: "styled",
+              restoreFocus: false,
+              signal: abortController.signal,
+            },
           )
           .finally(() => {
             if (terminalMenuAbortController === abortController) {
@@ -691,7 +696,12 @@ export function TerminalViewport({
               x: event.clientX,
               y: event.clientY,
             },
-            { layout: "compact", presentation: "styled", signal: abortController.signal },
+            {
+              layout: "compact",
+              presentation: "styled",
+              restoreFocus: false,
+              signal: abortController.signal,
+            },
           )
           .finally(() => {
             if (terminalMenuAbortController === abortController) {

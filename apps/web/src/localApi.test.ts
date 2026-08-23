@@ -188,6 +188,7 @@ describe("LocalApi", () => {
         {
           layout: "compact",
           presentation: "styled",
+          restoreFocus: false,
           signal: abortController.signal,
         },
       ),
@@ -198,6 +199,7 @@ describe("LocalApi", () => {
       { x: 4, y: 5 },
       {
         layout: "compact",
+        restoreFocus: false,
         signal: abortController.signal,
       },
     );

@@ -243,6 +243,7 @@ export function showContextMenuFallback<T extends string>(
   position?: { x: number; y: number },
   options?: {
     readonly layout?: "default" | "compact";
+    readonly restoreFocus?: boolean;
     readonly signal?: AbortSignal;
   },
 ): Promise<T | null> {
@@ -277,7 +278,11 @@ export function showContextMenuFallback<T extends string>(
       for (const menu of menuStack) {
         menu.remove();
       }
-      if (shouldRestoreFocus && previouslyFocusedElement?.isConnected) {
+      if (
+        options?.restoreFocus !== false &&
+        shouldRestoreFocus &&
+        previouslyFocusedElement?.isConnected
+      ) {
         previouslyFocusedElement.focus({ preventScroll: true });
       }
       resolve(result);

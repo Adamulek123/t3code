@@ -38,6 +38,7 @@ function createBrowserLocalApi(): LocalApi {
         options?: {
           readonly layout?: "default" | "compact";
           readonly presentation?: "native" | "styled";
+          readonly restoreFocus?: boolean;
           readonly signal?: AbortSignal;
         },
       ): Promise<T | null> => {
@@ -47,9 +48,14 @@ function createBrowserLocalApi(): LocalApi {
         return showContextMenuFallback(
           items,
           position,
-          options?.layout !== undefined || options?.signal !== undefined
+          options?.layout !== undefined ||
+            options?.restoreFocus !== undefined ||
+            options?.signal !== undefined
             ? {
                 ...(options.layout === undefined ? {} : { layout: options.layout }),
+                ...(options.restoreFocus === undefined
+                  ? {}
+                  : { restoreFocus: options.restoreFocus }),
                 ...(options.signal === undefined ? {} : { signal: options.signal }),
               }
             : undefined,
