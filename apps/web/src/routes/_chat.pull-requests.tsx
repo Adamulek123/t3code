@@ -624,8 +624,6 @@ function PullRequestsRouteView() {
       sentParsed.text,
     ],
   );
-  const listQuery = usePullRequestList(listTargets);
-
   // Verify the account independently of the slower repository listing. This is deliberately a
   // fresh server read: the host CLI account can change outside T3 between two page loads.
   const viewerTargets = useMemo(
@@ -641,6 +639,11 @@ function PullRequestsRouteView() {
     [environmentQueries, scopedProjectId, search.host],
   );
   const viewerQuery = usePullRequestViewers(viewerTargets);
+  // The fresh viewer read also invalidates server-side listing caches when the CLI account has
+  // changed. Do not race a warm list hit against that read: once this gate opens, every listing
+  // is keyed under the identity the page just verified.
+  const viewerVerified = !viewerQuery.isPending && viewerQuery.viewers !== null;
+  const listQuery = usePullRequestList(viewerVerified ? listTargets : NO_LIST_TARGETS);
 
   /**
    * The same filters with nothing typed, read whether or not anything is. It is the same atom the
@@ -676,7 +679,7 @@ function PullRequestsRouteView() {
       search.state,
     ],
   );
-  const baselineQuery = usePullRequestList(baselineTargets);
+  const baselineQuery = usePullRequestList(viewerVerified ? baselineTargets : NO_LIST_TARGETS);
   // The priority groups' own reads. The feed below is paginated by recency, so an older authored
   // or review-requested row can be missing from its first page; partitioned from these
   // server-filtered reads instead, the priority view is complete up front and a continuation can
@@ -711,8 +714,12 @@ function PullRequestsRouteView() {
     search.host,
     search.state,
   ]);
-  const authoredQuery = usePullRequestList(partitionTargets.authored);
-  const reviewingQuery = usePullRequestList(partitionTargets.reviewing);
+  const authoredQuery = usePullRequestList(
+    viewerVerified ? partitionTargets.authored : NO_LIST_TARGETS,
+  );
+  const reviewingQuery = usePullRequestList(
+    viewerVerified ? partitionTargets.reviewing : NO_LIST_TARGETS,
+  );
   // The header's refresh punches through the server's cache before re-reading; the error and
   // empty states retry plainly, because a failure is never cached.
   const invalidate = useAtomCommand(pullRequestEnvironment.invalidate, { reportFailure: false });
