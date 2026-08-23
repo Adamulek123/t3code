@@ -771,7 +771,7 @@ function PullRequestsRouteView() {
     statsQuery.refresh();
     setDetailRefreshToken((token) => token + 1);
   };
-  const refreshing = invalidating || listQuery.isPending;
+  const refreshing = invalidating || viewerQuery.isPending || listQuery.isPending;
 
   // Every page size and every search is its own query, and a new one starts empty. The last
   // answer for these filters is held so the page grows and narrows in place rather than blanking
