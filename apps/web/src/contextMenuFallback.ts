@@ -335,7 +335,7 @@ export function showContextMenuFallback<T extends string>(
         usesCompactShortcutLayout ? "min(14.25rem,calc(100vw - 0.75rem))" : "8rem"
       };max-width:24rem;overflow:hidden;border-radius:${
         usesCompactShortcutLayout ? "0.6875rem" : "var(--radius-lg)"
-      };background-clip:padding-box;color:var(--popover-foreground);outline:none;pointer-events:auto;`;
+      };background-clip:padding-box;color:var(--contrast-popover-foreground);outline:none;pointer-events:auto;`;
       menu.style.left = `${preferredLeft}px`;
       menu.style.top = `${preferredTop}px`;
       menu.dataset.level = String(level);
@@ -352,7 +352,8 @@ export function showContextMenuFallback<T extends string>(
         if (item.separatorBefore === true && inner.children.length > 0) {
           const separator = document.createElement("div");
           separator.className = "mx-2 my-1 h-px bg-border";
-          separator.style.cssText = "height:1px;margin:0.25rem 0.5rem;background:var(--border);";
+          separator.style.cssText =
+            "height:1px;margin:0.25rem 0.5rem;background:var(--contrast-border);";
           separator.dataset.contextMenuSeparator = "true";
           separator.setAttribute("role", "separator");
           inner.appendChild(separator);
@@ -390,14 +391,14 @@ export function showContextMenuFallback<T extends string>(
           usesCompactShortcutLayout ? "0.4375rem" : "var(--radius-sm)"
         };background:transparent;padding:${
           usesCompactShortcutLayout ? "0.375rem 0.5rem" : "0.25rem 0.5rem"
-        };color:var(--foreground);font-family:var(--font-sans,system-ui,sans-serif);font-size:${
+        };color:var(--contrast-foreground);font-family:var(--font-sans,system-ui,sans-serif);font-size:${
           usesCompactShortcutLayout ? "0.75rem" : "0.875rem"
         };font-weight:${usesCompactShortcutLayout ? "450" : "400"};line-height:1.25rem;text-align:left;cursor:default;`;
         if (isLeafDestructive) {
           button.style.color = "var(--destructive-foreground)";
         }
         if (isDisabled) {
-          button.style.color = "var(--muted-foreground)";
+          button.style.color = "var(--contrast-muted-foreground)";
           button.style.opacity = usesCompactShortcutLayout ? "0.52" : "0.64";
           button.style.pointerEvents = "none";
         }
@@ -452,10 +453,10 @@ export function showContextMenuFallback<T extends string>(
             button.style.color = isHighlighted
               ? isLeafDestructive
                 ? "var(--destructive-foreground)"
-                : "var(--accent-foreground)"
+                : "var(--contrast-accent-foreground)"
               : isLeafDestructive
                 ? "var(--destructive-foreground)"
-                : "var(--foreground)";
+                : "var(--contrast-foreground)";
           };
           button.addEventListener("mouseenter", () => {
             button.focus({ preventScroll: true });
