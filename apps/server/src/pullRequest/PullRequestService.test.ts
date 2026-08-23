@@ -667,6 +667,9 @@ it.effect("reads snapshot viewer identity freshly after the host account changes
     viewer = "Octocat";
     const identity = yield* service.viewers({});
     assert.deepStrictEqual(identity.viewers, { "github.com": "Octocat" });
+
+    const refreshedListing = yield* service.list({ state: "open" });
+    assert.deepStrictEqual(refreshedListing.viewers, { "github.com": "Octocat" });
   }),
 );
 

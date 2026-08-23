@@ -704,6 +704,8 @@ export const make = Effect.gen(function* () {
   // per read, three reads per page. Only a success is believed for a while: a failure is the
   // "is this host set up" answer the provider switcher shows, and holding it would keep saying
   // signed-out after the reader has signed in.
+  let epochCounter = 0;
+  let listingsEpoch = 0;
   const viewersByHost = new Map<string, { readonly at: number; readonly result: ResolvedViewer }>();
 
   const resolveViewers = (
@@ -737,9 +739,26 @@ export const make = Effect.gen(function* () {
               error: null as PullRequestProviderError | null,
             })),
             Effect.tap((result) =>
-              Effect.map(Clock.currentTimeMillis, (at) => viewersByHost.set(host, { at, result })),
+              Effect.map(Clock.currentTimeMillis, (at) => {
+                if (
+                  options.fresh === true &&
+                  held !== undefined &&
+                  held.result.viewer !== result.viewer
+                ) {
+                  listingsEpoch = ++epochCounter;
+                }
+                viewersByHost.set(host, { at, result });
+              }),
             ),
-            Effect.catch((error) => Effect.succeed({ host, kind: api.kind, viewer: null, error })),
+            Effect.catch((error) =>
+              Effect.sync(() => {
+                if (options.fresh === true && held !== undefined && held.result.viewer !== null) {
+                  listingsEpoch = ++epochCounter;
+                }
+                viewersByHost.delete(host);
+                return { host, kind: api.kind, viewer: null, error };
+              }),
+            ),
           );
         }),
       { concurrency: REPOSITORY_CONCURRENCY },
@@ -1877,8 +1896,6 @@ export const make = Effect.gen(function* () {
   // epoch strands every entry made under the old one — no enumerating a cache whose keys
   // (cursors, commits) nothing holds a list of. The counter is shared and monotonic so a
   // scope re-entering `refEpochs` after eviction can never mint a key an old entry still has.
-  let epochCounter = 0;
-  let listingsEpoch = 0;
   const refEpochs = new Map<string, number>();
   const REF_EPOCH_CAPACITY = 2_048;
   const refScope = (ref: PullRequestRef) => `${ref.projectId} ${ref.repository} ${ref.number}`;
