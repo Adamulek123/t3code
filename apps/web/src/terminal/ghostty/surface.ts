@@ -545,8 +545,8 @@ export interface GhosttyTerminalSurfaceOptions {
   readonly onLinkActivate: (text: string, event: MouseEvent) => void;
   /**
    * A right-click the running application did not claim through mouse
-   * reporting. The host owns the menu, so it also owns preventing the browser
-   * default — whose Paste entry can never reach a canvas terminal.
+   * reporting. The surface suppresses the browser default — whose Paste entry
+   * can never reach a canvas terminal — before handing the gesture to the host.
    */
   readonly onContextMenu?: (event: MouseEvent) => void;
 }

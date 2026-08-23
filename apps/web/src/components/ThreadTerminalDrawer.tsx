@@ -644,34 +644,48 @@ export function TerminalViewport({
         terminalMenuAbortController = abortController;
         selectionActionMenuOpenRef.current = true;
         openSelectionMenuRequestIdRef.current = requestId;
-        const clicked = await localApi.contextMenu
-          .show(
-            terminalContextMenuItems({
-              canAddToChat: nextAction.selection !== null,
-              canCopy: true,
-            }),
-            nextAction.position,
-            {
-              layout: "compact",
-              presentation: "styled",
-              restoreFocus: false,
-              signal: abortController.signal,
-            },
-          )
-          .finally(() => {
-            if (terminalMenuAbortController === abortController) {
-              terminalMenuAbortController = null;
-              selectionActionMenuOpenRef.current = false;
+        const isCurrent = () =>
+          requestId === selectionActionRequestIdRef.current && !abortController.signal.aborted;
+        let clicked: TerminalContextMenuAction | null;
+        try {
+          clicked = await localApi.contextMenu
+            .show(
+              terminalContextMenuItems({
+                canAddToChat: nextAction.selection !== null,
+                canCopy: true,
+              }),
+              nextAction.position,
+              {
+                layout: "compact",
+                presentation: "styled",
+                restoreFocus: false,
+                signal: abortController.signal,
+              },
+            )
+            .finally(() => {
+              if (terminalMenuAbortController === abortController) {
+                terminalMenuAbortController = null;
+                selectionActionMenuOpenRef.current = false;
+              }
+              if (openSelectionMenuRequestIdRef.current === requestId) {
+                openSelectionMenuRequestIdRef.current = null;
+              }
+            });
+        } catch (error) {
+          if (isCurrent()) {
+            const activeTerminal = terminalRef.current;
+            if (activeTerminal) {
+              writeSystemMessage(
+                activeTerminal,
+                error instanceof Error ? error.message : "Unable to open the terminal context menu",
+              );
             }
-            if (openSelectionMenuRequestIdRef.current === requestId) {
-              openSelectionMenuRequestIdRef.current = null;
-            }
-          });
+          }
+          return;
+        }
         if (requestId !== selectionActionRequestIdRef.current || clicked === null) {
           return;
         }
-        const isCurrent = () =>
-          requestId === selectionActionRequestIdRef.current && !abortController.signal.aborted;
         await performTerminalMenuAction(clicked, nextAction, isCurrent);
         if (shouldRestoreTerminalFocusAfterMenuAction(clicked) && isCurrent()) {
           terminalRef.current?.focus();
@@ -686,31 +700,45 @@ export function TerminalViewport({
         const abortController = new AbortController();
         terminalMenuAbortController = abortController;
         selectionActionMenuOpenRef.current = true;
-        const clicked = await localApi.contextMenu
-          .show(
-            terminalContextMenuItems({
-              canAddToChat: selectionAction?.selection != null,
-              canCopy: selectionAction !== null,
-            }),
-            {
-              x: event.clientX,
-              y: event.clientY,
-            },
-            {
-              layout: "compact",
-              presentation: "styled",
-              restoreFocus: false,
-              signal: abortController.signal,
-            },
-          )
-          .finally(() => {
-            if (terminalMenuAbortController === abortController) {
-              terminalMenuAbortController = null;
-              selectionActionMenuOpenRef.current = false;
-            }
-          });
         const isCurrent = () =>
           requestId === selectionActionRequestIdRef.current && !abortController.signal.aborted;
+        let clicked: TerminalContextMenuAction | null;
+        try {
+          clicked = await localApi.contextMenu
+            .show(
+              terminalContextMenuItems({
+                canAddToChat: selectionAction?.selection != null,
+                canCopy: selectionAction !== null,
+              }),
+              {
+                x: event.clientX,
+                y: event.clientY,
+              },
+              {
+                layout: "compact",
+                presentation: "styled",
+                restoreFocus: false,
+                signal: abortController.signal,
+              },
+            )
+            .finally(() => {
+              if (terminalMenuAbortController === abortController) {
+                terminalMenuAbortController = null;
+                selectionActionMenuOpenRef.current = false;
+              }
+            });
+        } catch (error) {
+          if (isCurrent()) {
+            const activeTerminal = terminalRef.current;
+            if (activeTerminal) {
+              writeSystemMessage(
+                activeTerminal,
+                error instanceof Error ? error.message : "Unable to open the terminal context menu",
+              );
+            }
+          }
+          return;
+        }
         await performTerminalMenuAction(clicked, selectionAction, isCurrent);
         if (shouldRestoreTerminalFocusAfterMenuAction(clicked) && isCurrent()) {
           terminalRef.current?.focus();

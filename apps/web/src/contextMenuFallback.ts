@@ -358,7 +358,6 @@ export function showContextMenuFallback<T extends string>(
       const inner = document.createElement("div");
       inner.className =
         "max-h-[min(24rem,70vh)] min-w-0 max-w-sm overflow-y-auto overflow-x-hidden p-1";
-      inner.dataset.compact = String(usesCompactShortcutLayout);
       inner.style.cssText =
         "max-height:min(24rem,70vh);min-width:0;max-width:24rem;overflow-x:hidden;overflow-y:auto;padding:0.25rem;";
 
