@@ -706,6 +706,7 @@ function ThreadRouteContent(
     }
     if (selectedThreadProject?.workspaceRoot) {
       actions.push({
+        id: "terminal",
         accessibilityLabel:
           terminalRunningLabel === null
             ? "Open terminal"

@@ -8,6 +8,7 @@ import { AppText as Text } from "./AppText";
 import { cn } from "../lib/cn";
 
 export interface AndroidHeaderAction {
+  readonly id?: string;
   readonly accessibilityLabel: string;
   readonly icon: AppSymbolName;
   readonly onPress: () => void;
@@ -108,7 +109,7 @@ export function AndroidScreenHeader(props: {
 
         {props.actions?.map((action) => (
           <AppHeaderIconButton
-            key={action.accessibilityLabel}
+            key={action.id ?? action.accessibilityLabel}
             accessibilityLabel={action.accessibilityLabel}
             disabled={action.disabled}
             icon={action.icon}
