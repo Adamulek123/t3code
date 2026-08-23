@@ -36,6 +36,7 @@ function createBrowserLocalApi(): LocalApi {
         items: readonly ContextMenuItem<T>[],
         position?: { x: number; y: number },
         options?: {
+          readonly layout?: "default" | "compact";
           readonly presentation?: "native" | "styled";
           readonly signal?: AbortSignal;
         },
@@ -46,7 +47,12 @@ function createBrowserLocalApi(): LocalApi {
         return showContextMenuFallback(
           items,
           position,
-          options?.signal ? { signal: options.signal } : undefined,
+          options?.layout !== undefined || options?.signal !== undefined
+            ? {
+                ...(options.layout === undefined ? {} : { layout: options.layout }),
+                ...(options.signal === undefined ? {} : { signal: options.signal }),
+              }
+            : undefined,
         );
       },
       // Native desktop menus close on outside interaction; dismissing the DOM

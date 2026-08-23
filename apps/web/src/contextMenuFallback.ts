@@ -225,6 +225,15 @@ export function contextMenuAcceleratorAction<T extends string>(
   return null;
 }
 
+function formatContextMenuAccelerator(accelerator: string): string {
+  const parts = accelerator.split("+");
+  if (!parts.some((part) => part === "Command" || part === "Cmd")) return accelerator;
+  const key = parts.at(-1) ?? "";
+  return `${parts.includes("Ctrl") ? "⌃" : ""}${parts.includes("Alt") ? "⌥" : ""}${
+    parts.includes("Shift") ? "⇧" : ""
+  }⌘${key}`;
+}
+
 /**
  * Imperative DOM-based context menu for non-Electron environments.
  * Supports nested submenus and resolves with the clicked leaf item id.
@@ -232,7 +241,10 @@ export function contextMenuAcceleratorAction<T extends string>(
 export function showContextMenuFallback<T extends string>(
   items: readonly ContextMenuItem<T>[],
   position?: { x: number; y: number },
-  options?: { readonly signal?: AbortSignal },
+  options?: {
+    readonly layout?: "default" | "compact";
+    readonly signal?: AbortSignal;
+  },
 ): Promise<T | null> {
   return new Promise<T | null>((resolve) => {
     if (options?.signal?.aborted) {
@@ -326,27 +338,24 @@ export function showContextMenuFallback<T extends string>(
     ) => {
       closeMenusFromLevel(level);
 
-      const usesCompactShortcutLayout = entries.some((item) => item.accelerator);
+      const usesCompactShortcutLayout = options?.layout === "compact";
       const menu = document.createElement("div");
       menu.className = `dropdown-glass fixed z-[10000] max-w-sm overflow-hidden bg-clip-padding text-popover-foreground outline-none ${
-        usesCompactShortcutLayout ? "min-w-[14.25rem] rounded-[11px]" : "min-w-32 rounded-lg"
+        usesCompactShortcutLayout ? "min-w-56 rounded-lg" : "min-w-32 rounded-lg"
       }`;
       menu.style.cssText = `position:fixed;z-index:10000;min-width:${
-        usesCompactShortcutLayout ? "min(14.25rem,calc(100vw - 0.75rem))" : "8rem"
-      };max-width:24rem;overflow:hidden;border-radius:${
-        usesCompactShortcutLayout ? "0.6875rem" : "var(--radius-lg)"
-      };background-clip:padding-box;color:var(--contrast-popover-foreground);outline:none;pointer-events:auto;`;
+        usesCompactShortcutLayout ? "min(14rem,calc(100vw - 0.75rem))" : "8rem"
+      };max-width:24rem;overflow:hidden;border-radius:var(--radius-lg);background-clip:padding-box;color:var(--contrast-popover-foreground);outline:none;pointer-events:auto;`;
       menu.style.left = `${preferredLeft}px`;
       menu.style.top = `${preferredTop}px`;
       menu.dataset.level = String(level);
 
       const inner = document.createElement("div");
       inner.className =
-        "max-h-[min(24rem,70vh)] min-w-0 max-w-sm overflow-y-auto overflow-x-hidden p-1 data-[compact=true]:p-[5px]";
+        "max-h-[min(24rem,70vh)] min-w-0 max-w-sm overflow-y-auto overflow-x-hidden p-1";
       inner.dataset.compact = String(usesCompactShortcutLayout);
-      inner.style.cssText = `max-height:min(24rem,70vh);min-width:0;max-width:24rem;overflow-x:hidden;overflow-y:auto;padding:${
-        usesCompactShortcutLayout ? "0.3125rem" : "0.25rem"
-      };`;
+      inner.style.cssText =
+        "max-height:min(24rem,70vh);min-width:0;max-width:24rem;overflow-x:hidden;overflow-y:auto;padding:0.25rem;";
 
       for (const item of entries) {
         if (item.separatorBefore === true && inner.children.length > 0) {
@@ -376,30 +385,21 @@ export function showContextMenuFallback<T extends string>(
         const isDisabled = item.disabled === true;
         button.disabled = isDisabled;
         const rowBase = usesCompactShortcutLayout
-          ? "flex min-h-[2.125rem] w-full cursor-default select-none items-center gap-[9px] rounded-[7px] px-2 py-1.5 text-left text-xs outline-none transition-colors"
+          ? "flex min-h-8 w-full cursor-default select-none items-center gap-2 rounded-sm px-2 py-1 text-left text-sm outline-none transition-colors sm:min-h-7 sm:text-xs"
           : "flex w-full cursor-default select-none items-center gap-2 rounded-sm px-2 py-1 text-left outline-none transition-colors sm:min-h-7 sm:text-sm min-h-8 text-base";
         button.className = isDisabled
-          ? `${rowBase} pointer-events-none cursor-not-allowed text-muted-foreground ${
-              usesCompactShortcutLayout ? "opacity-52" : "opacity-64"
-            }`
+          ? `${rowBase} pointer-events-none cursor-not-allowed text-muted-foreground opacity-64`
           : isLeafDestructive
             ? `${rowBase} text-destructive-foreground hover:bg-destructive/10 hover:text-destructive-foreground`
             : `${rowBase} text-foreground hover:bg-accent hover:text-accent-foreground`;
-        button.style.cssText = `display:flex;width:100%;min-height:${
-          usesCompactShortcutLayout ? "2.125rem" : "1.75rem"
-        };align-items:center;gap:${usesCompactShortcutLayout ? "0.5625rem" : "0.5rem"};border:0;border-radius:${
-          usesCompactShortcutLayout ? "0.4375rem" : "var(--radius-sm)"
-        };background:transparent;padding:${
-          usesCompactShortcutLayout ? "0.375rem 0.5rem" : "0.25rem 0.5rem"
-        };color:var(--contrast-foreground);font-family:var(--font-sans,system-ui,sans-serif);font-size:${
-          usesCompactShortcutLayout ? "0.75rem" : "0.875rem"
-        };font-weight:${usesCompactShortcutLayout ? "450" : "400"};line-height:1.25rem;text-align:left;cursor:default;`;
+        button.style.cssText =
+          "display:flex;width:100%;align-items:center;gap:0.5rem;border:0;border-radius:var(--radius-sm);background:transparent;padding:0.25rem 0.5rem;color:var(--contrast-foreground);font-family:var(--font-sans,system-ui,sans-serif);font-weight:400;line-height:1.25rem;text-align:left;cursor:default;";
         if (isLeafDestructive) {
           button.style.color = "var(--destructive-foreground)";
         }
         if (isDisabled) {
           button.style.color = "var(--contrast-muted-foreground)";
-          button.style.opacity = usesCompactShortcutLayout ? "0.52" : "0.64";
+          button.style.opacity = "0.64";
           button.style.pointerEvents = "none";
         }
 
@@ -418,10 +418,10 @@ export function showContextMenuFallback<T extends string>(
         if (item.accelerator) {
           const accelerator = document.createElement("kbd");
           accelerator.className =
-            "ms-auto shrink-0 rounded border border-border/70 bg-muted/70 px-[5px] font-mono text-[10px] text-muted-foreground leading-[1.55]";
+            "ms-auto shrink-0 font-medium font-sans text-secondary-label text-xs tracking-widest";
           accelerator.style.cssText =
-            "margin-inline-start:auto;flex-shrink:0;border:1px solid color-mix(in srgb,var(--border) 70%,transparent);border-radius:0.25rem;background:color-mix(in srgb,var(--muted) 70%,transparent);padding:0 0.3125rem;color:var(--muted-foreground);font-family:var(--font-mono,monospace);font-size:0.625rem;line-height:1.55;";
-          accelerator.textContent = item.accelerator.replace(/^Command\+/u, "⌘");
+            "margin-inline-start:auto;flex-shrink:0;color:var(--secondary-label);font-family:var(--font-sans,system-ui,sans-serif);font-size:0.75rem;font-weight:500;letter-spacing:0.1em;";
+          accelerator.textContent = formatContextMenuAccelerator(item.accelerator);
           button.appendChild(accelerator);
         }
 

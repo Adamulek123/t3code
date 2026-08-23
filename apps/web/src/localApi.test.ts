@@ -186,6 +186,7 @@ describe("LocalApi", () => {
         items,
         { x: 4, y: 5 },
         {
+          layout: "compact",
           presentation: "styled",
           signal: abortController.signal,
         },
@@ -196,6 +197,7 @@ describe("LocalApi", () => {
       items,
       { x: 4, y: 5 },
       {
+        layout: "compact",
         signal: abortController.signal,
       },
     );

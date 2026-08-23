@@ -261,15 +261,19 @@ describe("showContextMenuFallback", () => {
   });
 
   it("renders shortcut hints next to menu labels", () => {
-    void showContextMenuFallback([
-      { id: "copy", label: "Copy", accelerator: "Ctrl+Shift+C" },
-      { id: "paste", label: "Paste", accelerator: "Command+V" },
-    ]);
+    void showContextMenuFallback(
+      [
+        { id: "copy", label: "Copy", accelerator: "Ctrl+Shift+C" },
+        { id: "paste", label: "Paste", accelerator: "Command+Shift+V" },
+      ],
+      undefined,
+      { layout: "compact" },
+    );
 
     const shortcuts = (document as unknown as FakeDocument)
       .querySelectorAll("kbd")
       .map((element) => element.textContent);
-    expect(shortcuts).toEqual(["Ctrl+Shift+C", "⌘V"]);
+    expect(shortcuts).toEqual(["Ctrl+Shift+C", "⇧⌘V"]);
   });
 
   it("ignores a click from the gesture that opened the menu", async () => {

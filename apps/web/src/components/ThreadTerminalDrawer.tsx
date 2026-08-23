@@ -499,7 +499,7 @@ export function TerminalViewport({
         // while `create` is still awaiting WASM — before the handler below it
         // exists. The ref is only assigned once that setup has run.
         onContextMenu: (event) => {
-          if (terminalRef.current) void showTerminalContextMenu(event);
+          if (terminalRef.current) handleContextMenu(event);
         },
       };
       const terminal = await GhosttyTerminalSurface.create(mount, terminalOptions);
@@ -651,7 +651,7 @@ export function TerminalViewport({
               canCopy: true,
             }),
             nextAction.position,
-            { presentation: "styled", signal: abortController.signal },
+            { layout: "compact", presentation: "styled", signal: abortController.signal },
           )
           .finally(() => {
             if (terminalMenuAbortController === abortController) {
@@ -691,7 +691,7 @@ export function TerminalViewport({
               x: event.clientX,
               y: event.clientY,
             },
-            { presentation: "styled", signal: abortController.signal },
+            { layout: "compact", presentation: "styled", signal: abortController.signal },
           )
           .finally(() => {
             if (terminalMenuAbortController === abortController) {

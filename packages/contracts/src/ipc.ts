@@ -1263,6 +1263,7 @@ export interface LocalApi {
       items: readonly ContextMenuItem<T>[],
       position?: { x: number; y: number },
       options?: {
+        readonly layout?: "default" | "compact";
         readonly presentation?: "native" | "styled";
         readonly signal?: AbortSignal;
       },
