@@ -237,6 +237,17 @@ function PullRequestsRouteView() {
         .toSorted((left, right) => left.environmentId.localeCompare(right.environmentId)),
     [environments],
   );
+  const viewerCapableEnvironmentIds = useMemo(
+    () =>
+      new Set(
+        capableEnvironments.flatMap((environment) =>
+          environment.serverConfig?.environment.capabilities.pullRequestViewers === true
+            ? [environment.environmentId]
+            : [],
+        ),
+      ),
+    [capableEnvironments],
+  );
   // The server the URL asks for, kept only while it is one the page could read: a link naming a
   // server this workspace no longer has falls back to all of them rather than to nothing.
   const scopedEnvironmentId =
@@ -628,23 +639,41 @@ function PullRequestsRouteView() {
   // fresh server read: the host CLI account can change outside T3 between two page loads.
   const viewerTargets = useMemo(
     () =>
-      environmentQueries.map(({ environmentId, projectIds }) => ({
-        environmentId,
-        input: {
-          ...(scopedProjectId ? { projectId: scopedProjectId } : {}),
-          ...(projectIds ? { projectIds } : {}),
-          ...(search.host ? { host: search.host } : {}),
-        },
-      })),
-    [environmentQueries, scopedProjectId, search.host],
+      environmentQueries.flatMap(({ environmentId, projectIds }) =>
+        viewerCapableEnvironmentIds.has(environmentId)
+          ? [
+              {
+                environmentId,
+                input: {
+                  ...(scopedProjectId ? { projectId: scopedProjectId } : {}),
+                  ...(projectIds ? { projectIds } : {}),
+                  ...(search.host ? { host: search.host } : {}),
+                },
+              },
+            ]
+          : [],
+      ),
+    [environmentQueries, scopedProjectId, search.host, viewerCapableEnvironmentIds],
   );
   const viewerQuery = usePullRequestViewers(viewerTargets);
   // The fresh viewer read also invalidates server-side listing caches when the CLI account has
   // changed. Do not race a warm list hit against that read, and never ask an environment whose
-  // identity check failed: every listing is keyed under the identity this page just verified.
+  // identity check failed. Older servers without this method keep their live-list behavior, but
+  // cannot hydrate a persisted snapshot because their identity cannot be verified independently.
   const verifiedEnvironmentIds = useMemo(
-    () => new Set(viewerQuery.isPending ? [] : viewerQuery.environmentIds),
-    [viewerQuery.environmentIds, viewerQuery.isPending],
+    () =>
+      new Set([
+        ...environmentQueries.flatMap(({ environmentId }) =>
+          viewerCapableEnvironmentIds.has(environmentId) ? [] : [environmentId],
+        ),
+        ...(viewerQuery.isPending ? [] : viewerQuery.environmentIds),
+      ]),
+    [
+      environmentQueries,
+      viewerCapableEnvironmentIds,
+      viewerQuery.environmentIds,
+      viewerQuery.isPending,
+    ],
   );
   const verifiedListTargets = useMemo(
     () => listTargets.filter(({ environmentId }) => verifiedEnvironmentIds.has(environmentId)),
