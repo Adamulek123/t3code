@@ -1103,8 +1103,9 @@ function PullRequestsRouteView() {
       !sentinel ||
       entries.length === 0 ||
       listData?.truncated !== true ||
+      viewerQuery.isPending ||
       listQuery.isPending ||
-      listQuery.error !== null ||
+      listError !== null ||
       // The rows on screen belong to the previous question, so nothing about them says where
       // this one carries on from. Growing the page under them would answer neither.
       showingCarried ||
@@ -1131,10 +1132,11 @@ function PullRequestsRouteView() {
     filterKey,
     canContinue,
     listData?.truncated,
-    listQuery.error,
+    listError,
     listQuery.isPending,
     pageSize,
     showingCarried,
+    viewerQuery.isPending,
   ]);
 
   /**
@@ -1374,7 +1376,10 @@ function PullRequestsRouteView() {
   // so that case waits with the skeletons rather than answering for the hosts. A search says so
   // in its own words and is left to.
   const carriedToNothing =
-    showingCarried && listQuery.isPending && entries.length === 0 && typedQuery.length === 0;
+    showingCarried &&
+    (viewerQuery.isPending || listQuery.isPending) &&
+    entries.length === 0 &&
+    typedQuery.length === 0;
   const listBody = (
     <>
       {!capabilityKnown ? (
