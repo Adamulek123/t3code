@@ -88,6 +88,24 @@ describe("getProviderSkillsForSlashMenu", () => {
       "browser",
     ]);
   });
+
+  it("keeps an enabled skill when a disabled duplicate appears first", () => {
+    const enabledSkill = {
+      name: "babysit-pr",
+      path: "/Users/matt/.agents/skills/babysit-pr/SKILL.md",
+      enabled: true,
+    };
+    const skills = [
+      {
+        name: "babysit-pr",
+        path: "/Users/matt/.codex/skills/babysit-pr/SKILL.md",
+        enabled: false,
+      },
+      enabledSkill,
+    ];
+
+    expect(getProviderSkillsForSlashMenu(skills, true)).toEqual([enabledSkill]);
+  });
 });
 
 describe("getProviderSlashCommandsForSlashMenu", () => {

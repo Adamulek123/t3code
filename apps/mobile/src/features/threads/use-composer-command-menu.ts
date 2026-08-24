@@ -9,7 +9,10 @@ import {
   normalizeSearchQuery,
   scoreQueryMatch,
 } from "@t3tools/shared/searchRanking";
-import { dedupeProviderSkillsByName } from "@t3tools/client-runtime/providerSkills";
+import {
+  dedupeProviderSkillsByName,
+  getProviderSkillsForSlashMenu,
+} from "@t3tools/client-runtime/providerSkills";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { ComposerEditorSelection } from "../../components/ComposerEditor";
@@ -131,7 +134,10 @@ export function useComposerCommandMenu({
         });
       }
 
-      const skillItems = dedupeProviderSkillsByName(selectedProviderStatus?.skills ?? [])
+      const skillItems = getProviderSkillsForSlashMenu(
+        selectedProviderStatus?.skills ?? [],
+        true,
+      )
         .filter((skill) => matchesSlashSkillQuery(skill, q))
         .map((skill) => ({
           id: `skill:${skill.name}`,
