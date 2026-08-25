@@ -406,6 +406,21 @@ describe("showContextMenuFallback", () => {
     await expect(selectionPromise).resolves.toBe("add-to-chat");
     expect(invoker.focused).toBe(false);
   });
+
+  it("restores focus after dismissing a menu whose hovered row took focus", async () => {
+    const invoker = (document as unknown as FakeDocument).createElement("button");
+    (document as unknown as FakeDocument).body.appendChild(invoker);
+    invoker.focus();
+    const selectionPromise = showContextMenuFallback([{ id: "copy", label: "Copy" }]);
+    const action = findButton("Copy");
+
+    action?.dispatchEvent(new MouseEvent("mouseenter", { bubbles: true }));
+    expect(action?.focused).toBe(true);
+    dismissContextMenu();
+
+    await expect(selectionPromise).resolves.toBeNull();
+    expect(invoker.focused).toBe(true);
+  });
 });
 
 describe("dismissContextMenu", () => {
