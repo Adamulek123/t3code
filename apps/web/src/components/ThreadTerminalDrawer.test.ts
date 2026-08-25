@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import {
   resolveTerminalSelectionActionPosition,
+  runTerminalMenuRequest,
   shouldHandleTerminalExit,
   shouldHandleTerminalSelectionMouseUp,
   shouldRestoreTerminalFocusAfterMenuAction,
@@ -9,6 +10,138 @@ import {
   terminalSelectionActionDelayForClickCount,
   terminalSelectionLineRange,
 } from "./ThreadTerminalDrawer";
+
+describe("runTerminalMenuRequest", () => {
+  it("drops an action when the menu owner aborts before it resolves", async () => {
+    const abortController = new AbortController();
+    let resolveMenu: (action: "copy") => void = () => {};
+    const open = vi.fn(
+      () =>
+        new Promise<"copy">((resolve) => {
+          resolveMenu = resolve;
+        }),
+    );
+    const perform = vi.fn(async () => {});
+    const reportOpenError = vi.fn();
+    const focusTerminal = vi.fn();
+    const request = runTerminalMenuRequest({
+      signal: abortController.signal,
+      isCurrentRequest: () => true,
+      open,
+      perform,
+      reportOpenError,
+      focusTerminal,
+    });
+
+    abortController.abort();
+    resolveMenu("copy");
+    await request;
+
+    expect(perform).not.toHaveBeenCalled();
+    expect(reportOpenError).not.toHaveBeenCalled();
+    expect(focusTerminal).not.toHaveBeenCalled();
+  });
+
+  it("does not restore focus when teardown aborts an action in flight", async () => {
+    const abortController = new AbortController();
+    let finishAction: () => void = () => {};
+    const perform = vi.fn(
+      (_action: "add-to-chat" | "copy" | "paste", isCurrent: () => boolean) =>
+        new Promise<void>((resolve) => {
+          expect(isCurrent()).toBe(true);
+          finishAction = () => {
+            expect(isCurrent()).toBe(false);
+            resolve();
+          };
+        }),
+    );
+    const focusTerminal = vi.fn();
+    const request = runTerminalMenuRequest({
+      signal: abortController.signal,
+      isCurrentRequest: () => true,
+      open: async () => "copy",
+      perform,
+      reportOpenError: vi.fn(),
+      focusTerminal,
+    });
+    await vi.waitFor(() => expect(perform).toHaveBeenCalledOnce());
+
+    abortController.abort();
+    finishAction();
+    await request;
+
+    expect(focusTerminal).not.toHaveBeenCalled();
+  });
+
+  it("suppresses a rejection from a superseded menu request", async () => {
+    const reportOpenError = vi.fn();
+
+    await runTerminalMenuRequest({
+      signal: new AbortController().signal,
+      isCurrentRequest: () => false,
+      open: () => Promise.reject(new Error("stale menu failure")),
+      perform: vi.fn(async () => {}),
+      reportOpenError,
+      focusTerminal: vi.fn(),
+    });
+
+    expect(reportOpenError).not.toHaveBeenCalled();
+  });
+
+  it("reports a failure from the current menu request", async () => {
+    const error = new Error("menu failed");
+    const reportOpenError = vi.fn();
+
+    await runTerminalMenuRequest({
+      signal: new AbortController().signal,
+      isCurrentRequest: () => true,
+      open: () => Promise.reject(error),
+      perform: vi.fn(async () => {}),
+      reportOpenError,
+      focusTerminal: vi.fn(),
+    });
+
+    expect(reportOpenError).toHaveBeenCalledWith(error);
+  });
+
+  it("does nothing when the menu is dismissed without an action", async () => {
+    const perform = vi.fn(async () => {});
+    const focusTerminal = vi.fn();
+
+    await runTerminalMenuRequest({
+      signal: new AbortController().signal,
+      isCurrentRequest: () => true,
+      open: async () => null,
+      perform,
+      reportOpenError: vi.fn(),
+      focusTerminal,
+    });
+
+    expect(perform).not.toHaveBeenCalled();
+    expect(focusTerminal).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["copy", true],
+    ["paste", true],
+    ["add-to-chat", false],
+  ] as const)("performs %s and restores focus only when required", async (action, shouldFocus) => {
+    const perform = vi.fn(async () => {});
+    const focusTerminal = vi.fn();
+
+    await runTerminalMenuRequest({
+      signal: new AbortController().signal,
+      isCurrentRequest: () => true,
+      open: async () => action,
+      perform,
+      reportOpenError: vi.fn(),
+      focusTerminal,
+    });
+
+    expect(perform).toHaveBeenCalledWith(action, expect.any(Function));
+    expect(focusTerminal).toHaveBeenCalledTimes(shouldFocus ? 1 : 0);
+  });
+});
 
 describe("shouldRestoreTerminalFocusAfterMenuAction", () => {
   it("restores focus only after terminal-local actions", () => {
