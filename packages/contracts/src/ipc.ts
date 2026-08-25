@@ -1265,7 +1265,7 @@ export interface LocalApi {
       options?: {
         readonly layout?: "default" | "compact";
         readonly presentation?: "native" | "styled";
-        readonly restoreFocus?: boolean;
+        readonly restoreFocus?: boolean | "on-dismiss";
         readonly signal?: AbortSignal;
       },
     ) => Promise<T | null>;

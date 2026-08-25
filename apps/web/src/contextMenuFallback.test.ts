@@ -407,19 +407,59 @@ describe("showContextMenuFallback", () => {
     expect(invoker.focused).toBe(false);
   });
 
-  it("restores focus after dismissing a menu whose hovered row took focus", async () => {
+  it("restores focus after an interactive dismissal when requested", async () => {
     const invoker = (document as unknown as FakeDocument).createElement("button");
     (document as unknown as FakeDocument).body.appendChild(invoker);
     invoker.focus();
-    const selectionPromise = showContextMenuFallback([{ id: "copy", label: "Copy" }]);
+    const selectionPromise = showContextMenuFallback([{ id: "copy", label: "Copy" }], undefined, {
+      restoreFocus: "on-dismiss",
+    });
     const action = findButton("Copy");
 
     action?.dispatchEvent(new MouseEvent("mouseenter", { bubbles: true }));
     expect(action?.focused).toBe(true);
-    dismissContextMenu();
+    (document as unknown as FakeDocument).dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape" }),
+    );
 
     await expect(selectionPromise).resolves.toBeNull();
     expect(invoker.focused).toBe(true);
+  });
+
+  it("does not restore focus after an action when only dismissals should restore it", async () => {
+    const invoker = (document as unknown as FakeDocument).createElement("button");
+    (document as unknown as FakeDocument).body.appendChild(invoker);
+    invoker.focus();
+    const selectionPromise = showContextMenuFallback(
+      [{ id: "add-to-chat", label: "Add to chat" }],
+      undefined,
+      { restoreFocus: "on-dismiss" },
+    );
+    const action = findButton("Add to chat");
+
+    action?.dispatchEvent(new MouseEvent("mouseenter", { bubbles: true }));
+    action?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
+    await expect(selectionPromise).resolves.toBe("add-to-chat");
+    expect(invoker.focused).toBe(false);
+  });
+
+  it("does not restore focus when an on-dismiss menu is aborted", async () => {
+    const invoker = (document as unknown as FakeDocument).createElement("button");
+    (document as unknown as FakeDocument).body.appendChild(invoker);
+    invoker.focus();
+    const abortController = new AbortController();
+    const selectionPromise = showContextMenuFallback([{ id: "copy", label: "Copy" }], undefined, {
+      restoreFocus: "on-dismiss",
+      signal: abortController.signal,
+    });
+    const action = findButton("Copy");
+
+    action?.dispatchEvent(new MouseEvent("mouseenter", { bubbles: true }));
+    abortController.abort();
+
+    await expect(selectionPromise).resolves.toBeNull();
+    expect(invoker.focused).toBe(false);
   });
 });
 

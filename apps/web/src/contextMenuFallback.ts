@@ -243,7 +243,7 @@ export function showContextMenuFallback<T extends string>(
   position?: { x: number; y: number },
   options?: {
     readonly layout?: "default" | "compact";
-    readonly restoreFocus?: boolean;
+    readonly restoreFocus?: boolean | "on-dismiss";
     readonly signal?: AbortSignal;
   },
 ): Promise<T | null> {
@@ -259,9 +259,9 @@ export function showContextMenuFallback<T extends string>(
     let isDisposed = false;
     let canDismissFromPointer = false;
 
-    const dismiss = () => cleanup(null);
+    const dismiss = () => cleanup(null, "programmatic");
 
-    const cleanup = (result: T | null) => {
+    const cleanup = (result: T | null, reason: "action" | "interaction" | "programmatic") => {
       if (isDisposed) {
         return;
       }
@@ -280,6 +280,7 @@ export function showContextMenuFallback<T extends string>(
       }
       if (
         options?.restoreFocus !== false &&
+        (options?.restoreFocus !== "on-dismiss" || reason === "interaction") &&
         shouldRestoreFocus &&
         previouslyFocusedElement?.isConnected
       ) {
@@ -288,20 +289,20 @@ export function showContextMenuFallback<T extends string>(
       resolve(result);
     };
 
-    const onAbort = () => cleanup(null);
+    const onAbort = () => cleanup(null, "programmatic");
 
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.isComposing) return;
       if (event.key === "Escape") {
         event.preventDefault();
-        cleanup(null);
+        cleanup(null, "interaction");
         return;
       }
       const acceleratorAction = contextMenuAcceleratorAction(items, event);
       if (acceleratorAction !== null) {
         event.preventDefault();
         event.stopPropagation();
-        cleanup(acceleratorAction);
+        cleanup(acceleratorAction, "action");
       }
     };
 
@@ -309,7 +310,7 @@ export function showContextMenuFallback<T extends string>(
       if (!canDismissFromPointer || isNodeWithinMenuStack(event.target, menuStack)) {
         return;
       }
-      cleanup(null);
+      cleanup(null, "interaction");
     };
 
     const onContextMenu = (event: MouseEvent) => {
@@ -317,14 +318,14 @@ export function showContextMenuFallback<T extends string>(
         return;
       }
       event.preventDefault();
-      cleanup(null);
+      cleanup(null, "interaction");
     };
 
     const onWheel = (event: WheelEvent) => {
       if (isNodeWithinMenuStack(event.target, menuStack)) {
         return;
       }
-      cleanup(null);
+      cleanup(null, "interaction");
     };
 
     const closeMenusFromLevel = (level: number) => {
@@ -514,7 +515,7 @@ export function showContextMenuFallback<T extends string>(
               closeMenusFromLevel(level + 1);
             });
             button.addEventListener("click", () => {
-              if (canDismissFromPointer) cleanup(item.id);
+              if (canDismissFromPointer) cleanup(item.id, "action");
             });
           }
         }

@@ -681,6 +681,7 @@ export function TerminalViewport({
                 {
                   layout: "compact",
                   presentation: "styled",
+                  restoreFocus: "on-dismiss",
                   signal: abortController.signal,
                 },
               )
@@ -733,6 +734,7 @@ export function TerminalViewport({
                 {
                   layout: "compact",
                   presentation: "styled",
+                  restoreFocus: "on-dismiss",
                   signal: abortController.signal,
                 },
               )
