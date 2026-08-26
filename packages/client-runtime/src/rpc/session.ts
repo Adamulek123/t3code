@@ -1,11 +1,20 @@
-import { type ServerConfig, WS_METHODS } from "@t3tools/contracts";
+import {
+  type EnvironmentAuthorizationError,
+  type KeybindingsConfigError,
+  type ServerConfig,
+  type ServerConfigStreamEvent,
+  type ServerSettingsError,
+  WS_METHODS,
+} from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schedule from "effect/Schedule";
 import type * as Scope from "effect/Scope";
+import * as Stream from "effect/Stream";
 import * as RpcClient from "effect/unstable/rpc/RpcClient";
+import type * as RpcClientError from "effect/unstable/rpc/RpcClientError";
 import * as RpcSerialization from "effect/unstable/rpc/RpcSerialization";
 import * as Socket from "effect/unstable/socket/Socket";
 
@@ -25,6 +34,10 @@ const SOCKET_OPEN_TIMEOUT = "15 seconds";
 export interface RpcSession {
   readonly client: WsRpcProtocolClient;
   readonly initialConfig: Effect.Effect<ServerConfig, ConnectionAttemptError>;
+  readonly serverConfigEvents?: Stream.Stream<
+    ServerConfigStreamEvent,
+    ServerConfigSubscriptionError
+  >;
   readonly ready: Effect.Effect<void, ConnectionAttemptError>;
   readonly probe: Effect.Effect<void, ConnectionAttemptError>;
   readonly closed: Effect.Effect<never, ConnectionTransientError>;
@@ -43,8 +56,15 @@ type InitialConfigError = Effect.Error<
   ReturnType<WsRpcProtocolClient[typeof WS_METHODS.serverGetConfig]>
 >;
 type ProbeError = Effect.Error<ReturnType<WsRpcProtocolClient[typeof WS_METHODS.serverProbe]>>;
+type ServerConfigSubscriptionError =
+  | EnvironmentAuthorizationError
+  | KeybindingsConfigError
+  | ServerSettingsError
+  | RpcClientError.RpcClientError;
 
-function mapSessionRpcError(error: InitialConfigError | ProbeError): ConnectionAttemptError {
+function mapSessionRpcError(
+  error: InitialConfigError | ProbeError | ServerConfigSubscriptionError,
+): ConnectionAttemptError {
   switch (error._tag) {
     case "EnvironmentAuthorizationError":
       return new ConnectionBlockedError({
@@ -114,11 +134,29 @@ export const make = Effect.gen(function* () {
       Effect.withSpan("environment.websocket.connect"),
     );
     const client = yield* makeWsRpcProtocolClient.pipe(Effect.provide(protocolContext));
-    const initialConfig = yield* Effect.cached(
-      client[WS_METHODS.serverGetConfig]({}).pipe(
-        Effect.mapError(mapSessionRpcError),
-        Effect.withSpan("environment.initialSync"),
+    const initialConfigDeferred = yield* Deferred.make<ServerConfig, ConnectionAttemptError>();
+    const serverConfigEvents = client[WS_METHODS.subscribeServerConfig]({}).pipe(
+      Stream.tap((event) =>
+        event.type === "snapshot"
+          ? Deferred.succeed(initialConfigDeferred, event.config).pipe(Effect.asVoid)
+          : Effect.void,
       ),
+      Stream.tapError((error) =>
+        Deferred.fail(initialConfigDeferred, mapSessionRpcError(error)).pipe(Effect.asVoid),
+      ),
+      Stream.ensuring(
+        Deferred.fail(
+          initialConfigDeferred,
+          new ConnectionTransientErrorClass({
+            reason: "remote-unavailable",
+            detail: `${connection.label} config subscription ended before its initial snapshot.`,
+          }),
+        ).pipe(Effect.asVoid),
+      ),
+    );
+    const serverConfigQueue = yield* Stream.toQueue(serverConfigEvents, { capacity: 64 });
+    const initialConfig = Deferred.await(initialConfigDeferred).pipe(
+      Effect.withSpan("environment.initialSync"),
     );
     const probe = initialConfig.pipe(
       Effect.flatMap((config) =>
@@ -134,6 +172,7 @@ export const make = Effect.gen(function* () {
     return {
       client,
       initialConfig,
+      serverConfigEvents: Stream.fromQueue(serverConfigQueue),
       ready: Deferred.await(connected).pipe(
         Effect.andThen(initialConfig),
         Effect.asVoid,

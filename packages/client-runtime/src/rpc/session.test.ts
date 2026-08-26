@@ -139,7 +139,8 @@ const RpcRequest = Schema.TaggedStruct("Request", {
   tag: Schema.String,
 });
 const decodeJson = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
-const decodeRpcRequest = Schema.decodeUnknownSync(RpcRequest);
+const isRpcRequest = Schema.is(RpcRequest);
+const isPing = Schema.is(Schema.Struct({ _tag: Schema.Literal("Ping") }));
 const encodeJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 const encodeServerConfig = Schema.encodeSync(ServerConfig);
 const ENCODED_SERVER_CONFIG = encodeServerConfig(SERVER_CONFIG);
@@ -183,9 +184,9 @@ const awaitRequest = Effect.fn("TestRpcSessionFactory.awaitRequest")(function* (
   index = 0,
 ) {
   for (let attempt = 0; attempt < 100; attempt += 1) {
-    const request = socket.sent[index];
+    const request = socket.sent.map((message) => decodeJson(message)).filter(isRpcRequest)[index];
     if (request) {
-      return decodeRpcRequest(decodeJson(request));
+      return request;
     }
     yield* Effect.yieldNow;
   }
@@ -199,17 +200,14 @@ const completeInitialConfig = Effect.fn("TestRpcSessionFactory.completeInitialCo
   const request = yield* awaitRequest(socket);
   expect(request).toMatchObject({
     _tag: "Request",
-    tag: WS_METHODS.serverGetConfig,
+    tag: WS_METHODS.subscribeServerConfig,
     payload: {},
   });
   socket.serverMessage(
     encodeJson({
-      _tag: "Exit",
+      _tag: "Chunk",
       requestId: request.id,
-      exit: {
-        _tag: "Success",
-        value: config,
-      },
+      values: [{ version: 1, type: "snapshot", config }],
     }),
   );
 });
@@ -229,7 +227,9 @@ describe("RpcSessionFactory", () => {
 
       const config = yield* session.initialConfig;
       expect(config).toEqual(SERVER_CONFIG);
-      expect(socket.sent).toHaveLength(1);
+      expect(socket.sent.map((message) => decodeJson(message)).filter(isRpcRequest)).toHaveLength(
+        1,
+      );
 
       const probeFiber = yield* Effect.forkChild(session.probe);
       const probeRequest = yield* awaitRequest(socket, 1);
@@ -250,10 +250,12 @@ describe("RpcSessionFactory", () => {
       );
       yield* Fiber.join(probeFiber);
 
-      expect(socket.sent.map((request) => decodeRpcRequest(decodeJson(request)).tag)).toEqual([
-        WS_METHODS.serverGetConfig,
-        WS_METHODS.serverProbe,
-      ]);
+      expect(
+        socket.sent
+          .map((message) => decodeJson(message))
+          .filter(isRpcRequest)
+          .map((request) => request.tag),
+      ).toEqual([WS_METHODS.subscribeServerConfig, WS_METHODS.serverProbe]);
 
       socket.close(1012, "service restart");
       const error = yield* Effect.flip(session.closed);
@@ -301,7 +303,7 @@ describe("RpcSessionFactory", () => {
 
       yield* TestClock.adjust("15 seconds");
       expect(closedFiber.pollUnsafe()).toBeUndefined();
-      expect(socket.sent.slice(1).map((request) => decodeJson(request))).toEqual([
+      expect(socket.sent.map((message) => decodeJson(message)).filter(isPing)).toEqual([
         { _tag: "Ping" },
         { _tag: "Ping" },
         { _tag: "Ping" },
@@ -379,10 +381,12 @@ describe("RpcSessionFactory", () => {
         );
         yield* Fiber.join(probeFiber);
 
-        expect(socket.sent.map((request) => decodeRpcRequest(decodeJson(request)).tag)).toEqual([
-          WS_METHODS.serverGetConfig,
-          WS_METHODS.serverGetConfig,
-        ]);
+        expect(
+          socket.sent
+            .map((message) => decodeJson(message))
+            .filter(isRpcRequest)
+            .map((request) => request.tag),
+        ).toEqual([WS_METHODS.subscribeServerConfig, WS_METHODS.serverGetConfig]);
       }),
     ),
   );
