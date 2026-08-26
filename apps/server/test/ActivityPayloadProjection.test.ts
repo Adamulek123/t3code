@@ -14,6 +14,7 @@ import { buildThreadFeed, type ThreadFeedActivity } from "../../mobile/src/lib/t
 import { deriveLatestContextWindowSnapshot } from "../../web/src/lib/contextWindow.ts";
 import { deriveWorkLogEntries } from "../../web/src/session-logic.ts";
 import {
+  coalesceLiveToolUpdatedEvents,
   projectActivityEvent,
   projectActivityPayload,
   projectThreadDetailSnapshot,
@@ -330,6 +331,32 @@ describe("superseded tool.updated snapshot dedup", () => {
     }).thread.activities.map((activity) => activity.id);
   }
 
+  function makeActivityEvent(
+    sequence: number,
+    activity: OrchestrationThreadActivity,
+  ): Extract<OrchestrationEvent, { type: "thread.activity-appended" }> {
+    const threadId = ThreadId.make("thread-live-coalescing");
+    return {
+      sequence,
+      eventId: EventId.make(`event-${sequence}`),
+      aggregateKind: "thread",
+      aggregateId: threadId,
+      occurredAt: "2026-07-27T00:00:01.000Z",
+      commandId: null,
+      causationEventId: null,
+      correlationId: null,
+      metadata: {},
+      type: "thread.activity-appended",
+      payload: { threadId, activity },
+    };
+  }
+
+  function coalescedIds(activities: ReadonlyArray<OrchestrationThreadActivity>) {
+    return coalesceLiveToolUpdatedEvents(
+      activities.map((activity, index) => makeActivityEvent(index + 1, activity)),
+    ).map((event) => event.eventId);
+  }
+
   it("drops updates a later completion supersedes in the same turn", () => {
     const update1 = makeToolLifecycleActivity("upd-1", "tool.updated");
     const update2 = makeToolLifecycleActivity("upd-2", "tool.updated");
@@ -419,6 +446,48 @@ describe("superseded tool.updated snapshot dedup", () => {
     };
 
     expect(projectedIds([anonymous, completed])).toEqual([anonymous.id, completed.id]);
+  });
+
+  it("coalesces a live batch to the latest update per tool call", () => {
+    const firstA = makeToolLifecycleActivity("upd-a-1", "tool.updated", {
+      toolCallId: "call-a",
+    });
+    const updateB = makeToolLifecycleActivity("upd-b", "tool.updated", {
+      toolCallId: "call-b",
+    });
+    const latestA = makeToolLifecycleActivity("upd-a-2", "tool.updated", {
+      toolCallId: "call-a",
+    });
+
+    expect(coalescedIds([firstA, updateB, latestA])).toEqual([
+      EventId.make("event-2"),
+      EventId.make("event-3"),
+    ]);
+  });
+
+  it("lets a live completion supersede earlier updates without hiding a later call", () => {
+    const update = makeToolLifecycleActivity("upd-first", "tool.updated");
+    const completed = makeToolLifecycleActivity("done-first", "tool.completed");
+    const nextCall = makeToolLifecycleActivity("upd-next", "tool.updated");
+
+    expect(coalescedIds([update, completed, nextCall])).toEqual([
+      EventId.make("event-2"),
+      EventId.make("event-3"),
+    ]);
+  });
+
+  it("does not coalesce live updates across turns", () => {
+    const oldTurn = makeToolLifecycleActivity("upd-old", "tool.updated", {
+      turn: "turn-old",
+    });
+    const newTurn = makeToolLifecycleActivity("upd-new", "tool.updated", {
+      turn: "turn-new",
+    });
+
+    expect(coalescedIds([oldTurn, newTurn])).toEqual([
+      EventId.make("event-1"),
+      EventId.make("event-2"),
+    ]);
   });
 
   it("leaves the collapsed work log identical to the full history", () => {

@@ -19,6 +19,7 @@ import {
   ExternalLauncherCommandNotFoundError,
   OrchestrationThreadDetailSnapshot,
   type OrchestrationThreadStreamItem,
+  type OrchestrationThreadActivity,
   type OrchestrationThreadShell,
   TerminalNotRunningError,
   type OrchestrationCommand,
@@ -30,6 +31,7 @@ import {
   ProviderInstanceId,
   ResolvedKeybindingRule,
   ThreadId,
+  TurnId,
   WS_METHODS,
   WsRpcGroup,
   EditorId,
@@ -6832,6 +6834,74 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(items[0]?.kind, "snapshot");
       assert.equal(items[1]?.kind, "event");
       assert.equal(items[1]?.kind === "event" ? items[1].event.sequence : null, 2);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
+  );
+
+  it.effect("coalesces buffered live tool updates to the latest state", () =>
+    Effect.gen(function* () {
+      const thread = makeDefaultOrchestrationReadModel().threads[0]!;
+      const liveEvents = yield* PubSub.unbounded<OrchestrationEvent>();
+      const makeToolUpdate = (sequence: number): OrchestrationEvent => {
+        const activity: OrchestrationThreadActivity = {
+          id: EventId.make(`activity-${sequence}`),
+          tone: "tool",
+          kind: "tool.updated",
+          summary: "Editing app.ts",
+          payload: {
+            itemType: "file_change",
+            title: "Editing app.ts",
+            data: { toolCallId: "call-edit" },
+          },
+          turnId: TurnId.make("turn-edit"),
+          createdAt: "2026-01-01T00:00:01.000Z",
+        };
+        return {
+          sequence,
+          eventId: EventId.make(`event-tool-${sequence}`),
+          aggregateKind: "thread",
+          aggregateId: defaultThreadId,
+          occurredAt: "2026-01-01T00:00:01.000Z",
+          commandId: null,
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+          type: "thread.activity-appended",
+          payload: { threadId: defaultThreadId, activity },
+        };
+      };
+
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            streamDomainEvents: Stream.fromPubSub(liveEvents),
+          },
+          projectionSnapshotQuery: {
+            getThreadDetailSnapshot: () =>
+              Effect.gen(function* () {
+                yield* Effect.sleep("25 millis");
+                yield* PubSub.publishAll(liveEvents, [
+                  makeToolUpdate(2),
+                  makeToolUpdate(3),
+                  makeToolUpdate(4),
+                ]);
+                return Option.some({ snapshotSequence: 1, thread });
+              }),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+            threadId: defaultThreadId,
+          }).pipe(Stream.take(2), Stream.runCollect),
+        ),
+      ).pipe(Effect.timeout("2 seconds"));
+
+      assert.equal(items[0]?.kind, "snapshot");
+      assert.equal(items[1]?.kind, "event");
+      assert.equal(items[1]?.kind === "event" ? items[1].event.sequence : null, 4);
     }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
   );
 

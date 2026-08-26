@@ -77,6 +77,7 @@ import * as EnvironmentTheme from "./environmentTheme.ts";
 import * as Keybindings from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import {
+  coalesceLiveToolUpdatedEvents,
   projectActivityEvent,
   projectThreadDetailSnapshot,
 } from "./orchestration/ActivityPayloadProjection.ts";
@@ -888,6 +889,55 @@ const makeWsRpcLayer = (
           Stream.flatMap((items) => Stream.fromIterable(items)),
         );
 
+      const THREAD_TOOL_UPDATE_COALESCE_WINDOW = Duration.millis(50);
+      const THREAD_TOOL_UPDATE_COALESCE_MAX_CHUNK = 512;
+      type ThreadLiveInput =
+        | { readonly kind: "event"; readonly event: OrchestrationEvent }
+        | { readonly kind: "synchronized" };
+
+      // Queue markers with raw events so a marker cannot overtake an update
+      // waiting in the coalescing window. Only event segments between markers
+      // are coalesced, preserving synchronization and sequence order.
+      const coalesceThreadLiveInputs = (
+        inputs: ReadonlyArray<ThreadLiveInput>,
+      ): ReadonlyArray<OrchestrationThreadStreamItem> => {
+        const output: Array<OrchestrationThreadStreamItem> = [];
+        let pendingEvents: Array<OrchestrationEvent> = [];
+
+        const flushEvents = () => {
+          output.push(
+            ...coalesceLiveToolUpdatedEvents(pendingEvents).map((event) => ({
+              kind: "event" as const,
+              event: projectActivityEvent(event),
+            })),
+          );
+          pendingEvents = [];
+        };
+
+        for (const input of inputs) {
+          if (input.kind === "event") {
+            pendingEvents.push(input.event);
+            continue;
+          }
+          flushEvents();
+          output.push({ kind: "synchronized" });
+        }
+        flushEvents();
+        return output;
+      };
+
+      const coalesceThreadLiveStream = <E, R>(
+        stream: Stream.Stream<ThreadLiveInput, E, R>,
+      ): Stream.Stream<OrchestrationThreadStreamItem, E, R> =>
+        stream.pipe(
+          Stream.groupedWithin(
+            THREAD_TOOL_UPDATE_COALESCE_MAX_CHUNK,
+            THREAD_TOOL_UPDATE_COALESCE_WINDOW,
+          ),
+          Stream.map(coalesceThreadLiveInputs),
+          Stream.flatMap((items) => Stream.fromIterable(items)),
+        );
+
       const dispatchBootstrapTurnStart = (
         command: Extract<OrchestrationCommand, { type: "thread.turn.start" }>,
       ): Effect.Effect<{ readonly sequence: number }, OrchestrationDispatchCommandError> =>
@@ -1501,17 +1551,17 @@ const makeWsRpcLayer = (
                 Stream.filter(isThisThreadDetailEvent),
                 Stream.map((event) => ({
                   kind: "event" as const,
-                  event: projectActivityEvent(event),
+                  event,
                 })),
               );
 
               // Attach live delivery before reading either replay or snapshot state.
               // Otherwise an event published while the snapshot is loading is lost.
-              const liveBuffer = yield* Queue.unbounded<OrchestrationThreadStreamItem>();
+              const liveBuffer = yield* Queue.unbounded<ThreadLiveInput>();
               yield* Effect.forkScoped(
                 liveStream.pipe(Stream.runForEach((item) => Queue.offer(liveBuffer, item))),
               );
-              const bufferedLiveStream = Stream.fromQueue(liveBuffer);
+              const bufferedLiveStream = coalesceThreadLiveStream(Stream.fromQueue(liveBuffer));
 
               // When the client already loaded the snapshot over HTTP it passes
               // that snapshot's sequence, and we resume the live subscription by
@@ -1560,8 +1610,11 @@ const makeWsRpcLayer = (
                     input.requestCompletionMarker === true
                       ? Stream.concat(
                           Stream.fromEffect(
-                            Queue.offer(liveBuffer, { kind: "synchronized" as const }),
-                          ).pipe(Stream.drain),
+                            Queue.offer(liveBuffer, { kind: "synchronized" as const }).pipe(
+                              Effect.andThen(Queue.takeAll(liveBuffer)),
+                              Effect.map(coalesceThreadLiveInputs),
+                            ),
+                          ).pipe(Stream.flatMap((items) => Stream.fromIterable(items))),
                           bufferedLiveStream,
                         )
                       : bufferedLiveStream;
@@ -1602,8 +1655,11 @@ const makeWsRpcLayer = (
                 input.requestCompletionMarker === true
                   ? Stream.concat(
                       Stream.fromEffect(
-                        Queue.offer(liveBuffer, { kind: "synchronized" as const }),
-                      ).pipe(Stream.drain),
+                        Queue.offer(liveBuffer, { kind: "synchronized" as const }).pipe(
+                          Effect.andThen(Queue.takeAll(liveBuffer)),
+                          Effect.map(coalesceThreadLiveInputs),
+                        ),
+                      ).pipe(Stream.flatMap((items) => Stream.fromIterable(items))),
                       bufferedLiveStream,
                     )
                   : bufferedLiveStream;

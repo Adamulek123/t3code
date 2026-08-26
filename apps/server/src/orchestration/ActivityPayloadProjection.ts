@@ -488,8 +488,8 @@ function toolLifecycleIdentity(activity: OrchestrationThreadActivity): string | 
  * update within the turn — a later update belongs to a subsequent call that
  * reuses the same identity and is still in flight. Rows without a lifecycle
  * identity pass through, matching the clients, which never collapse them.
- * Live `thread.activity-appended` events are untouched: updates still stream
- * in real time and the completion supersedes them on the client as before.
+ * Live `thread.activity-appended` events use the same identity in
+ * `coalesceLiveToolUpdatedEvents`, but only within a short bounded window.
  *
  * Deliberate divergence from client collapse: clients fold only *adjacent*
  * lifecycle rows, so a superseded update separated from its completion by an
@@ -540,6 +540,55 @@ function dropSupersededToolUpdatedActivities(
     const indices = completionIndicesByKey.get(`${activity.turnId ?? ""} ${identity}`);
     return !indices?.some((completionIndex) => completionIndex > index);
   });
+}
+
+/**
+ * Retain only the latest in-flight update for each tool call in a live batch.
+ * A later completion also supersedes preceding updates for the same call. All
+ * survivors stay in sequence order so client-side sequence dedup remains safe.
+ */
+export function coalesceLiveToolUpdatedEvents(
+  events: ReadonlyArray<OrchestrationEvent>,
+): ReadonlyArray<OrchestrationEvent> {
+  const seenUpdates = new Set<string>();
+  const seenCompletions = new Set<string>();
+  const survivors: Array<OrchestrationEvent> = [];
+
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]!;
+    if (event.type !== "thread.activity-appended") {
+      survivors.push(event);
+      continue;
+    }
+
+    const activity = event.payload.activity;
+    if (activity.kind !== "tool.updated" && activity.kind !== "tool.completed") {
+      survivors.push(event);
+      continue;
+    }
+
+    const identity = toolLifecycleIdentity(activity);
+    if (!identity) {
+      survivors.push(event);
+      continue;
+    }
+
+    const key = `${activity.turnId ?? ""}\u0000${identity}`;
+    if (activity.kind === "tool.completed") {
+      seenCompletions.add(key);
+      survivors.push(event);
+      continue;
+    }
+
+    if (seenUpdates.has(key) || seenCompletions.has(key)) {
+      continue;
+    }
+    seenUpdates.add(key);
+    survivors.push(event);
+  }
+
+  survivors.reverse();
+  return survivors;
 }
 
 export function projectThreadDetailSnapshot(
