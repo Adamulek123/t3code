@@ -838,7 +838,7 @@ function PullRequestsRouteView() {
     const viewers = viewerQuery.viewers;
     if (environmentKey.length === 0) return;
     if (!viewerGate.canHydrateSnapshot) {
-      setLoaded(null);
+      if (viewerGate.shouldClearRetainedRows) setLoaded(null);
       return;
     }
     setLoaded((current) => {
@@ -859,7 +859,7 @@ function PullRequestsRouteView() {
         ...(snapshot.partitions === undefined ? {} : { partitions: snapshot.partitions }),
       };
     });
-  }, [environmentKey, viewerGate.canHydrateSnapshot, viewerQuery.viewers]);
+  }, [environmentKey, viewerGate, viewerQuery.viewers]);
   useEffect(() => {
     // Only once this query has settled. While a search is being swapped in or out the text has
     // already changed and the data has not, so recording them together would file the previous

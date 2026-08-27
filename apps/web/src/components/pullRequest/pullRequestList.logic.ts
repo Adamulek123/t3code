@@ -544,8 +544,13 @@ export function resolvePullRequestViewerGate<Id extends string>(
 ): {
   readonly listEnvironmentIds: ReadonlyArray<Id>;
   readonly canHydrateSnapshot: boolean;
+  readonly shouldClearRetainedRows: boolean;
 } {
   const verified = new Set(verifiedEnvironmentIds);
+  const hasUnverifiedCapableEnvironment = environmentIds.some(
+    (environmentId) =>
+      viewerCapableEnvironmentIds.has(environmentId) && !verified.has(environmentId),
+  );
   return {
     listEnvironmentIds: environmentIds.filter(
       (environmentId) =>
@@ -559,6 +564,9 @@ export function resolvePullRequestViewerGate<Id extends string>(
         (environmentId) =>
           viewerCapableEnvironmentIds.has(environmentId) && verified.has(environmentId),
       ),
+    // A refresh in flight still carries the identity this session already verified. Keep those
+    // rows visible until the read settles; only a settled failure proves they cannot be retained.
+    shouldClearRetainedRows: !verificationPending && hasUnverifiedCapableEnvironment,
   };
 }
 

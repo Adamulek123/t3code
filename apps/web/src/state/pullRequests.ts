@@ -34,6 +34,8 @@ export interface EnvironmentQueryTarget<Input> {
 interface MergedEnvironmentQueryView<A> {
   /** One entry per environment that has answered, in the order the targets were given. */
   readonly values: ReadonlyArray<readonly [EnvironmentId, A]>;
+  /** Current successes only. A failed refresh may still leave its prior answer in `values`. */
+  readonly successfulValues: ReadonlyArray<readonly [EnvironmentId, A]>;
   /** The first environment that failed. Others may still have answered — this is not fatal. */
   readonly error: string | null;
   readonly isPending: boolean;
@@ -57,6 +59,7 @@ function createMergedEnvironmentQuery<Input, A>(
     Atom.make((get): MergedEnvironmentQueryView<A> => {
       const targets = JSON.parse(key) as ReadonlyArray<EnvironmentQueryTarget<Input>>;
       const values: Array<readonly [EnvironmentId, A]> = [];
+      const successfulValues: Array<readonly [EnvironmentId, A]> = [];
       let error: string | null = null;
       let isPending = false;
       for (const target of targets) {
@@ -67,12 +70,16 @@ function createMergedEnvironmentQuery<Input, A>(
         }
         const value = Option.getOrNull(AsyncResult.value(result));
         if (value !== null) values.push([target.environmentId, value]);
+        if (result._tag === "Success") {
+          successfulValues.push([target.environmentId, result.value]);
+        }
       }
-      return { values, error, isPending };
+      return { values, successfulValues, error, isPending };
     }).pipe(Atom.withLabel(`${label}:${key}`)),
   );
   const empty = Atom.make<MergedEnvironmentQueryView<A>>({
     values: [],
+    successfulValues: [],
     error: null,
     isPending: false,
   }).pipe(Atom.withLabel(`${label}:empty`));
@@ -123,20 +130,20 @@ export function usePullRequestViewers(
   const query = usePullRequestViewersQuery(targets);
   const viewers = useMemo(
     () =>
-      query.values.length === 0
+      query.successfulValues.length === 0
         ? null
         : Object.fromEntries(
-            query.values.flatMap(([environmentId, result]) =>
+            query.successfulValues.flatMap(([environmentId, result]) =>
               Object.entries(result.viewers).map(
                 ([host, viewer]) => [`${environmentId} ${host}`, viewer] as const,
               ),
             ),
           ),
-    [query.values],
+    [query.successfulValues],
   );
   const environmentIds = useMemo(
-    () => query.values.map(([environmentId]) => environmentId),
-    [query.values],
+    () => query.successfulValues.map(([environmentId]) => environmentId),
+    [query.successfulValues],
   );
   return {
     viewers,

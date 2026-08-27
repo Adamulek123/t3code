@@ -702,6 +702,7 @@ describe("viewer verification gating", () => {
 
     expect(gate.listEnvironmentIds).toEqual([]);
     expect(gate.canHydrateSnapshot).toBe(false);
+    expect(gate.shouldClearRetainedRows).toBe(false);
   });
 
   it("keeps live lists working on old servers without trusting their snapshots", () => {
@@ -709,6 +710,15 @@ describe("viewer verification gating", () => {
 
     expect(gate.listEnvironmentIds).toEqual([ENV_1]);
     expect(gate.canHydrateSnapshot).toBe(false);
+    expect(gate.shouldClearRetainedRows).toBe(false);
+  });
+
+  it("clears retained rows once viewer verification has actually failed", () => {
+    const gate = resolvePullRequestViewerGate([ENV_1], new Set([ENV_1]), [], false);
+
+    expect(gate.listEnvironmentIds).toEqual([]);
+    expect(gate.canHydrateSnapshot).toBe(false);
+    expect(gate.shouldClearRetainedRows).toBe(true);
   });
 });
 
