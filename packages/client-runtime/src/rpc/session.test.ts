@@ -10,6 +10,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import * as Socket from "effect/unstable/socket/Socket";
 
@@ -287,6 +288,65 @@ describe("RpcSessionFactory", () => {
 
       expect(sockets[0]?.readyState).toBe(TestWebSocket.CLOSED);
     }),
+  );
+
+  it.effect("replays current config and broadcasts updates to every subscriber", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { factory, sockets } = yield* makeFactory();
+        const session = yield* factory.connect(PREPARED);
+        const readyFiber = yield* Effect.forkChild(session.ready);
+        const socket = yield* awaitSocket(sockets);
+        socket.open();
+        yield* completeInitialConfig(socket);
+        yield* Fiber.join(readyFiber);
+
+        const collectTwo = session.serverConfigEvents!.pipe(Stream.take(2), Stream.runCollect);
+        const firstSubscriber = yield* Effect.forkChild(collectTwo);
+        const secondSubscriber = yield* Effect.forkChild(collectTwo);
+        yield* Effect.yieldNow;
+
+        const shortcut = {
+          key: "k",
+          metaKey: false,
+          ctrlKey: false,
+          shiftKey: false,
+          altKey: false,
+          modKey: true,
+        };
+        const request = yield* awaitRequest(socket);
+        socket.serverMessage(
+          encodeJson({
+            _tag: "Chunk",
+            requestId: request.id,
+            values: [
+              {
+                version: 1,
+                type: "keybindingsUpdated",
+                payload: {
+                  keybindings: [{ command: "terminal.toggle", shortcut }],
+                  issues: [],
+                },
+              },
+            ],
+          }),
+        );
+
+        const firstEvents = Array.from(yield* Fiber.join(firstSubscriber));
+        const secondEvents = Array.from(yield* Fiber.join(secondSubscriber));
+        expect(firstEvents.map((event) => event.type)).toEqual(["snapshot", "keybindingsUpdated"]);
+        expect(secondEvents).toEqual(firstEvents);
+
+        const replay = yield* session.serverConfigEvents!.pipe(Stream.runHead);
+        expect(replay).toMatchObject({
+          _tag: "Some",
+          value: {
+            type: "snapshot",
+            config: { keybindings: [{ command: "terminal.toggle", shortcut }] },
+          },
+        });
+      }),
+    ),
   );
 
   it.effect("tolerates two missed pong windows before closing the session", () =>

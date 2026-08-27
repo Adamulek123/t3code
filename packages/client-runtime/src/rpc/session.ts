@@ -10,6 +10,8 @@ import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as PubSub from "effect/PubSub";
+import * as Ref from "effect/Ref";
 import * as Schedule from "effect/Schedule";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
@@ -61,6 +63,36 @@ type ServerConfigSubscriptionError =
   | KeybindingsConfigError
   | ServerSettingsError
   | RpcClientError.RpcClientError;
+
+interface ServerConfigReplayState {
+  readonly config: ServerConfig;
+  readonly revision: number;
+}
+
+interface BufferedServerConfigEvent {
+  readonly event: ServerConfigStreamEvent;
+  readonly revision: number;
+}
+
+function applyServerConfigEvent(
+  config: ServerConfig,
+  event: ServerConfigStreamEvent,
+): ServerConfig {
+  switch (event.type) {
+    case "snapshot":
+      return event.config;
+    case "keybindingsUpdated":
+      return {
+        ...config,
+        keybindings: event.payload.keybindings,
+        issues: event.payload.issues,
+      };
+    case "providerStatuses":
+      return { ...config, providers: event.payload.providers };
+    case "settingsUpdated":
+      return { ...config, settings: event.payload.settings };
+  }
+}
 
 function mapSessionRpcError(
   error: InitialConfigError | ProbeError | ServerConfigSubscriptionError,
@@ -135,16 +167,39 @@ export const make = Effect.gen(function* () {
     );
     const client = yield* makeWsRpcProtocolClient.pipe(Effect.provide(protocolContext));
     const initialConfigDeferred = yield* Deferred.make<ServerConfig, ConnectionAttemptError>();
-    const serverConfigEvents = client[WS_METHODS.subscribeServerConfig]({}).pipe(
-      Stream.tap((event) =>
-        event.type === "snapshot"
-          ? Deferred.succeed(initialConfigDeferred, event.config).pipe(Effect.asVoid)
-          : Effect.void,
+    const serverConfigState = yield* Ref.make<ServerConfigReplayState | undefined>(undefined);
+    const serverConfigUpdates = yield* PubSub.bounded<BufferedServerConfigEvent>(64);
+    const serverConfigSource = client[WS_METHODS.subscribeServerConfig]({}).pipe(
+      Stream.runForEach((event) =>
+        Effect.gen(function* () {
+          if (event.type === "snapshot") {
+            yield* Deferred.succeed(initialConfigDeferred, event.config);
+          }
+          const buffered = yield* Ref.modify(serverConfigState, (current) => {
+            let config: ServerConfig;
+            if (current === undefined) {
+              if (event.type !== "snapshot") {
+                return [undefined, current] as const;
+              }
+              config = event.config;
+            } else {
+              config = applyServerConfigEvent(current.config, event);
+            }
+            const next = {
+              config,
+              revision: (current?.revision ?? 0) + 1,
+            };
+            return [{ event, revision: next.revision }, next] as const;
+          });
+          if (buffered !== undefined) {
+            yield* PubSub.publish(serverConfigUpdates, buffered);
+          }
+        }),
       ),
-      Stream.tapError((error) =>
+      Effect.tapError((error) =>
         Deferred.fail(initialConfigDeferred, mapSessionRpcError(error)).pipe(Effect.asVoid),
       ),
-      Stream.ensuring(
+      Effect.ensuring(
         Deferred.fail(
           initialConfigDeferred,
           new ConnectionTransientErrorClass({
@@ -154,9 +209,30 @@ export const make = Effect.gen(function* () {
         ).pipe(Effect.asVoid),
       ),
     );
-    const serverConfigQueue = yield* Stream.toQueue(serverConfigEvents, { capacity: 64 });
+    yield* serverConfigSource.pipe(Effect.forkScoped);
     const initialConfig = Deferred.await(initialConfigDeferred).pipe(
       Effect.withSpan("environment.initialSync"),
+    );
+    const serverConfigEvents = Stream.unwrap(
+      Effect.gen(function* () {
+        const subscription = yield* PubSub.subscribe(serverConfigUpdates);
+        yield* initialConfig.pipe(Effect.option);
+        const snapshot = yield* Ref.get(serverConfigState);
+        if (snapshot === undefined) {
+          return Stream.empty;
+        }
+        return Stream.concat(
+          Stream.succeed({
+            version: 1 as const,
+            type: "snapshot" as const,
+            config: snapshot.config,
+          }),
+          Stream.fromSubscription(subscription).pipe(
+            Stream.filter((buffered) => buffered.revision > snapshot.revision),
+            Stream.map((buffered) => buffered.event),
+          ),
+        );
+      }),
     );
     const probe = initialConfig.pipe(
       Effect.flatMap((config) =>
@@ -172,7 +248,7 @@ export const make = Effect.gen(function* () {
     return {
       client,
       initialConfig,
-      serverConfigEvents: Stream.fromQueue(serverConfigQueue),
+      serverConfigEvents,
       ready: Deferred.await(connected).pipe(
         Effect.andThen(initialConfig),
         Effect.asVoid,
