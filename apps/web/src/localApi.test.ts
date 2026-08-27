@@ -6,13 +6,17 @@ import {
 } from "@t3tools/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
-const showContextMenuFallbackMock =
-  vi.fn<
-    <T extends string>(
-      items: readonly ContextMenuItem<T>[],
-      position?: { x: number; y: number },
-    ) => Promise<T | null>
-  >();
+const showContextMenuFallbackMock = vi.fn<
+  <T extends string>(
+    items: readonly ContextMenuItem<T>[],
+    position?: { x: number; y: number },
+    options?: {
+      readonly layout?: "default" | "compact";
+      readonly restoreFocus?: boolean | "on-dismiss";
+      readonly signal?: AbortSignal;
+    },
+  ) => Promise<T | null>
+>();
 const dismissContextMenuMock = vi.fn<() => void>();
 
 const requestConfirmDialogMock =
@@ -84,10 +88,44 @@ describe("LocalApi", () => {
     const items = [{ id: "rename", label: "Rename" }] as const;
 
     await expect(createLocalApi().contextMenu.show(items, { x: 4, y: 5 })).resolves.toBe("rename");
-    expect(showContextMenuFallbackMock).toHaveBeenCalledWith(items, { x: 4, y: 5 });
+    expect(showContextMenuFallbackMock).toHaveBeenCalledWith(items, { x: 4, y: 5 }, undefined);
   });
 
   it("dismisses an open browser context menu without a desktop bridge", async () => {
+    const { createLocalApi } = await import("./localApi");
+
+    await createLocalApi().contextMenu.close();
+
+    expect(dismissContextMenuMock).toHaveBeenCalledOnce();
+  });
+
+  it("uses the styled fallback on desktop when the caller owns its lifecycle", async () => {
+    const showContextMenu = vi.fn().mockResolvedValue("native");
+    testWindow().desktopBridge = { showContextMenu } as unknown as DesktopBridge;
+    showContextMenuFallbackMock.mockResolvedValue("copy");
+    const abortController = new AbortController();
+    const { createLocalApi } = await import("./localApi");
+    const items = [{ id: "copy", label: "Copy" }] as const;
+
+    await expect(
+      createLocalApi().contextMenu.show(items, undefined, {
+        layout: "compact",
+        presentation: "styled",
+        restoreFocus: "on-dismiss",
+        signal: abortController.signal,
+      }),
+    ).resolves.toBe("copy");
+
+    expect(showContextMenu).not.toHaveBeenCalled();
+    expect(showContextMenuFallbackMock).toHaveBeenCalledWith(items, undefined, {
+      layout: "compact",
+      restoreFocus: "on-dismiss",
+      signal: abortController.signal,
+    });
+  });
+
+  it("dismisses a styled fallback when a desktop bridge exists", async () => {
+    testWindow().desktopBridge = { showContextMenu: vi.fn() } as unknown as DesktopBridge;
     const { createLocalApi } = await import("./localApi");
 
     await createLocalApi().contextMenu.close();
