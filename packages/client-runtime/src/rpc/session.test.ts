@@ -260,12 +260,17 @@ describe("RpcSessionFactory", () => {
 
       socket.close(1012, "service restart");
       const error = yield* Effect.flip(session.closed);
+      const configStreamError = yield* session.serverConfigEvents!.pipe(
+        Stream.runDrain,
+        Effect.flip,
+      );
 
       expect(error).toBeInstanceOf(ConnectionTransientError);
       expect(error).toMatchObject({
         reason: "transport",
         message: "Test environment disconnected.",
       });
+      expect(configStreamError).toMatchObject({ _tag: "RpcClientError" });
       yield* Effect.yieldNow;
       expect(sockets).toHaveLength(1);
     }),
@@ -334,7 +339,7 @@ describe("RpcSessionFactory", () => {
 
         const firstEvents = Array.from(yield* Fiber.join(firstSubscriber));
         const secondEvents = Array.from(yield* Fiber.join(secondSubscriber));
-        expect(firstEvents.map((event) => event.type)).toEqual(["snapshot", "keybindingsUpdated"]);
+        expect(firstEvents.map((event) => event.type)).toEqual(["snapshot", "snapshot"]);
         expect(secondEvents).toEqual(firstEvents);
 
         const replay = yield* session.serverConfigEvents!.pipe(Stream.runHead);

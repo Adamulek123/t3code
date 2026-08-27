@@ -70,7 +70,7 @@ interface ServerConfigReplayState {
 }
 
 interface BufferedServerConfigEvent {
-  readonly event: ServerConfigStreamEvent;
+  readonly config: ServerConfig;
   readonly revision: number;
 }
 
@@ -167,8 +167,9 @@ export const make = Effect.gen(function* () {
     );
     const client = yield* makeWsRpcProtocolClient.pipe(Effect.provide(protocolContext));
     const initialConfigDeferred = yield* Deferred.make<ServerConfig, ConnectionAttemptError>();
+    const serverConfigExit = yield* Deferred.make<void, ServerConfigSubscriptionError>();
     const serverConfigState = yield* Ref.make<ServerConfigReplayState | undefined>(undefined);
-    const serverConfigUpdates = yield* PubSub.bounded<BufferedServerConfigEvent>(64);
+    const serverConfigUpdates = yield* PubSub.sliding<BufferedServerConfigEvent>(64);
     const serverConfigSource = client[WS_METHODS.subscribeServerConfig]({}).pipe(
       Stream.runForEach((event) =>
         Effect.gen(function* () {
@@ -189,7 +190,7 @@ export const make = Effect.gen(function* () {
               config,
               revision: (current?.revision ?? 0) + 1,
             };
-            return [{ event, revision: next.revision }, next] as const;
+            return [{ config: next.config, revision: next.revision }, next] as const;
           });
           if (buffered !== undefined) {
             yield* PubSub.publish(serverConfigUpdates, buffered);
@@ -197,16 +198,22 @@ export const make = Effect.gen(function* () {
         }),
       ),
       Effect.tapError((error) =>
-        Deferred.fail(initialConfigDeferred, mapSessionRpcError(error)).pipe(Effect.asVoid),
+        Effect.all([
+          Deferred.fail(initialConfigDeferred, mapSessionRpcError(error)),
+          Deferred.fail(serverConfigExit, error),
+        ]).pipe(Effect.asVoid),
       ),
       Effect.ensuring(
-        Deferred.fail(
-          initialConfigDeferred,
-          new ConnectionTransientErrorClass({
-            reason: "remote-unavailable",
-            detail: `${connection.label} config subscription ended before its initial snapshot.`,
-          }),
-        ).pipe(Effect.asVoid),
+        Effect.all([
+          Deferred.fail(
+            initialConfigDeferred,
+            new ConnectionTransientErrorClass({
+              reason: "remote-unavailable",
+              detail: `${connection.label} config subscription ended before its initial snapshot.`,
+            }),
+          ),
+          Deferred.succeed(serverConfigExit, undefined),
+        ]).pipe(Effect.asVoid),
       ),
     );
     yield* serverConfigSource.pipe(Effect.forkScoped);
@@ -221,16 +228,24 @@ export const make = Effect.gen(function* () {
         if (snapshot === undefined) {
           return Stream.empty;
         }
+        const updates = Stream.fromSubscription(subscription).pipe(
+          Stream.filter((buffered) => buffered.revision > snapshot.revision),
+          Stream.map(
+            (buffered): ServerConfigStreamEvent => ({
+              version: 1,
+              type: "snapshot",
+              config: buffered.config,
+            }),
+          ),
+        );
+        const terminal = Stream.fromEffect(Deferred.await(serverConfigExit)).pipe(Stream.drain);
         return Stream.concat(
           Stream.succeed({
             version: 1 as const,
             type: "snapshot" as const,
             config: snapshot.config,
           }),
-          Stream.fromSubscription(subscription).pipe(
-            Stream.filter((buffered) => buffered.revision > snapshot.revision),
-            Stream.map((buffered) => buffered.event),
-          ),
+          Stream.merge(updates, terminal, { haltStrategy: "either" }),
         );
       }),
     );
