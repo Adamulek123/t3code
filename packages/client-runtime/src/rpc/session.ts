@@ -71,6 +71,7 @@ interface ServerConfigReplayState {
 
 interface BufferedServerConfigEvent {
   readonly config: ServerConfig;
+  readonly event: ServerConfigStreamEvent;
   readonly revision: number;
 }
 
@@ -190,7 +191,7 @@ export const make = Effect.gen(function* () {
               config,
               revision: (current?.revision ?? 0) + 1,
             };
-            return [{ config: next.config, revision: next.revision }, next] as const;
+            return [{ config: next.config, event, revision: next.revision }, next] as const;
           });
           if (buffered !== undefined) {
             yield* PubSub.publish(serverConfigUpdates, buffered);
@@ -230,12 +231,20 @@ export const make = Effect.gen(function* () {
         }
         const updates = Stream.fromSubscription(subscription).pipe(
           Stream.filter((buffered) => buffered.revision > snapshot.revision),
-          Stream.map(
-            (buffered): ServerConfigStreamEvent => ({
-              version: 1,
-              type: "snapshot",
-              config: buffered.config,
-            }),
+          Stream.mapAccum(
+            () => snapshot.revision,
+            (revision, buffered) => [
+              buffered.revision,
+              [
+                buffered.revision === revision + 1
+                  ? buffered.event
+                  : ({
+                      version: 1,
+                      type: "snapshot",
+                      config: buffered.config,
+                    } satisfies ServerConfigStreamEvent),
+              ],
+            ],
           ),
         );
         const terminal = Stream.fromEffect(Deferred.await(serverConfigExit)).pipe(Stream.drain);

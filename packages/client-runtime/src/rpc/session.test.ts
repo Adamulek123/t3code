@@ -339,7 +339,7 @@ describe("RpcSessionFactory", () => {
 
         const firstEvents = Array.from(yield* Fiber.join(firstSubscriber));
         const secondEvents = Array.from(yield* Fiber.join(secondSubscriber));
-        expect(firstEvents.map((event) => event.type)).toEqual(["snapshot", "snapshot"]);
+        expect(firstEvents.map((event) => event.type)).toEqual(["snapshot", "keybindingsUpdated"]);
         expect(secondEvents).toEqual(firstEvents);
 
         const replay = yield* session.serverConfigEvents!.pipe(Stream.runHead);
