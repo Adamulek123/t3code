@@ -76,6 +76,7 @@ function normalizeContextMenuItems(source: readonly ContextMenuItem[]): ContextM
     const normalizedItem: ContextMenuItem = {
       id: sourceItem.id,
       label: sourceItem.label,
+      ...(sourceItem.accelerator ? { accelerator: sourceItem.accelerator } : {}),
       destructive: sourceItem.destructive === true,
       disabled: sourceItem.disabled === true,
       ...(sourceItem.separatorBefore === true ? { separatorBefore: true } : {}),
@@ -165,6 +166,7 @@ export const make = Effect.gen(function* () {
 
       const itemOption: Electron.MenuItemConstructorOptions = {
         label: item.label,
+        ...(item.accelerator ? { accelerator: item.accelerator } : {}),
         enabled: !item.disabled,
       };
       if (item.children && item.children.length > 0) {

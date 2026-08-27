@@ -197,6 +197,44 @@ export function dismissContextMenu(): void {
   activeContextMenuDismiss = null;
 }
 
+export function contextMenuAcceleratorAction<T extends string>(
+  items: readonly ContextMenuItem<T>[],
+  event: Pick<KeyboardEvent, "altKey" | "ctrlKey" | "isComposing" | "key" | "metaKey" | "shiftKey">,
+): T | null {
+  if (event.isComposing) return null;
+
+  for (const item of items) {
+    if (item.disabled) continue;
+    if (item.children) {
+      const childAction = contextMenuAcceleratorAction(item.children, event);
+      if (childAction !== null) return childAction;
+    }
+    if (!item.accelerator) continue;
+
+    const parts = item.accelerator.toLowerCase().split("+");
+    if (
+      event.key.toLowerCase() === parts.at(-1) &&
+      event.altKey === parts.includes("alt") &&
+      event.ctrlKey === parts.includes("ctrl") &&
+      event.metaKey === (parts.includes("command") || parts.includes("cmd")) &&
+      event.shiftKey === parts.includes("shift")
+    ) {
+      return item.id;
+    }
+  }
+
+  return null;
+}
+
+function formatContextMenuAccelerator(accelerator: string): string {
+  const parts = accelerator.split("+");
+  if (!parts.some((part) => part === "Command" || part === "Cmd")) return accelerator;
+  const key = parts.at(-1) ?? "";
+  return `${parts.includes("Ctrl") ? "⌃" : ""}${parts.includes("Alt") ? "⌥" : ""}${
+    parts.includes("Shift") ? "⇧" : ""
+  }⌘${key}`;
+}
+
 /**
  * Imperative DOM-based context menu for non-Electron environments.
  * Supports nested submenus and resolves with the clicked leaf item id.
@@ -204,8 +242,17 @@ export function dismissContextMenu(): void {
 export function showContextMenuFallback<T extends string>(
   items: readonly ContextMenuItem<T>[],
   position?: { x: number; y: number },
+  options?: {
+    readonly layout?: "default" | "compact";
+    readonly restoreFocus?: boolean | "on-dismiss";
+    readonly signal?: AbortSignal;
+  },
 ): Promise<T | null> {
   return new Promise<T | null>((resolve) => {
+    if (options?.signal?.aborted) {
+      resolve(null);
+      return;
+    }
     const previouslyFocusedElement =
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const menuStack: HTMLDivElement[] = [];
@@ -213,9 +260,9 @@ export function showContextMenuFallback<T extends string>(
     let isDisposed = false;
     let canDismissFromPointer = false;
 
-    const dismiss = () => cleanup(null);
+    const dismiss = () => cleanup(null, "programmatic");
 
-    const cleanup = (result: T | null) => {
+    const cleanup = (result: T | null, reason: "action" | "interaction" | "programmatic") => {
       if (isDisposed) {
         return;
       }
@@ -223,23 +270,40 @@ export function showContextMenuFallback<T extends string>(
       if (activeContextMenuDismiss === dismiss) {
         activeContextMenuDismiss = null;
       }
-      document.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("keydown", onKeyDown, true);
       document.removeEventListener("pointerdown", onPointerDown, true);
       document.removeEventListener("contextmenu", onContextMenu, true);
+      document.removeEventListener("wheel", onWheel, true);
+      options?.signal?.removeEventListener("abort", onAbort);
       const shouldRestoreFocus = isNodeWithinMenuStack(document.activeElement, menuStack);
       for (const menu of menuStack) {
         menu.remove();
       }
-      if (shouldRestoreFocus && previouslyFocusedElement?.isConnected) {
+      if (
+        options?.restoreFocus !== false &&
+        (options?.restoreFocus !== "on-dismiss" || reason === "interaction") &&
+        shouldRestoreFocus &&
+        previouslyFocusedElement?.isConnected
+      ) {
         previouslyFocusedElement.focus({ preventScroll: true });
       }
       resolve(result);
     };
 
+    const onAbort = () => cleanup(null, "programmatic");
+
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.isComposing) return;
       if (event.key === "Escape") {
         event.preventDefault();
-        cleanup(null);
+        cleanup(null, "interaction");
+        return;
+      }
+      const action = contextMenuAcceleratorAction(items, event);
+      if (action !== null) {
+        event.preventDefault();
+        event.stopPropagation();
+        cleanup(action, "action");
       }
     };
 
@@ -247,7 +311,7 @@ export function showContextMenuFallback<T extends string>(
       if (!canDismissFromPointer || isNodeWithinMenuStack(event.target, menuStack)) {
         return;
       }
-      cleanup(null);
+      cleanup(null, "interaction");
     };
 
     const onContextMenu = (event: MouseEvent) => {
@@ -255,7 +319,13 @@ export function showContextMenuFallback<T extends string>(
         return;
       }
       event.preventDefault();
-      cleanup(null);
+      cleanup(null, "interaction");
+    };
+
+    const onWheel = (event: WheelEvent) => {
+      if (!isNodeWithinMenuStack(event.target, menuStack)) {
+        cleanup(null, "interaction");
+      }
     };
 
     const closeMenusFromLevel = (level: number) => {
@@ -274,11 +344,14 @@ export function showContextMenuFallback<T extends string>(
     ) => {
       closeMenusFromLevel(level);
 
+      const usesCompactLayout = options?.layout === "compact";
       const menu = document.createElement("div");
-      menu.className =
-        "dropdown-glass fixed z-[10000] min-w-32 max-w-sm overflow-hidden rounded-lg bg-clip-padding text-popover-foreground outline-none";
-      menu.style.cssText =
-        "position:fixed;z-index:10000;min-width:8rem;max-width:24rem;overflow:hidden;border-radius:var(--radius-lg);background-clip:padding-box;color:var(--contrast-popover-foreground);outline:none;pointer-events:auto;";
+      menu.className = `dropdown-glass fixed z-[10000] max-w-sm overflow-hidden rounded-lg bg-clip-padding text-popover-foreground outline-none ${
+        usesCompactLayout ? "min-w-56" : "min-w-32"
+      }`;
+      menu.style.cssText = `position:fixed;z-index:10000;min-width:${
+        usesCompactLayout ? "min(14rem,calc(100vw - 0.75rem))" : "8rem"
+      };max-width:24rem;overflow:hidden;border-radius:var(--radius-lg);background-clip:padding-box;color:var(--contrast-popover-foreground);outline:none;pointer-events:auto;`;
       menu.style.left = `${preferredLeft}px`;
       menu.style.top = `${preferredTop}px`;
       menu.dataset.level = String(level);
@@ -316,15 +389,16 @@ export function showContextMenuFallback<T extends string>(
         button.type = "button";
         const isDisabled = item.disabled === true;
         button.disabled = isDisabled;
-        const rowBase =
-          "flex w-full cursor-default select-none items-center gap-2 rounded-sm px-2 py-1 text-left outline-none transition-colors sm:min-h-7 sm:text-sm min-h-8 text-base";
+        const rowBase = usesCompactLayout
+          ? "flex min-h-8 w-full cursor-default select-none items-center gap-2 rounded-sm px-2 py-1 text-left text-sm outline-none transition-colors sm:min-h-7 sm:text-xs"
+          : "flex min-h-8 w-full cursor-default select-none items-center gap-2 rounded-sm px-2 py-1 text-left text-base outline-none transition-colors sm:min-h-7 sm:text-sm";
         button.className = isDisabled
           ? `${rowBase} pointer-events-none cursor-not-allowed text-muted-foreground opacity-64`
           : isLeafDestructive
             ? `${rowBase} text-destructive-foreground hover:bg-destructive/10 hover:text-destructive-foreground`
             : `${rowBase} text-foreground hover:bg-accent hover:text-accent-foreground`;
         button.style.cssText =
-          "display:flex;width:100%;min-height:1.75rem;align-items:center;gap:0.5rem;border:0;border-radius:var(--radius-sm);background:transparent;padding:0.25rem 0.5rem;color:var(--contrast-foreground);font-family:var(--font-sans,system-ui,sans-serif);font-size:0.875rem;line-height:1.25rem;text-align:left;cursor:default;";
+          "display:flex;width:100%;align-items:center;gap:0.5rem;border:0;border-radius:var(--radius-sm);background:transparent;padding:0.25rem 0.5rem;color:var(--contrast-foreground);font-family:var(--font-sans,system-ui,sans-serif);font-weight:400;line-height:1.25rem;text-align:left;cursor:default;";
         if (isLeafDestructive) {
           button.style.color = "var(--destructive-foreground)";
         }
@@ -345,6 +419,16 @@ export function showContextMenuFallback<T extends string>(
         label.className = "min-w-0 flex-1 truncate";
         label.textContent = item.label;
         button.appendChild(label);
+
+        if (item.accelerator) {
+          const accelerator = document.createElement("kbd");
+          accelerator.className =
+            "ms-auto shrink-0 font-medium font-sans text-secondary-label text-xs tracking-widest";
+          accelerator.style.cssText =
+            "margin-inline-start:auto;flex-shrink:0;color:var(--contrast-secondary-label);font-family:var(--font-sans,system-ui,sans-serif);font-size:0.75rem;font-weight:500;letter-spacing:0.1em;";
+          accelerator.textContent = formatContextMenuAccelerator(item.accelerator);
+          button.appendChild(accelerator);
+        }
 
         if (hasChildren) {
           button.setAttribute("aria-haspopup", "menu");
@@ -431,7 +515,7 @@ export function showContextMenuFallback<T extends string>(
               closeMenusFromLevel(level + 1);
             });
             button.addEventListener("click", () => {
-              if (canDismissFromPointer) cleanup(item.id);
+              if (canDismissFromPointer) cleanup(item.id, "action");
             });
           }
         }
@@ -454,9 +538,11 @@ export function showContextMenuFallback<T extends string>(
       });
     };
 
-    document.addEventListener("keydown", onKeyDown);
+    document.addEventListener("keydown", onKeyDown, true);
     document.addEventListener("pointerdown", onPointerDown, true);
     document.addEventListener("contextmenu", onContextMenu, true);
+    document.addEventListener("wheel", onWheel, { capture: true, passive: true });
+    options?.signal?.addEventListener("abort", onAbort, { once: true });
     openMenu(items, position?.x ?? 0, position?.y ?? 0, 0);
     // Only one fallback menu can be open at a time: a new show must dismiss
     // any prior one, or its DOM and listeners leak and close() can only ever
