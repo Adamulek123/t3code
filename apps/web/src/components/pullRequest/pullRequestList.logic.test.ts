@@ -7,6 +7,8 @@ import {
   mergePullRequestLists,
   pullRequestEntryKey,
   pullRequestEnvironmentSetKey,
+  pullRequestViewersMatch,
+  pullRequestViewersMatchForEnvironments,
   groupPullRequestsByInvolvement,
   matchesPullRequestFilters,
   matchesPullRequestQuery,
@@ -585,6 +587,39 @@ describe("the list snapshot across a reload", () => {
     viewers: Record<string, string> = { "github.com": "Bilal" },
     now = NOW,
   ) => readPullRequestListSnapshot(storage, environmentKey, { viewers, now });
+
+  it("compares viewer identities independently of host insertion order", () => {
+    expect(
+      pullRequestViewersMatch(
+        { "env-1 github.com": "Bilal", "env-2 gitlab.com": "Theo" },
+        { "env-2 gitlab.com": "Theo", "env-1 github.com": "Bilal" },
+      ),
+    ).toBe(true);
+    expect(
+      pullRequestViewersMatch({ "env-1 github.com": "Bilal" }, { "env-1 github.com": "Octocat" }),
+    ).toBe(false);
+  });
+
+  it("compares only the viewer-capable environments in a mixed-server list", () => {
+    const capable = new Set(["env-1"]);
+    expect(
+      pullRequestViewersMatchForEnvironments(
+        { "env-1 github.com": "Bilal", "env-2 github.com": "Legacy" },
+        { "env-1 github.com": "Bilal" },
+        capable,
+      ),
+    ).toBe(true);
+    expect(
+      pullRequestViewersMatchForEnvironments(
+        { "env-1 github.com": "Bilal", "env-2 github.com": "Legacy" },
+        { "env-1 github.com": "Octocat" },
+        capable,
+      ),
+    ).toBe(false);
+    expect(
+      pullRequestViewersMatchForEnvironments({ "env-1 github.com": "Bilal" }, {}, capable),
+    ).toBe(false);
+  });
 
   it("hydrates the retained rows so ghosts never replace them", () => {
     const storage = makeStorage();

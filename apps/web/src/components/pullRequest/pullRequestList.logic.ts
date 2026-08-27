@@ -593,6 +593,27 @@ export interface PullRequestListSnapshot {
 const viewerIdentity = (viewers: PullRequestViewers): string =>
   JSON.stringify(Object.entries(viewers).toSorted(([left], [right]) => left.localeCompare(right)));
 
+export const pullRequestViewersMatch = (
+  left: PullRequestViewers,
+  right: PullRequestViewers,
+): boolean => viewerIdentity(left) === viewerIdentity(right);
+
+export const pullRequestViewersMatchForEnvironments = (
+  listedViewers: PullRequestViewers,
+  verifiedViewers: PullRequestViewers,
+  environmentIds: ReadonlySet<string>,
+): boolean => {
+  const prefixes = [...environmentIds].map((environmentId) => `${environmentId} `);
+  return pullRequestViewersMatch(
+    Object.fromEntries(
+      Object.entries(listedViewers).filter(([key]) =>
+        prefixes.some((prefix) => key.startsWith(prefix)),
+      ),
+    ),
+    verifiedViewers,
+  );
+};
+
 /**
  * Decoded with the contract's own schema rather than trusted from a cast: storage is writable
  * by anything in the origin and by any past version of this app, and one malformed row would
@@ -653,7 +674,7 @@ export function readPullRequestListSnapshot(
     if (decoded.value.writtenAt > now || now - decoded.value.writtenAt > SNAPSHOT_MAX_AGE_MS) {
       return null;
     }
-    if (viewerIdentity(decoded.value.data.viewers) !== viewerIdentity(context.viewers)) return null;
+    if (!pullRequestViewersMatch(decoded.value.data.viewers, context.viewers)) return null;
     return decoded.value;
   } catch {
     return null;

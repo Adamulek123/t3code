@@ -42,6 +42,7 @@ import {
   pullRequestEntryViewer,
   rankPullRequestMatches,
   pullRequestEnvironmentSetKey,
+  pullRequestViewersMatchForEnvironments,
   readPullRequestListSnapshot,
   resolvePullRequestViewerGate,
   resolveProjectScope,
@@ -775,6 +776,25 @@ function PullRequestsRouteView() {
   );
   const authoredQuery = usePullRequestList(verifiedAuthoredTargets);
   const reviewingQuery = usePullRequestList(verifiedReviewingTargets);
+  const acceptVerifiedData = (data: MergedPullRequestList | null) => {
+    if (data === null || viewerCapableEnvironmentIds.size === 0) return data;
+    const verifiedViewers = viewerQuery.viewers;
+    return verifiedViewers !== null &&
+      pullRequestViewersMatchForEnvironments(
+        data.viewers,
+        verifiedViewers,
+        viewerCapableEnvironmentIds,
+      )
+      ? data
+      : null;
+  };
+  // Query atoms retain their previous success while refreshing. Keep that useful behavior for
+  // the same account, but never render the retained answer after fresh verification identifies
+  // another account.
+  const verifiedListData = acceptVerifiedData(listQuery.data);
+  const verifiedBaselineData = acceptVerifiedData(baselineQuery.data);
+  const verifiedAuthoredData = acceptVerifiedData(authoredQuery.data);
+  const verifiedReviewingData = acceptVerifiedData(reviewingQuery.data);
   // The header's refresh punches through the server's cache before re-reading; the error and
   // empty states retry plainly, because a failure is never cached.
   const invalidate = useAtomCommand(pullRequestEnvironment.invalidate, { reportFailure: false });
@@ -837,11 +857,29 @@ function PullRequestsRouteView() {
   useEffect(() => {
     const viewers = viewerQuery.viewers;
     if (environmentKey.length === 0) return;
-    if (!viewerGate.canHydrateSnapshot) {
-      if (viewerGate.shouldClearRetainedRows) setLoaded(null);
+    if (viewerGate.shouldClearRetainedRows) {
+      setLoaded(null);
       return;
     }
+    // A pending read is not a mismatch: keep what this session already verified until the fresh
+    // identity arrives. A legacy-only environment has no independent identity to compare and
+    // continues to use live rows, but never hydrates persisted ones.
+    if (viewerQuery.isPending || viewers === null) return;
     setLoaded((current) => {
+      // Fresh identity is authoritative for viewer-capable environments, including when a mixed
+      // list also contains a legacy server whose identity cannot be checked independently.
+      if (
+        current !== null &&
+        current.environmentKey === environmentKey &&
+        !pullRequestViewersMatchForEnvironments(
+          current.data.viewers,
+          viewers,
+          viewerCapableEnvironmentIds,
+        )
+      ) {
+        return null;
+      }
+      if (!viewerGate.canHydrateSnapshot) return current;
       // Rows read from a different set of environments cannot even be narrowed — one of them may
       // no longer be connected at all — so that set's own snapshot beats holding them.
       if (current !== null && current.environmentKey === environmentKey) return current;
@@ -859,22 +897,28 @@ function PullRequestsRouteView() {
         ...(snapshot.partitions === undefined ? {} : { partitions: snapshot.partitions }),
       };
     });
-  }, [environmentKey, viewerGate, viewerQuery.viewers]);
+  }, [
+    environmentKey,
+    viewerCapableEnvironmentIds,
+    viewerGate,
+    viewerQuery.isPending,
+    viewerQuery.viewers,
+  ]);
   useEffect(() => {
     // Only once this query has settled. While a search is being swapped in or out the text has
     // already changed and the data has not, so recording them together would file the previous
     // answer under the new question — which is how a search's answer came to speak for the
     // workspace after the search was cleared.
-    if (!listQuery.data || listQuery.isPending) return;
-    const data = listQuery.data;
+    if (!verifiedListData || listQuery.isPending) return;
+    const data = verifiedListData;
     setLoaded((current) => {
       // The partitions arrive on their own clock, so this records whichever have landed by
       // now and runs again when the rest do. Until then the ones already held for this scope
       // stay — hydrated or previously answered — rather than being dropped for a feed that
       // merely settled first.
       const partitions =
-        partitionsWanted && authoredQuery.data !== null && reviewingQuery.data !== null
-          ? { authored: authoredQuery.data.entries, reviewing: reviewingQuery.data.entries }
+        partitionsWanted && verifiedAuthoredData !== null && verifiedReviewingData !== null
+          ? { authored: verifiedAuthoredData.entries, reviewing: verifiedReviewingData.entries }
           : current !== null &&
               current.environmentKey === environmentKey &&
               current.scope === scopeKey
@@ -899,8 +943,8 @@ function PullRequestsRouteView() {
             data: {
               ...data,
               entries: accumulatedEntries,
-              viewers: baselineQuery.data?.viewers ?? data.viewers,
-              providers: baselineQuery.data?.providers ?? data.providers,
+              viewers: verifiedBaselineData?.viewers ?? data.viewers,
+              providers: verifiedBaselineData?.providers ?? data.providers,
             },
             ...(partitions === undefined ? {} : { partitions }),
           },
@@ -918,14 +962,14 @@ function PullRequestsRouteView() {
     environmentKey,
     scopeKey,
     sentQuery,
-    listQuery.data,
+    verifiedListData,
     listQuery.isPending,
     partitionsWanted,
-    authoredQuery.data,
-    reviewingQuery.data,
+    verifiedAuthoredData,
+    verifiedReviewingData,
     ordered,
     filterKey,
-    baselineQuery.data,
+    verifiedBaselineData,
   ]);
   // Changing a filter asks a question nothing has answered yet, and the page is already holding
   // perfectly good rows for the last one. Rather than blank out for the round trip, those rows
@@ -953,13 +997,13 @@ function PullRequestsRouteView() {
   // have its extra rows thrown away for the ninety-nine the baseline keeps answering with.
   const answered =
     (sentQuery.length === 0 && sentCursors === null && pageSize === PAGE_SIZE
-      ? baselineQuery.data
-      : listQuery.data) ??
+      ? verifiedBaselineData
+      : verifiedListData) ??
     (loaded?.scope === scopeKey && loaded.query === sentQuery ? loaded.data : null);
   // Clearing a search returns to a list that has already been read, so it comes back at once
   // rather than after another round trip: the search was the temporary state, not the list.
   const carried =
-    (sentQuery.length === 0 ? baselineQuery.data : undefined) ??
+    (sentQuery.length === 0 ? verifiedBaselineData : undefined) ??
     (loaded?.scope === scopeKey ? loaded.data : null) ??
     narrowed;
   const listData = answered ?? carried;
@@ -1068,18 +1112,18 @@ function PullRequestsRouteView() {
     { enabled: pullRequestsSupported },
   );
 
-  const viewers = baselineQuery.data?.viewers ?? listData?.viewers ?? EMPTY_VIEWERS;
-  const listErrors = baselineQuery.data?.errors ?? listData?.errors ?? [];
+  const viewers = verifiedBaselineData?.viewers ?? listData?.viewers ?? EMPTY_VIEWERS;
+  const listErrors = verifiedBaselineData?.errors ?? listData?.errors ?? [];
 
   /** The hosts that narrowed the listing themselves, so their answer is not narrowed again. */
   const searchingHosts = useMemo(
     () =>
       new Set(
-        (baselineQuery.data?.providers ?? listData?.providers ?? []).flatMap((provider) =>
+        (verifiedBaselineData?.providers ?? listData?.providers ?? []).flatMap((provider) =>
           provider.searchesOnHost ? [provider.host] : [],
         ),
       ),
-    [baselineQuery.data?.providers, listData?.providers],
+    [verifiedBaselineData?.providers, listData?.providers],
   );
 
   const entries = useMemo(() => {
@@ -1203,10 +1247,10 @@ function PullRequestsRouteView() {
             matchesPullRequestFilters(entry, localFilters, pullRequestEntryViewer(entry, viewers)),
           );
     const authored = narrow(
-      partitionsWanted ? (authoredQuery.data?.entries ?? held?.authored) : undefined,
+      partitionsWanted ? (verifiedAuthoredData?.entries ?? held?.authored) : undefined,
     );
     const reviewing = narrow(
-      partitionsWanted ? (reviewingQuery.data?.entries ?? held?.reviewing) : undefined,
+      partitionsWanted ? (verifiedReviewingData?.entries ?? held?.reviewing) : undefined,
     );
     if (authored === undefined || reviewing === undefined) {
       return groupPullRequestsByInvolvement(entries, viewers);
@@ -1215,12 +1259,12 @@ function PullRequestsRouteView() {
   }, [
     hasLocalFilters,
     localFilters,
-    authoredQuery.data?.entries,
+    verifiedAuthoredData?.entries,
     entries,
     environmentKey,
     loaded,
     partitionsWanted,
-    reviewingQuery.data?.entries,
+    verifiedReviewingData?.entries,
     scopeKey,
     search.involvement,
     viewers,
