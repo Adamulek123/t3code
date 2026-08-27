@@ -628,6 +628,23 @@ describe("the list snapshot across a reload", () => {
     ).toBe(true);
   });
 
+  it("accepts legacy rows when a separate capable server fails viewer verification", () => {
+    expect(
+      pullRequestListViewersMatchVerification(
+        { "env-2 github.com": "Legacy" },
+        null,
+        new Set(["env-1"]),
+      ),
+    ).toBe(true);
+    expect(
+      pullRequestListViewersMatchVerification(
+        { "env-1 github.com": "Bilal" },
+        null,
+        new Set(["env-1"]),
+      ),
+    ).toBe(false);
+  });
+
   it("accepts a verified continuation page from only the hosts with cursors", () => {
     const capable = new Set(["env-1", "env-2"]);
     const verified = {

@@ -620,13 +620,14 @@ export const pullRequestListViewersMatchVerification = (
   verifiedEnvironmentIds: ReadonlySet<string>,
 ): boolean => {
   if (verifiedEnvironmentIds.size === 0) return true;
-  if (verifiedViewers === null) return false;
 
   const prefixes = [...verifiedEnvironmentIds].map((environmentId) => `${environmentId} `);
-  return Object.entries(listedViewers).every(
-    ([key, viewer]) =>
-      !prefixes.some((prefix) => key.startsWith(prefix)) || verifiedViewers[key] === viewer,
+  const scopedViewers = Object.entries(listedViewers).filter(([key]) =>
+    prefixes.some((prefix) => key.startsWith(prefix)),
   );
+  if (scopedViewers.length === 0) return true;
+  if (verifiedViewers === null) return false;
+  return scopedViewers.every(([key, viewer]) => verifiedViewers[key] === viewer);
 };
 
 /**
