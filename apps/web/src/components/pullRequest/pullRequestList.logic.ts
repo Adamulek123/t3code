@@ -8,6 +8,7 @@ import {
   resolvePullRequestAuthorFilter,
 } from "@t3tools/contracts";
 import type {
+  ProjectId,
   PullRequestActor,
   PullRequestDiffStat,
   PullRequestInvolvement,
@@ -427,6 +428,62 @@ export function groupPullRequestsByInvolvement<Entry extends ScopedEntry>(
 export function pullRequestEntryKey(entry: ScopedEntry): string {
   const scope = entry.environmentId === undefined ? "" : `${entry.environmentId}:`;
   return `${scope}${entry.host}:${entry.repository}#${entry.number}`;
+}
+
+export interface PullRequestStatsTarget {
+  readonly environmentId: EnvironmentId;
+  readonly input: {
+    readonly refs: ReadonlyArray<{
+      readonly projectId: ProjectId;
+      readonly repository: string;
+      readonly number: number;
+    }>;
+  };
+}
+
+export interface PullRequestStatsBatch extends PullRequestStatsTarget {
+  readonly keys: ReadonlySet<string>;
+}
+
+/** Groups newly visible rows into one immutable line-count read per environment. */
+export function pullRequestStatsBatches(
+  entriesByKey: ReadonlyMap<string, EnvironmentPullRequestEntry>,
+  keys: ReadonlySet<string>,
+): ReadonlyArray<PullRequestStatsBatch> {
+  const byEnvironment = new Map<
+    EnvironmentId,
+    { keys: Set<string>; refs: Array<PullRequestStatsTarget["input"]["refs"][number]> }
+  >();
+  for (const key of keys) {
+    const entry = entriesByKey.get(key);
+    if (entry === undefined) continue;
+    const batch = byEnvironment.get(entry.environmentId) ?? { keys: new Set(), refs: [] };
+    batch.keys.add(key);
+    batch.refs.push({
+      projectId: entry.projectId,
+      repository: entry.repository,
+      number: entry.number,
+    });
+    byEnvironment.set(entry.environmentId, batch);
+  }
+  return [...byEnvironment].map(([environmentId, batch]) => ({
+    environmentId,
+    input: { refs: batch.refs },
+    keys: batch.keys,
+  }));
+}
+
+/** Drops completed batches once every row in them has left the observer window. */
+export function retainVisiblePullRequestStatsBatches(
+  batches: ReadonlyArray<PullRequestStatsBatch>,
+  visibleKeys: ReadonlySet<string>,
+): ReadonlyArray<PullRequestStatsBatch> {
+  return batches.filter((batch) => {
+    for (const key of batch.keys) {
+      if (visibleKeys.has(key)) return true;
+    }
+    return false;
+  });
 }
 
 /**
