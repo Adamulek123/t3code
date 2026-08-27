@@ -78,11 +78,16 @@ function createMergedEnvironmentQuery<Input, A>(
   return function useMergedQuery(targets: ReadonlyArray<EnvironmentQueryTarget<Input>>) {
     const key = JSON.stringify(targets);
     const view = useAtomValue(targets.length === 0 ? empty : family(key));
-    const refresh = useCallback(() => {
-      for (const target of JSON.parse(key) as ReadonlyArray<EnvironmentQueryTarget<Input>>) {
-        appAtomRegistry.refresh(atomFor(target));
-      }
-    }, [key]);
+    const refresh = useCallback(
+      (override?: ReadonlyArray<EnvironmentQueryTarget<Input>>) => {
+        const refreshTargets =
+          override ?? (JSON.parse(key) as ReadonlyArray<EnvironmentQueryTarget<Input>>);
+        for (const target of refreshTargets) {
+          appAtomRegistry.refresh(atomFor(target));
+        }
+      },
+      [key],
+    );
     return { ...view, refresh };
   };
 }
@@ -119,7 +124,9 @@ export function usePullRequestListStats(
 ): {
   readonly stats: ReadonlyArray<EnvironmentPullRequestStat> | null;
   readonly isPending: boolean;
-  readonly refresh: () => void;
+  readonly refresh: (
+    targets?: ReadonlyArray<EnvironmentQueryTarget<PullRequestListStatsInput>>,
+  ) => void;
 } {
   const query = usePullRequestStatsQuery(targets);
   const stats = useMemo(
