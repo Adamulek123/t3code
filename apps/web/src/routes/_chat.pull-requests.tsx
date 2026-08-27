@@ -798,6 +798,57 @@ function PullRequestsRouteView() {
   const verifiedBaselineData = acceptVerifiedData(baselineQuery.data);
   const verifiedAuthoredData = acceptVerifiedData(authoredQuery.data);
   const verifiedReviewingData = acceptVerifiedData(reviewingQuery.data);
+  const rejectedRefreshes = useRef(new Map<string, () => void>());
+  useEffect(() => {
+    const viewers = viewerQuery.viewers;
+    if (viewerQuery.isPending || viewerQuery.error !== null || viewers === null) return;
+
+    const queries = [
+      ["list", listQuery, verifiedListData],
+      ["baseline", baselineQuery, verifiedBaselineData],
+      ["authored", authoredQuery, verifiedAuthoredData],
+      ["reviewing", reviewingQuery, verifiedReviewingData],
+    ] as const;
+    for (const [name, query, accepted] of queries) {
+      if (query.data === null || accepted !== null) {
+        rejectedRefreshes.current.delete(name);
+        continue;
+      }
+      if (
+        query.isPending ||
+        query.error !== null ||
+        rejectedRefreshes.current.get(name) === query.refresh
+      ) {
+        continue;
+      }
+      rejectedRefreshes.current.set(name, query.refresh);
+      query.refresh();
+    }
+  }, [
+    authoredQuery.data,
+    authoredQuery.error,
+    authoredQuery.isPending,
+    authoredQuery.refresh,
+    baselineQuery.data,
+    baselineQuery.error,
+    baselineQuery.isPending,
+    baselineQuery.refresh,
+    listQuery.data,
+    listQuery.error,
+    listQuery.isPending,
+    listQuery.refresh,
+    reviewingQuery.data,
+    reviewingQuery.error,
+    reviewingQuery.isPending,
+    reviewingQuery.refresh,
+    verifiedAuthoredData,
+    verifiedBaselineData,
+    verifiedListData,
+    verifiedReviewingData,
+    viewerQuery.error,
+    viewerQuery.isPending,
+    viewerQuery.viewers,
+  ]);
   // The header's refresh punches through the server's cache before re-reading; the error and
   // empty states retry plainly, because a failure is never cached.
   const invalidate = useAtomCommand(pullRequestEnvironment.invalidate, { reportFailure: false });
@@ -1010,12 +1061,18 @@ function PullRequestsRouteView() {
     (loaded?.scope === scopeKey ? loaded.data : null) ??
     narrowed;
   const listData = answered ?? carried;
+  const baselineAnswers = sentQuery.length === 0 && sentCursors === null && pageSize === PAGE_SIZE;
+  const answerRejected = baselineAnswers
+    ? baselineQuery.data !== null && verifiedBaselineData === null
+    : listQuery.data !== null && verifiedListData === null;
   /** The rows on screen answer the previous question, held while this one is on its way. */
   const showingCarried = answered === null && carried !== null;
   const loadingMore = listQuery.isPending && listData !== null;
-  /** Nothing read and nothing to carry, which is the one thing skeletons are for. */
-  const firstLoad = (viewerQuery.isPending || listQuery.isPending) && listData === null;
   const listError = viewerQuery.error ?? listQuery.error;
+  /** Nothing read and nothing to carry, which is the one thing skeletons are for. */
+  const firstLoad =
+    (viewerQuery.isPending || listQuery.isPending || (answerRejected && listError === null)) &&
+    listData === null;
 
   // `ordered` is declared above, ahead of the snapshot write, but grown here from this round's
   // own answer.
