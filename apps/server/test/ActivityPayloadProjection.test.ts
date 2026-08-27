@@ -1,5 +1,7 @@
 import {
+  CheckpointRef,
   EventId,
+  MessageId,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
@@ -13,6 +15,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { buildThreadFeed, type ThreadFeedActivity } from "../../mobile/src/lib/threadActivity.ts";
 import { deriveLatestContextWindowSnapshot } from "../../web/src/lib/contextWindow.ts";
 import { deriveWorkLogEntries } from "../../web/src/session-logic.ts";
+import { applyThreadDetailEvent } from "../../../packages/client-runtime/src/state/threadReducer.ts";
 import {
   coalesceLiveToolUpdatedEvents,
   projectActivityEvent,
@@ -488,6 +491,118 @@ describe("superseded tool.updated snapshot dedup", () => {
       EventId.make("event-1"),
       EventId.make("event-2"),
     ]);
+  });
+
+  it("keeps client state equivalent after coalescing a mixed event sequence", () => {
+    const threadId = ThreadId.make("thread-live-coalescing");
+    const turnId = TurnId.make("turn-a");
+    const update1 = makeActivityEvent(
+      1,
+      makeToolLifecycleActivity("upd-1", "tool.updated", { toolCallId: "call-a" }),
+    );
+    const sessionSet = {
+      sequence: 2,
+      eventId: EventId.make("event-session"),
+      aggregateKind: "thread",
+      aggregateId: threadId,
+      occurredAt: "2026-07-27T00:00:02.000Z",
+      commandId: null,
+      causationEventId: null,
+      correlationId: null,
+      metadata: {},
+      type: "thread.session-set",
+      payload: {
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          runtimeMode: "full-access",
+          activeTurnId: turnId,
+          lastError: null,
+          updatedAt: "2026-07-27T00:00:02.000Z",
+        },
+      },
+    } satisfies Extract<OrchestrationEvent, { type: "thread.session-set" }>;
+    const update2 = makeActivityEvent(
+      3,
+      makeToolLifecycleActivity("upd-2", "tool.updated", { toolCallId: "call-a" }),
+    );
+    const messageSent = {
+      sequence: 4,
+      eventId: EventId.make("event-message"),
+      aggregateKind: "thread",
+      aggregateId: threadId,
+      occurredAt: "2026-07-27T00:00:04.000Z",
+      commandId: null,
+      causationEventId: null,
+      correlationId: null,
+      metadata: {},
+      type: "thread.message-sent",
+      payload: {
+        threadId,
+        messageId: MessageId.make("message-1"),
+        role: "assistant",
+        text: "Still working",
+        turnId,
+        streaming: false,
+        createdAt: "2026-07-27T00:00:04.000Z",
+        updatedAt: "2026-07-27T00:00:04.000Z",
+      },
+    } satisfies Extract<OrchestrationEvent, { type: "thread.message-sent" }>;
+    const completed = makeActivityEvent(
+      5,
+      makeToolLifecycleActivity("done-1", "tool.completed", { toolCallId: "call-a" }),
+    );
+    const diffCompleted = {
+      sequence: 6,
+      eventId: EventId.make("event-diff"),
+      aggregateKind: "thread",
+      aggregateId: threadId,
+      occurredAt: "2026-07-27T00:00:06.000Z",
+      commandId: null,
+      causationEventId: null,
+      correlationId: null,
+      metadata: {},
+      type: "thread.turn-diff-completed",
+      payload: {
+        threadId,
+        turnId,
+        checkpointTurnCount: 1,
+        checkpointRef: CheckpointRef.make("checkpoint-1"),
+        status: "ready",
+        files: [{ path: "src/app.ts", kind: "modified", additions: 2, deletions: 1 }],
+        assistantMessageId: MessageId.make("message-1"),
+        completedAt: "2026-07-27T00:00:06.000Z",
+      },
+    } satisfies Extract<OrchestrationEvent, { type: "thread.turn-diff-completed" }>;
+    const events = [update1, sessionSet, update2, messageSent, completed, diffCompleted];
+    const coalesced = coalesceLiveToolUpdatedEvents(events);
+
+    const applyEvents = (input: ReadonlyArray<OrchestrationEvent>) => {
+      let thread = makeThread([]);
+      for (const event of input.map(projectActivityEvent)) {
+        const result = applyThreadDetailEvent(thread, event);
+        expect(result.kind).toBe("updated");
+        if (result.kind === "updated") {
+          thread = result.thread;
+        }
+      }
+      return thread;
+    };
+
+    const originalState = applyEvents(events);
+    const coalescedState = applyEvents(coalesced);
+
+    expect(coalesced.map((event) => event.sequence)).toEqual([2, 4, 5, 6]);
+    expect(coalescedState.messages).toEqual(originalState.messages);
+    expect(coalescedState.session).toEqual(originalState.session);
+    expect(coalescedState.checkpoints).toEqual(originalState.checkpoints);
+    expect(coalescedState.latestTurn).toEqual(originalState.latestTurn);
+    expect(deriveWorkLogEntries(coalescedState.activities)).toEqual(
+      deriveWorkLogEntries(originalState.activities),
+    );
   });
 
   it("leaves the collapsed work log identical to the full history", () => {
