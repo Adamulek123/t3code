@@ -12,6 +12,7 @@ import {
   matchesPullRequestQuery,
   parsePullRequestQuery,
   pullRequestStatsBatches,
+  pullRequestStatsKeysToRequest,
   mergePullRequestDiffStats,
   narrowPullRequestsToFilters,
   partitionPullRequestsWithPriority,
@@ -59,6 +60,20 @@ function entry(
 }
 
 describe("visible pull request line-count targets", () => {
+  it("does not request a row again after its received batch is pruned", () => {
+    const entries = [entry({ number: 1 }), entry({ number: 2 })];
+    const entriesByKey = new Map(entries.map((item) => [pullRequestEntryKey(item), item]));
+    const firstKey = pullRequestEntryKey(entries[0]!);
+    const secondKey = pullRequestEntryKey(entries[1]!);
+    const completedStats = new Map([[firstKey, { additions: 1, deletions: 1 }]]);
+
+    const keys = pullRequestStatsKeysToRequest(new Set([firstKey, secondKey]), [], completedStats);
+    expect([...keys]).toEqual([secondKey]);
+    expect(pullRequestStatsBatches(entriesByKey, keys)[0]?.input.refs).toEqual([
+      { projectId: "project-1", repository: "pingdotgg/t3code", number: 2 },
+    ]);
+  });
+
   it("drops historical rows after a long scroll so refresh stays bounded to the viewport", () => {
     const entries = Array.from({ length: 500 }, (_, index) => entry({ number: index + 1 }));
     const entriesByKey = new Map(entries.map((item) => [pullRequestEntryKey(item), item]));
