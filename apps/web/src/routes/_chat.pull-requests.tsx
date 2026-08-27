@@ -734,7 +734,12 @@ function PullRequestsRouteView() {
     baselineQuery.refresh();
     authoredQuery.refresh();
     reviewingQuery.refresh();
-    statsQuery.refresh();
+    const visible = visibleStatsKeys.current;
+    if (visible.key === filterKey) {
+      const batches = pullRequestStatsBatches(entriesByStatsKey.current, visible.values);
+      setStatsTargetState({ key: filterKey, batches });
+      statsQuery.refresh(batches.map(({ environmentId, input }) => ({ environmentId, input })));
+    }
     setDetailRefreshToken((token) => token + 1);
   };
   const refreshing = invalidating || listQuery.isPending;
