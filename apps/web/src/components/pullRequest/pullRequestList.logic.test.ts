@@ -20,6 +20,7 @@ import {
   scorePullRequestMatch,
   withDiffStat,
   resolveProjectScope,
+  resolvePullRequestViewerGate,
   resolveQueryEnvironmentIds,
   resolveSelectedEnvironmentId,
   type EnvironmentPullRequestEntry,
@@ -614,6 +615,13 @@ describe("the list snapshot across a reload", () => {
     expect(readSnapshot(storage, "env-1", { "github.com": "Octocat" })).toBeNull();
   });
 
+  it("rejects an existing snapshot when viewer verification failed", () => {
+    const storage = makeStorage();
+    writePullRequestListSnapshot(storage, "env-1", { scope: "s", data }, NOW);
+
+    expect(readPullRequestListSnapshot(storage, "env-1", { viewers: null, now: NOW })).toBeNull();
+  });
+
   it("rejects snapshots after their short reload window", () => {
     const storage = makeStorage();
     writePullRequestListSnapshot(storage, "env-1", { scope: "s", data }, NOW);
@@ -687,6 +695,22 @@ describe("the list snapshot across a reload", () => {
 
 const ENV_1 = "env-1" as EnvironmentId;
 const ENV_2 = "env-2" as EnvironmentId;
+
+describe("viewer verification gating", () => {
+  it("withholds a capable server while account verification races an in-flight list", () => {
+    const gate = resolvePullRequestViewerGate([ENV_1], new Set([ENV_1]), [ENV_1], true);
+
+    expect(gate.listEnvironmentIds).toEqual([]);
+    expect(gate.canHydrateSnapshot).toBe(false);
+  });
+
+  it("keeps live lists working on old servers without trusting their snapshots", () => {
+    const gate = resolvePullRequestViewerGate([ENV_1], new Set(), [], false);
+
+    expect(gate.listEnvironmentIds).toEqual([ENV_1]);
+    expect(gate.canHydrateSnapshot).toBe(false);
+  });
+});
 
 describe("merging the environments' own listings", () => {
   const answer = (

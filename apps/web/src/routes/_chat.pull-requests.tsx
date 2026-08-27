@@ -43,6 +43,7 @@ import {
   rankPullRequestMatches,
   pullRequestEnvironmentSetKey,
   readPullRequestListSnapshot,
+  resolvePullRequestViewerGate,
   resolveProjectScope,
   resolveQueryEnvironmentIds,
   resolveSelectedEnvironmentId,
@@ -660,20 +661,24 @@ function PullRequestsRouteView() {
   // changed. Do not race a warm list hit against that read, and never ask an environment whose
   // identity check failed. Older servers without this method keep their live-list behavior, but
   // cannot hydrate a persisted snapshot because their identity cannot be verified independently.
-  const verifiedEnvironmentIds = useMemo(
+  const viewerGate = useMemo(
     () =>
-      new Set([
-        ...environmentQueries.flatMap(({ environmentId }) =>
-          viewerCapableEnvironmentIds.has(environmentId) ? [] : [environmentId],
-        ),
-        ...(viewerQuery.isPending ? [] : viewerQuery.environmentIds),
-      ]),
+      resolvePullRequestViewerGate(
+        environmentQueries.map(({ environmentId }) => environmentId),
+        viewerCapableEnvironmentIds,
+        viewerQuery.environmentIds,
+        viewerQuery.isPending,
+      ),
     [
       environmentQueries,
       viewerCapableEnvironmentIds,
       viewerQuery.environmentIds,
       viewerQuery.isPending,
     ],
+  );
+  const verifiedEnvironmentIds = useMemo(
+    () => new Set(viewerGate.listEnvironmentIds),
+    [viewerGate.listEnvironmentIds],
   );
   const verifiedListTargets = useMemo(
     () => listTargets.filter(({ environmentId }) => verifiedEnvironmentIds.has(environmentId)),
@@ -831,7 +836,11 @@ function PullRequestsRouteView() {
   // with ghosts. Waiting for identity prevents one CLI account from seeing another's stored rows.
   useEffect(() => {
     const viewers = viewerQuery.viewers;
-    if (environmentKey.length === 0 || viewers === null || viewerQuery.isPending) return;
+    if (environmentKey.length === 0) return;
+    if (!viewerGate.canHydrateSnapshot) {
+      setLoaded(null);
+      return;
+    }
     setLoaded((current) => {
       // Rows read from a different set of environments cannot even be narrowed — one of them may
       // no longer be connected at all — so that set's own snapshot beats holding them.
@@ -850,7 +859,7 @@ function PullRequestsRouteView() {
         ...(snapshot.partitions === undefined ? {} : { partitions: snapshot.partitions }),
       };
     });
-  }, [environmentKey, viewerQuery.isPending, viewerQuery.viewers]);
+  }, [environmentKey, viewerGate.canHydrateSnapshot, viewerQuery.viewers]);
   useEffect(() => {
     // Only once this query has settled. While a search is being swapped in or out the text has
     // already changed and the data has not, so recording them together would file the previous

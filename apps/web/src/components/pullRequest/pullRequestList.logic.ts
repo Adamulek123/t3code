@@ -536,6 +536,32 @@ type SnapshotStorage = Pick<Storage, "getItem" | "setItem">;
 export const pullRequestEnvironmentSetKey = (environmentIds: ReadonlyArray<string>): string =>
   [...environmentIds].sort((left, right) => left.localeCompare(right)).join(",");
 
+export function resolvePullRequestViewerGate<Id extends string>(
+  environmentIds: ReadonlyArray<Id>,
+  viewerCapableEnvironmentIds: ReadonlySet<Id>,
+  verifiedEnvironmentIds: ReadonlyArray<Id>,
+  verificationPending: boolean,
+): {
+  readonly listEnvironmentIds: ReadonlyArray<Id>;
+  readonly canHydrateSnapshot: boolean;
+} {
+  const verified = new Set(verifiedEnvironmentIds);
+  return {
+    listEnvironmentIds: environmentIds.filter(
+      (environmentId) =>
+        !viewerCapableEnvironmentIds.has(environmentId) ||
+        (!verificationPending && verified.has(environmentId)),
+    ),
+    canHydrateSnapshot:
+      environmentIds.length > 0 &&
+      !verificationPending &&
+      environmentIds.every(
+        (environmentId) =>
+          viewerCapableEnvironmentIds.has(environmentId) && verified.has(environmentId),
+      ),
+  };
+}
+
 const snapshotStorageKey = (environmentSetKey: string) =>
   `t3.pullRequests.list:${environmentSetKey}`;
 
@@ -607,9 +633,10 @@ const decodeSnapshot = Schema.decodeUnknownOption(
 export function readPullRequestListSnapshot(
   storage: SnapshotStorage | undefined,
   environmentSetKey: string,
-  context: { readonly viewers: PullRequestViewers; readonly now?: number },
+  context: { readonly viewers: PullRequestViewers | null; readonly now?: number },
 ): PullRequestListSnapshot | null {
   try {
+    if (context.viewers === null) return null;
     const raw = storage?.getItem(snapshotStorageKey(environmentSetKey));
     if (!raw) return null;
     const decoded = decodeSnapshot(JSON.parse(raw));
