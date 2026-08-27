@@ -66,6 +66,7 @@ import {
   writePullRequestListSnapshot,
   scorePullRequestMatch,
   pullRequestStatsBatches,
+  pullRequestStatsKeysToRequest,
   retainVisiblePullRequestStatsBatches,
   type EnvironmentPullRequestEntry,
   type MergedPullRequestList,
@@ -1241,6 +1242,9 @@ function PullRequestsRouteView() {
     ),
   );
   const visibleStatsKeys = useRef({ key: filterKey, values: new Set<string>() });
+  const [statsByRow, setStatsByRow] = useState<PullRequestDiffStats>(() => new Map());
+  const statsByRowRef = useRef(statsByRow);
+  statsByRowRef.current = statsByRow;
   const [statsTargetState, setStatsTargetState] = useState<{
     readonly key: string;
     readonly batches: ReadonlyArray<PullRequestStatsBatch>;
@@ -1298,8 +1302,7 @@ function PullRequestsRouteView() {
         if (!changed) return;
         setStatsTargetState((current) => {
           const batches = current.key === filterKey ? current.batches : [];
-          const requested = new Set(batches.flatMap((batch) => [...batch.keys]));
-          const newKeys = new Set([...entered].filter((key) => !requested.has(key)));
+          const newKeys = pullRequestStatsKeysToRequest(entered, batches, statsByRowRef.current);
           const retained = statsPending.current
             ? batches
             : retainVisiblePullRequestStatsBatches(batches, visible.values);
@@ -1331,7 +1334,6 @@ function PullRequestsRouteView() {
   // Adding or removing one row keys a fresh stats query with nothing in it yet, so the counts
   // are merged into what is already held rather than rebuilt: every count on screen stays until
   // its replacement arrives.
-  const [statsByRow, setStatsByRow] = useState<PullRequestDiffStats>(() => new Map());
   useEffect(() => {
     const stats = statsQuery.stats;
     if (stats === null) return;
