@@ -1,8 +1,12 @@
 import {
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
+  ProviderDriverKind,
+  ProviderInstanceId,
   ServerConfig,
   type ServerConfig as ServerConfigType,
+  ServerConfigStreamEvent,
+  type ServerConfigStreamEvent as ServerConfigStreamEventType,
   WS_METHODS,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
@@ -144,6 +148,7 @@ const isRpcRequest = Schema.is(RpcRequest);
 const isPing = Schema.is(Schema.Struct({ _tag: Schema.Literal("Ping") }));
 const encodeJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 const encodeServerConfig = Schema.encodeSync(ServerConfig);
+const encodeServerConfigStreamEvent = Schema.encodeSync(ServerConfigStreamEvent);
 const ENCODED_SERVER_CONFIG = encodeServerConfig(SERVER_CONFIG);
 const LEGACY_SERVER_CONFIG = {
   ...ENCODED_SERVER_CONFIG,
@@ -352,6 +357,112 @@ describe("RpcSessionFactory", () => {
         });
       }),
     ),
+  );
+
+  it.effect.each<{
+    readonly event: ServerConfigStreamEventType;
+    readonly expectedConfig: Partial<ServerConfigType>;
+  }>([
+    {
+      event: {
+        version: 1,
+        type: "providerStatuses",
+        payload: {
+          providers: [
+            {
+              instanceId: ProviderInstanceId.make("codex"),
+              driver: ProviderDriverKind.make("codex"),
+              enabled: true,
+              installed: true,
+              version: "1.0.0",
+              status: "ready",
+              auth: { status: "authenticated" },
+              checkedAt: "2026-08-27T00:00:00.000Z",
+              models: [],
+              slashCommands: [],
+              skills: [],
+            },
+          ],
+        },
+      },
+      expectedConfig: {
+        providers: [
+          {
+            instanceId: ProviderInstanceId.make("codex"),
+            driver: ProviderDriverKind.make("codex"),
+            enabled: true,
+            installed: true,
+            version: "1.0.0",
+            status: "ready",
+            auth: { status: "authenticated" },
+            checkedAt: "2026-08-27T00:00:00.000Z",
+            models: [],
+            slashCommands: [],
+            skills: [],
+          },
+        ],
+      },
+    },
+    {
+      event: {
+        version: 1,
+        type: "settingsUpdated",
+        payload: {
+          settings: {
+            ...DEFAULT_SERVER_SETTINGS,
+            newWorktreesStartFromOrigin: !DEFAULT_SERVER_SETTINGS.newWorktreesStartFromOrigin,
+          },
+        },
+      },
+      expectedConfig: {
+        settings: {
+          ...DEFAULT_SERVER_SETTINGS,
+          newWorktreesStartFromOrigin: !DEFAULT_SERVER_SETTINGS.newWorktreesStartFromOrigin,
+        },
+      },
+    },
+  ])(
+    "preserves $event.type events and includes them in replay snapshots",
+    ({ event, expectedConfig }) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const { factory, sockets } = yield* makeFactory();
+          const session = yield* factory.connect(PREPARED);
+          const readyFiber = yield* Effect.forkChild(session.ready);
+          const socket = yield* awaitSocket(sockets);
+          socket.open();
+          yield* completeInitialConfig(socket);
+          yield* Fiber.join(readyFiber);
+
+          const subscriber = yield* session.serverConfigEvents!.pipe(
+            Stream.take(2),
+            Stream.runCollect,
+            Effect.forkChild,
+          );
+          yield* Effect.yieldNow;
+
+          const request = yield* awaitRequest(socket);
+          socket.serverMessage(
+            encodeJson({
+              _tag: "Chunk",
+              requestId: request.id,
+              values: [encodeServerConfigStreamEvent(event)],
+            }),
+          );
+
+          const events = Array.from(yield* Fiber.join(subscriber));
+          expect(events[1]).toEqual(event);
+
+          const replay = yield* session.serverConfigEvents!.pipe(Stream.runHead);
+          expect(replay).toMatchObject({
+            _tag: "Some",
+            value: {
+              type: "snapshot",
+              config: expectedConfig,
+            },
+          });
+        }),
+      ),
   );
 
   it.effect("tolerates two missed pong windows before closing the session", () =>
