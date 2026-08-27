@@ -911,9 +911,20 @@ function PullRequestsRouteView() {
   useEffect(() => {
     const viewers = viewerQuery.viewers;
     if (environmentKey.length === 0) return;
-    if (viewerGate.shouldClearRetainedRows) {
+    const retainedViewerMismatch =
+      !viewerQuery.isPending &&
+      loaded !== null &&
+      loaded.environmentKey === environmentKey &&
+      viewers !== null &&
+      !pullRequestViewersMatchForEnvironments(
+        loaded.data.viewers,
+        viewers,
+        queriedViewerEnvironmentIds,
+      );
+    if (viewerGate.shouldClearRetainedRows || retainedViewerMismatch) {
       setLoaded(null);
       setOrdered(null);
+      setPage({ key: filterKey, size: PAGE_SIZE, cursors: null, regrown: [] });
       return;
     }
     // A pending read is not a mismatch: keep what this session already verified until the fresh
@@ -921,19 +932,6 @@ function PullRequestsRouteView() {
     // continues to use live rows, but never hydrates persisted ones.
     if (viewerQuery.isPending || viewers === null) return;
     setLoaded((current) => {
-      // Fresh identity is authoritative for viewer-capable environments, including when a mixed
-      // list also contains a legacy server whose identity cannot be checked independently.
-      if (
-        current !== null &&
-        current.environmentKey === environmentKey &&
-        !pullRequestViewersMatchForEnvironments(
-          current.data.viewers,
-          viewers,
-          queriedViewerEnvironmentIds,
-        )
-      ) {
-        return null;
-      }
       if (!viewerGate.canHydrateSnapshot) return current;
       // Rows read from a different set of environments cannot even be narrowed — one of them may
       // no longer be connected at all — so that set's own snapshot beats holding them.
@@ -954,6 +952,8 @@ function PullRequestsRouteView() {
     });
   }, [
     environmentKey,
+    filterKey,
+    loaded,
     queriedViewerEnvironmentIds,
     viewerGate,
     viewerQuery.isPending,
