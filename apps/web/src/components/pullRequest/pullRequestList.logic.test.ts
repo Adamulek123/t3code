@@ -65,9 +65,22 @@ describe("visible pull request line-count targets", () => {
     const entriesByKey = new Map(entries.map((item) => [pullRequestEntryKey(item), item]));
     const firstKey = pullRequestEntryKey(entries[0]!);
     const secondKey = pullRequestEntryKey(entries[1]!);
-    const completedStats = new Map([[firstKey, { additions: 1, deletions: 1 }]]);
+    const completedStats = mergePullRequestDiffStats(new Map(), [
+      {
+        environmentId: ENV_1,
+        projectId: "project-1",
+        number: 1,
+        additions: 1,
+        deletions: 1,
+      },
+    ]);
 
-    const keys = pullRequestStatsKeysToRequest(new Set([firstKey, secondKey]), [], completedStats);
+    const keys = pullRequestStatsKeysToRequest(
+      entriesByKey,
+      new Set([firstKey, secondKey]),
+      [],
+      completedStats,
+    );
     expect([...keys]).toEqual([secondKey]);
     expect(pullRequestStatsBatches(entriesByKey, keys)[0]?.input.refs).toEqual([
       { projectId: "project-1", repository: "pingdotgg/t3code", number: 2 },
