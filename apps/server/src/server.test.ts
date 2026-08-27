@@ -203,16 +203,22 @@ const defaultModelSelection = {
 const makeLiveToolActivityEvent = (
   sequence: number,
   kind: "tool.updated" | "tool.completed" = "tool.updated",
+  options: {
+    readonly toolCallId?: string;
+    readonly title?: string;
+    readonly path?: string;
+  } = {},
 ): Extract<OrchestrationEvent, { type: "thread.activity-appended" }> => {
+  const { toolCallId = "call-edit", title = "Editing app.ts", path = "src/app.ts" } = options;
   const activity: OrchestrationThreadActivity = {
     id: EventId.make(`activity-${sequence}`),
     tone: "tool",
     kind,
-    summary: "Editing app.ts",
+    summary: title,
     payload: {
       itemType: "file_change",
-      title: "Editing app.ts",
-      data: { toolCallId: "call-edit" },
+      title,
+      data: { toolCallId, path },
     },
     turnId: TurnId.make("turn-edit"),
     createdAt: "2026-01-01T00:00:01.000Z",
@@ -6923,10 +6929,16 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             getThreadDetailSnapshot: () =>
               Effect.gen(function* () {
                 yield* Effect.sleep("25 millis");
-                yield* PubSub.publishAll(
-                  liveEvents,
-                  Array.from({ length: 513 }, (_, index) => makeLiveToolActivityEvent(index + 2)),
-                );
+                yield* PubSub.publishAll(liveEvents, [
+                  ...Array.from({ length: 512 }, (_, index) =>
+                    makeLiveToolActivityEvent(index + 2),
+                  ),
+                  makeLiveToolActivityEvent(514, "tool.updated", {
+                    toolCallId: "call-read",
+                    title: "Reading server.test.ts",
+                    path: "apps/server/src/server.test.ts",
+                  }),
+                ]);
                 return Option.some({ snapshotSequence: 1, thread });
               }),
           },
@@ -6939,13 +6951,51 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           client[ORCHESTRATION_WS_METHODS.subscribeThread]({
             threadId: defaultThreadId,
             requestCompletionMarker: true,
-          }).pipe(Stream.take(3), Stream.runCollect),
+          }).pipe(Stream.take(4), Stream.runCollect),
         ),
       ).pipe(Effect.timeout("2 seconds"));
 
       assert.equal(items[0]?.kind, "snapshot");
-      assert.equal(items[1]?.kind === "event" ? items[1].event.sequence : null, 514);
-      assert.deepEqual(items[2], { kind: "synchronized" });
+      assert.deepEqual(
+        items.slice(1, 3).map((item) => {
+          assert.equal(item?.kind, "event");
+          if (item?.kind !== "event" || item.event.type !== "thread.activity-appended") {
+            return null;
+          }
+          return {
+            sequence: item.event.sequence,
+            summary: item.event.payload.activity.summary,
+            payload: item.event.payload.activity.payload,
+          };
+        }),
+        [
+          {
+            sequence: 513,
+            summary: "Editing app.ts",
+            payload: {
+              itemType: "file_change",
+              title: "Editing app.ts",
+              data: {
+                files: [{ path: "src/app.ts" }],
+                toolCallId: "call-edit",
+              },
+            },
+          },
+          {
+            sequence: 514,
+            summary: "Reading server.test.ts",
+            payload: {
+              itemType: "file_change",
+              title: "Reading server.test.ts",
+              data: {
+                files: [{ path: "apps/server/src/server.test.ts" }],
+                toolCallId: "call-read",
+              },
+            },
+          },
+        ],
+      );
+      assert.deepEqual(items[3], { kind: "synchronized" });
     }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
   );
 
