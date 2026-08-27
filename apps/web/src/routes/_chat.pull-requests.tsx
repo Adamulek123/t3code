@@ -1065,10 +1065,21 @@ function PullRequestsRouteView() {
   const answerRejected = baselineAnswers
     ? baselineQuery.data !== null && verifiedBaselineData === null
     : listQuery.data !== null && verifiedListData === null;
+  const answerQueryName = baselineAnswers ? "baseline" : "list";
+  const answerQuery = baselineAnswers ? baselineQuery : listQuery;
+  const verificationFailed =
+    answerRejected &&
+    !answerQuery.isPending &&
+    rejectedRefreshes.current.get(answerQueryName) === answerQuery.refresh;
   /** The rows on screen answer the previous question, held while this one is on its way. */
   const showingCarried = answered === null && carried !== null;
   const loadingMore = listQuery.isPending && listData !== null;
-  const listError = viewerQuery.error ?? listQuery.error;
+  const listError =
+    viewerQuery.error ??
+    listQuery.error ??
+    (verificationFailed
+      ? "Could not verify the pull request account. Retry to load safely."
+      : null);
   /** Nothing read and nothing to carry, which is the one thing skeletons are for. */
   const firstLoad =
     (viewerQuery.isPending || listQuery.isPending || (answerRejected && listError === null)) &&
