@@ -11,6 +11,7 @@ import {
   matchesPullRequestFilters,
   matchesPullRequestQuery,
   parsePullRequestQuery,
+  pullRequestStatsBatches,
   mergePullRequestDiffStats,
   narrowPullRequestsToFilters,
   partitionPullRequestsWithPriority,
@@ -18,6 +19,7 @@ import {
   writePullRequestListSnapshot,
   rankPullRequestMatches,
   scorePullRequestMatch,
+  retainVisiblePullRequestStatsBatches,
   withDiffStat,
   resolveProjectScope,
   resolveQueryEnvironmentIds,
@@ -55,6 +57,23 @@ function entry(
     ...overrides,
   } as EnvironmentPullRequestEntry;
 }
+
+describe("visible pull request line-count targets", () => {
+  it("drops historical rows after a long scroll so refresh stays bounded to the viewport", () => {
+    const entries = Array.from({ length: 500 }, (_, index) => entry({ number: index + 1 }));
+    const entriesByKey = new Map(entries.map((item) => [pullRequestEntryKey(item), item]));
+    const batches = entries.map(
+      (item) => pullRequestStatsBatches(entriesByKey, new Set([pullRequestEntryKey(item)]))[0]!,
+    );
+    const visibleKeys = new Set(entries.slice(-12).map(pullRequestEntryKey));
+
+    const retained = retainVisiblePullRequestStatsBatches(batches, visibleKeys);
+    expect(retained).toHaveLength(12);
+    expect(retained.flatMap((batch) => batch.input.refs.map((ref) => ref.number))).toEqual(
+      entries.slice(-12).map((item) => item.number),
+    );
+  });
+});
 
 describe("pull request involvement filtering", () => {
   const entries = [
