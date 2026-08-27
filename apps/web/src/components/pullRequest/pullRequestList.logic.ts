@@ -382,12 +382,18 @@ export interface PullRequestStatsBatch extends PullRequestStatsTarget {
 
 /** Excludes rows already covered by an active batch or the received-count cache. */
 export function pullRequestStatsKeysToRequest(
+  entriesByKey: ReadonlyMap<string, EnvironmentPullRequestEntry>,
   enteredKeys: ReadonlySet<string>,
   batches: ReadonlyArray<PullRequestStatsBatch>,
   statsByRow: ReadonlyMap<string, unknown>,
 ): ReadonlySet<string> {
   const requested = new Set(batches.flatMap((batch) => [...batch.keys]));
-  return new Set([...enteredKeys].filter((key) => !requested.has(key) && !statsByRow.has(key)));
+  return new Set(
+    [...enteredKeys].filter((key) => {
+      const entry = entriesByKey.get(key);
+      return entry !== undefined && !requested.has(key) && !statsByRow.has(diffStatKey(entry));
+    }),
+  );
 }
 
 /** Groups newly visible rows into one immutable line-count read per environment. */

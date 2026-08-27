@@ -1218,7 +1218,12 @@ function PullRequestsRouteView() {
         if (!changed) return;
         setStatsTargetState((current) => {
           const batches = current.key === filterKey ? current.batches : [];
-          const newKeys = pullRequestStatsKeysToRequest(entered, batches, statsByRowRef.current);
+          const newKeys = pullRequestStatsKeysToRequest(
+            entriesByStatsKey.current,
+            entered,
+            batches,
+            statsByRowRef.current,
+          );
           const retained = statsPending.current
             ? batches
             : retainVisiblePullRequestStatsBatches(batches, visible.values);
