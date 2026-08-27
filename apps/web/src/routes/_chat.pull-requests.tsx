@@ -1108,6 +1108,7 @@ function PullRequestsRouteView() {
   // host's rate limit.
   useLiveRefresh(
     () => {
+      viewerQuery.refresh();
       refreshList();
       authoredQuery.refresh();
       reviewingQuery.refresh();

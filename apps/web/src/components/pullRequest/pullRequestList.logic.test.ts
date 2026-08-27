@@ -628,6 +628,21 @@ describe("the list snapshot across a reload", () => {
     ).toBe(true);
   });
 
+  it("accepts a verified continuation page from only the hosts with cursors", () => {
+    const capable = new Set(["env-1", "env-2"]);
+    const verified = {
+      "env-1 github.com": "Bilal",
+      "env-2 github.com": "Octocat",
+    };
+
+    expect(
+      pullRequestListViewersMatchVerification({ "env-1 github.com": "Bilal" }, verified, capable),
+    ).toBe(true);
+    expect(
+      pullRequestListViewersMatchVerification({ "env-1 github.com": "Octocat" }, verified, capable),
+    ).toBe(false);
+  });
+
   it("hydrates the retained rows so ghosts never replace them", () => {
     const storage = makeStorage();
     writePullRequestListSnapshot(storage, "env-1", { scope: "env-1:open:all::", data }, NOW);

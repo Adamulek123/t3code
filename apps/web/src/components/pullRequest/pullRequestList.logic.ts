@@ -618,10 +618,16 @@ export const pullRequestListViewersMatchVerification = (
   listedViewers: PullRequestViewers,
   verifiedViewers: PullRequestViewers | null,
   verifiedEnvironmentIds: ReadonlySet<string>,
-): boolean =>
-  verifiedEnvironmentIds.size === 0 ||
-  (verifiedViewers !== null &&
-    pullRequestViewersMatchForEnvironments(listedViewers, verifiedViewers, verifiedEnvironmentIds));
+): boolean => {
+  if (verifiedEnvironmentIds.size === 0) return true;
+  if (verifiedViewers === null) return false;
+
+  const prefixes = [...verifiedEnvironmentIds].map((environmentId) => `${environmentId} `);
+  return Object.entries(listedViewers).every(
+    ([key, viewer]) =>
+      !prefixes.some((prefix) => key.startsWith(prefix)) || verifiedViewers[key] === viewer,
+  );
+};
 
 /**
  * Decoded with the contract's own schema rather than trusted from a cast: storage is writable
