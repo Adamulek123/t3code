@@ -35,7 +35,7 @@ import { Popover, PopoverPopup, PopoverTrigger } from "~/components/ui/popover";
 import { Button } from "~/components/ui/button";
 import { PanelTabCloseButton } from "~/components/ui/panel-tab-close-button";
 import { readTextFromClipboard, writeTextToClipboard } from "~/hooks/useCopyToClipboard";
-import { cn } from "~/lib/utils";
+import { cn, isMacPlatform } from "~/lib/utils";
 import { type TerminalContextSelection } from "~/lib/terminalContext";
 import {
   GhosttyTerminalSurface,
@@ -260,29 +260,49 @@ export function terminalSelectionLineRange(position: {
 
 export type TerminalContextMenuAction = "add-to-chat" | "copy" | "paste";
 
-/** Post-selection popup: just the two selection actions, always enabled. */
-export function terminalSelectionMenuItems(): ContextMenuItem<"add-to-chat" | "copy">[] {
-  return [
-    { id: "add-to-chat", label: "Add to chat" },
-    { id: "copy", label: "Copy" },
-  ];
+export function shouldRestoreTerminalFocusAfterMenuAction(
+  action: TerminalContextMenuAction | null,
+): boolean {
+  return action === "copy" || action === "paste";
 }
 
-/**
- * Right-click menu for the terminal canvas: the selection actions (disabled
- * until a selection exists) plus Paste. Paste is always offered: the browser
- * (and Electron's default editing menu) can only paste into an editable
- * element, so a canvas terminal never gets a usable entry from them.
- */
-export function terminalContextMenuItems(options: {
-  hasSelection: boolean;
-}): ContextMenuItem<TerminalContextMenuAction>[] {
+export async function runTerminalMenuRequest(options: {
+  readonly signal: AbortSignal;
+  readonly isCurrentRequest: () => boolean;
+  readonly open: () => Promise<TerminalContextMenuAction | null>;
+  readonly perform: (action: TerminalContextMenuAction, isCurrent: () => boolean) => Promise<void>;
+  readonly reportOpenError: (error: unknown) => void;
+  readonly focusTerminal: () => void;
+}): Promise<void> {
+  const isCurrent = () => options.isCurrentRequest() && !options.signal.aborted;
+  let action: TerminalContextMenuAction | null;
+  try {
+    action = await options.open();
+  } catch (error) {
+    if (isCurrent()) options.reportOpenError(error);
+    return;
+  }
+  if (action === null || !isCurrent()) return;
+  await options.perform(action, isCurrent);
+  if (shouldRestoreTerminalFocusAfterMenuAction(action) && isCurrent()) {
+    options.focusTerminal();
+  }
+}
+
+export function terminalContextMenuItems(
+  availability: { readonly canAddToChat: boolean; readonly canCopy: boolean },
+  platform = typeof navigator === "undefined" ? "" : navigator.platform,
+): ContextMenuItem<TerminalContextMenuAction>[] {
+  const isMac = isMacPlatform(platform);
   return [
-    ...terminalSelectionMenuItems().map((item) => ({
-      ...item,
-      disabled: !options.hasSelection,
-    })),
-    { id: "paste", label: "Paste" },
+    { id: "add-to-chat", label: "Add to chat", disabled: !availability.canAddToChat },
+    {
+      id: "copy",
+      label: "Copy",
+      accelerator: isMac ? "Command+C" : "Ctrl+Shift+C",
+      disabled: !availability.canCopy,
+    },
+    { id: "paste", label: "Paste", accelerator: isMac ? "Command+V" : "Ctrl+Shift+V" },
   ];
 }
 
@@ -528,8 +548,12 @@ export function TerminalViewport({
       synchronizeTerminalStatus(terminal, latestSession.status);
       if (autoFocus) window.requestAnimationFrame(() => terminal.focus());
 
+      let terminalMenuAbortController: AbortController | null = null;
       const clearSelectionAction = () => {
         selectionActionRequestIdRef.current += 1;
+        terminalMenuAbortController?.abort();
+        terminalMenuAbortController = null;
+        openSelectionMenuRequestIdRef.current = null;
         if (selectionActionTimerRef.current !== null) {
           window.clearTimeout(selectionActionTimerRef.current);
           selectionActionTimerRef.current = null;
@@ -540,7 +564,7 @@ export function TerminalViewport({
       const readSelectionAction = (): {
         position: { x: number; y: number };
         clipboardText: string;
-        selection: TerminalContextSelection;
+        selection: TerminalContextSelection | null;
       } | null => {
         const activeTerminal = terminalRef.current;
         const mountElement = containerRef.current;
@@ -550,10 +574,9 @@ export function TerminalViewport({
         const selectionText = activeTerminal.getSelection();
         const selectionPosition = activeTerminal.getSelectionPosition();
         const normalizedText = selectionText.replace(/\r\n/g, "\n").replace(/^\n+|\n+$/g, "");
-        if (!selectionPosition || normalizedText.length === 0) {
+        if (selectionText.length === 0) {
           return null;
         }
-        const { lineStart, lineEnd } = terminalSelectionLineRange(selectionPosition);
         const bounds = mountElement.getBoundingClientRect();
         const position = resolveTerminalSelectionActionPosition({
           bounds,
@@ -563,63 +586,75 @@ export function TerminalViewport({
         return {
           position,
           clipboardText: selectionText,
-          selection: {
-            terminalId,
-            terminalLabel: readTerminalLabel(),
-            lineStart,
-            lineEnd,
-            text: normalizedText,
-          },
+          selection:
+            selectionPosition && normalizedText.length > 0
+              ? {
+                  terminalId,
+                  terminalLabel: readTerminalLabel(),
+                  ...terminalSelectionLineRange(selectionPosition),
+                  text: normalizedText,
+                }
+              : null,
         };
       };
 
-      const addSelectionToChat = (selection: TerminalContextSelection) => {
-        handleAddTerminalContext(selection);
-        terminalRef.current?.clearSelection();
-        terminalRef.current?.focus();
+      const performTerminalMenuAction = async (
+        clicked: TerminalContextMenuAction,
+        selectionAction: ReturnType<typeof readSelectionAction>,
+        isCurrent: () => boolean,
+      ) => {
+        switch (clicked) {
+          case "add-to-chat":
+            if (!selectionAction?.selection || !isCurrent()) return;
+            handleAddTerminalContext(selectionAction.selection);
+            terminalRef.current?.clearSelection();
+            return;
+          case "copy":
+            if (!selectionAction || !isCurrent()) return;
+            try {
+              await writeTextToClipboard(selectionAction.clipboardText, "terminal selection");
+            } catch (error) {
+              if (!isCurrent()) return;
+              const activeTerminal = terminalRef.current;
+              if (activeTerminal) {
+                writeSystemMessage(
+                  activeTerminal,
+                  error instanceof Error ? error.message : "Unable to copy terminal selection",
+                );
+              }
+            }
+            return;
+          case "paste": {
+            if (!isCurrent()) return;
+            const activeTerminal = terminalRef.current;
+            if (!activeTerminal) return;
+            try {
+              // The surface claims the paste race before reading so a shortcut
+              // cannot deliver the same clipboard content a second time.
+              await activeTerminal.pasteFromClipboard(
+                () => readTextFromClipboard("terminal input"),
+                isCurrent,
+              );
+            } catch (error) {
+              if (!isCurrent()) return;
+              writeSystemMessage(
+                activeTerminal,
+                error instanceof Error ? error.message : "Unable to read the clipboard",
+              );
+            }
+            return;
+          }
+        }
       };
 
-      // A selection-action flow that was superseded while its async work ran
-      // must go silent: no error message, no focus steal.
-      const reportIfCurrent = (requestId: number, error: unknown, fallback: string) => {
-        if (requestId !== selectionActionRequestIdRef.current) return;
+      const reportMenuOpenError = (error: unknown) => {
         const activeTerminal = terminalRef.current;
         if (activeTerminal) {
-          writeSystemMessage(activeTerminal, error instanceof Error ? error.message : fallback);
-        }
-      };
-
-      const focusIfCurrent = (requestId: number) => {
-        if (requestId === selectionActionRequestIdRef.current) {
-          terminalRef.current?.focus();
-        }
-      };
-
-      const copySelection = async (text: string, requestId: number) => {
-        try {
-          await writeTextToClipboard(text, "terminal selection");
-        } catch (error) {
-          reportIfCurrent(requestId, error, "Unable to copy terminal selection");
-        }
-        focusIfCurrent(requestId);
-      };
-
-      const pasteFromClipboard = async (requestId: number) => {
-        const activeTerminal = terminalRef.current;
-        if (!activeTerminal) return;
-        try {
-          // The surface owns the read so it can claim the paste race before it
-          // starts: a paste shortcut fired while the menu read is in flight
-          // supersedes this paste instead of landing alongside it.
-          await activeTerminal.pasteFromClipboard(
-            () => readTextFromClipboard("terminal input"),
-            () => requestId === selectionActionRequestIdRef.current,
+          writeSystemMessage(
+            activeTerminal,
+            error instanceof Error ? error.message : "Unable to open the terminal context menu",
           );
-        } catch (error) {
-          reportIfCurrent(requestId, error, "Unable to read the clipboard");
-          return;
         }
-        focusIfCurrent(requestId);
       };
 
       const showTerminalContextMenu = async (event: MouseEvent) => {
@@ -632,30 +667,35 @@ export function TerminalViewport({
         clearSelectionAction();
         const selectionAction = readSelectionAction();
         const requestId = selectionActionRequestIdRef.current;
-        let clicked: TerminalContextMenuAction | null;
+        const abortController = new AbortController();
+        terminalMenuAbortController = abortController;
         try {
-          clicked = await localApi.contextMenu.show(
-            terminalContextMenuItems({ hasSelection: selectionAction !== null }),
-            { x: event.clientX, y: event.clientY },
-          );
-        } catch (error) {
-          reportIfCurrent(requestId, error, "Unable to open the terminal context menu");
-          focusIfCurrent(requestId);
-          return;
-        }
-        if (requestId !== selectionActionRequestIdRef.current || clicked === null) {
-          return;
-        }
-        switch (clicked) {
-          case "add-to-chat":
-            if (selectionAction) addSelectionToChat(selectionAction.selection);
-            return;
-          case "copy":
-            if (selectionAction) await copySelection(selectionAction.clipboardText, requestId);
-            return;
-          case "paste":
-            await pasteFromClipboard(requestId);
-            return;
+          await runTerminalMenuRequest({
+            signal: abortController.signal,
+            isCurrentRequest: () => requestId === selectionActionRequestIdRef.current,
+            open: () =>
+              localApi.contextMenu.show(
+                terminalContextMenuItems({
+                  canAddToChat: selectionAction?.selection != null,
+                  canCopy: selectionAction !== null,
+                }),
+                { x: event.clientX, y: event.clientY },
+                {
+                  layout: "compact",
+                  presentation: "styled",
+                  restoreFocus: "on-dismiss",
+                  signal: abortController.signal,
+                },
+              ),
+            perform: (clicked, isCurrent) =>
+              performTerminalMenuAction(clicked, selectionAction, isCurrent),
+            reportOpenError: reportMenuOpenError,
+            focusTerminal: () => terminalRef.current?.focus(),
+          });
+        } finally {
+          if (terminalMenuAbortController === abortController) {
+            terminalMenuAbortController = null;
+          }
         }
       };
 
@@ -673,24 +713,39 @@ export function TerminalViewport({
           return;
         }
         const requestId = ++selectionActionRequestIdRef.current;
+        const abortController = new AbortController();
+        terminalMenuAbortController = abortController;
         openSelectionMenuRequestIdRef.current = requestId;
-        const clicked = await localApi.contextMenu
-          .show(terminalSelectionMenuItems(), nextAction.position)
-          .finally(() => {
-            if (openSelectionMenuRequestIdRef.current === requestId) {
-              openSelectionMenuRequestIdRef.current = null;
-            }
+        try {
+          await runTerminalMenuRequest({
+            signal: abortController.signal,
+            isCurrentRequest: () => requestId === selectionActionRequestIdRef.current,
+            open: () =>
+              localApi.contextMenu.show(
+                terminalContextMenuItems({
+                  canAddToChat: nextAction.selection !== null,
+                  canCopy: true,
+                }),
+                nextAction.position,
+                {
+                  layout: "compact",
+                  presentation: "styled",
+                  restoreFocus: "on-dismiss",
+                  signal: abortController.signal,
+                },
+              ),
+            perform: (clicked, isCurrent) =>
+              performTerminalMenuAction(clicked, nextAction, isCurrent),
+            reportOpenError: reportMenuOpenError,
+            focusTerminal: () => terminalRef.current?.focus(),
           });
-        if (requestId !== selectionActionRequestIdRef.current || clicked === null) {
-          return;
-        }
-        switch (clicked) {
-          case "add-to-chat":
-            addSelectionToChat(nextAction.selection);
-            return;
-          case "copy":
-            await copySelection(nextAction.clipboardText, requestId);
-            return;
+        } finally {
+          if (terminalMenuAbortController === abortController) {
+            terminalMenuAbortController = null;
+          }
+          if (openSelectionMenuRequestIdRef.current === requestId) {
+            openSelectionMenuRequestIdRef.current = null;
+          }
         }
       };
 
@@ -810,12 +865,6 @@ export function TerminalViewport({
         });
         if (!shouldClear) return;
         clearSelectionAction();
-        // A copy shortcut that clears the selection (Ctrl+C) must also close
-        // the context menu that appears with the selection, but a clear that
-        // never opened a menu must not dismiss an unrelated one.
-        if (openSelectionMenuRequestIdRef.current !== null) {
-          void localApi?.contextMenu.close();
-        }
       }
 
       const handleMouseUp = (event: MouseEvent) => {
