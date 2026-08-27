@@ -913,6 +913,7 @@ function PullRequestsRouteView() {
     if (environmentKey.length === 0) return;
     if (viewerGate.shouldClearRetainedRows) {
       setLoaded(null);
+      setOrdered(null);
       return;
     }
     // A pending read is not a mismatch: keep what this session already verified until the fresh
