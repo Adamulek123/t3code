@@ -42,6 +42,7 @@ import {
   pullRequestEntryViewer,
   rankPullRequestMatches,
   pullRequestEnvironmentSetKey,
+  pullRequestListViewersMatchVerification,
   pullRequestViewersMatchForEnvironments,
   readPullRequestListSnapshot,
   resolvePullRequestViewerGate,
@@ -658,6 +659,10 @@ function PullRequestsRouteView() {
     [environmentQueries, scopedProjectId, search.host, viewerCapableEnvironmentIds],
   );
   const viewerQuery = usePullRequestViewers(viewerTargets);
+  const queriedViewerEnvironmentIds = useMemo(
+    () => new Set(viewerTargets.map(({ environmentId }) => environmentId)),
+    [viewerTargets],
+  );
   // The fresh viewer read also invalidates server-side listing caches when the CLI account has
   // changed. Do not race a warm list hit against that read, and never ask an environment whose
   // identity check failed. Older servers without this method keep their live-list behavior, but
@@ -777,14 +782,12 @@ function PullRequestsRouteView() {
   const authoredQuery = usePullRequestList(verifiedAuthoredTargets);
   const reviewingQuery = usePullRequestList(verifiedReviewingTargets);
   const acceptVerifiedData = (data: MergedPullRequestList | null) => {
-    if (data === null || viewerCapableEnvironmentIds.size === 0) return data;
-    const verifiedViewers = viewerQuery.viewers;
-    return verifiedViewers !== null &&
-      pullRequestViewersMatchForEnvironments(
-        data.viewers,
-        verifiedViewers,
-        viewerCapableEnvironmentIds,
-      )
+    if (data === null) return null;
+    return pullRequestListViewersMatchVerification(
+      data.viewers,
+      viewerQuery.viewers,
+      queriedViewerEnvironmentIds,
+    )
       ? data
       : null;
   };
@@ -874,7 +877,7 @@ function PullRequestsRouteView() {
         !pullRequestViewersMatchForEnvironments(
           current.data.viewers,
           viewers,
-          viewerCapableEnvironmentIds,
+          queriedViewerEnvironmentIds,
         )
       ) {
         return null;
@@ -899,7 +902,7 @@ function PullRequestsRouteView() {
     });
   }, [
     environmentKey,
-    viewerCapableEnvironmentIds,
+    queriedViewerEnvironmentIds,
     viewerGate,
     viewerQuery.isPending,
     viewerQuery.viewers,

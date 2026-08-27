@@ -614,6 +614,15 @@ export const pullRequestViewersMatchForEnvironments = (
   );
 };
 
+export const pullRequestListViewersMatchVerification = (
+  listedViewers: PullRequestViewers,
+  verifiedViewers: PullRequestViewers | null,
+  verifiedEnvironmentIds: ReadonlySet<string>,
+): boolean =>
+  verifiedEnvironmentIds.size === 0 ||
+  (verifiedViewers !== null &&
+    pullRequestViewersMatchForEnvironments(listedViewers, verifiedViewers, verifiedEnvironmentIds));
+
 /**
  * Decoded with the contract's own schema rather than trusted from a cast: storage is writable
  * by anything in the origin and by any past version of this app, and one malformed row would

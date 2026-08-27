@@ -7,6 +7,7 @@ import {
   mergePullRequestLists,
   pullRequestEntryKey,
   pullRequestEnvironmentSetKey,
+  pullRequestListViewersMatchVerification,
   pullRequestViewersMatch,
   pullRequestViewersMatchForEnvironments,
   groupPullRequestsByInvolvement,
@@ -619,6 +620,12 @@ describe("the list snapshot across a reload", () => {
     expect(
       pullRequestViewersMatchForEnvironments({ "env-1 github.com": "Bilal" }, {}, capable),
     ).toBe(false);
+  });
+
+  it("accepts live rows when the current scope queries only legacy servers", () => {
+    expect(
+      pullRequestListViewersMatchVerification({ "env-2 github.com": "Legacy" }, null, new Set()),
+    ).toBe(true);
   });
 
   it("hydrates the retained rows so ghosts never replace them", () => {
