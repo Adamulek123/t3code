@@ -42,6 +42,7 @@ import {
   pullRequestEntryViewer,
   pullRequestViewerKey,
   rankPullRequestMatches,
+  retainPullRequestEntriesForVerifiedViewers,
   pullRequestEnvironmentSetKey,
   pullRequestListViewersMatchVerification,
   pullRequestViewersMatchForEnvironments,
@@ -946,10 +947,50 @@ function PullRequestsRouteView() {
         queriedViewerEnvironmentIds,
         retainedViewerKeys,
       );
-    if (viewerGate.shouldClearRetainedRows || retainedViewerMismatch) {
+    if (viewerGate.shouldClearRetainedRows) {
       setLoaded(null);
       setOrdered(null);
       setPage({ key: filterKey, size: PAGE_SIZE, cursors: null, regrown: [] });
+      return;
+    }
+    if (retainedViewerMismatch) {
+      const retainVerified = (entries: ReadonlyArray<EnvironmentPullRequestEntry>) =>
+        retainPullRequestEntriesForVerifiedViewers(
+          entries,
+          loaded.data.viewers,
+          viewers,
+          queriedViewerEnvironmentIds,
+        );
+      const retainedOrdered =
+        ordered?.key === filterKey
+          ? retainVerified(ordered.entries)
+          : retainVerified(loaded.data.entries);
+      setLoaded((current) =>
+        current === null
+          ? null
+          : {
+              ...current,
+              data: { ...current.data, entries: retainVerified(current.data.entries) },
+              ...(current.partitions === undefined
+                ? {}
+                : {
+                    partitions: {
+                      authored: retainVerified(current.partitions.authored),
+                      reviewing: retainVerified(current.partitions.reviewing),
+                    },
+                  }),
+            },
+      );
+      setOrdered({ key: filterKey, entries: retainedOrdered });
+      setPage({
+        key: filterKey,
+        size: Math.min(
+          Math.max(pageSize, Math.ceil(retainedOrdered.length / PAGE_SIZE) * PAGE_SIZE),
+          MAX_PAGE_SIZE,
+        ),
+        cursors: null,
+        regrown: [],
+      });
       return;
     }
     // A pending read is not a mismatch: keep what this session already verified until the fresh
@@ -994,6 +1035,7 @@ function PullRequestsRouteView() {
     filterKey,
     loaded,
     ordered,
+    pageSize,
     queriedViewerEnvironmentIds,
     scopedProjectId,
     search.host,

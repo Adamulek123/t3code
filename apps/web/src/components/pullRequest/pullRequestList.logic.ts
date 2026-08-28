@@ -642,6 +642,18 @@ export const pullRequestListViewersMatchVerification = (
   );
 };
 
+export const retainPullRequestEntriesForVerifiedViewers = (
+  entries: ReadonlyArray<EnvironmentPullRequestEntry>,
+  listedViewers: PullRequestViewers,
+  verifiedViewers: PullRequestViewers,
+  verifiedEnvironmentIds: ReadonlySet<string>,
+): ReadonlyArray<EnvironmentPullRequestEntry> =>
+  entries.filter((entry) => {
+    if (!verifiedEnvironmentIds.has(entry.environmentId)) return true;
+    const key = pullRequestViewerKey(entry);
+    return listedViewers[key] !== undefined && listedViewers[key] === verifiedViewers[key];
+  });
+
 /**
  * Decoded with the contract's own schema rather than trusted from a cast: storage is writable
  * by anything in the origin and by any past version of this app, and one malformed row would

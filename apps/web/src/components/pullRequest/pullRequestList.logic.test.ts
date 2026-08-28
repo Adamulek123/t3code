@@ -8,6 +8,7 @@ import {
   pullRequestEntryKey,
   pullRequestEnvironmentSetKey,
   pullRequestListViewersMatchVerification,
+  retainPullRequestEntriesForVerifiedViewers,
   pullRequestViewersMatch,
   pullRequestViewersMatchForEnvironments,
   groupPullRequestsByInvolvement,
@@ -703,6 +704,25 @@ describe("the list snapshot across a reload", () => {
         new Set(["env-1"]),
       ),
     ).toBe(false);
+  });
+
+  it("retains only rows whose capable hosts still have the same verified viewer", () => {
+    const github = entry({ environmentId: ENV_1, host: "github.com", number: 1 });
+    const gitlab = entry({ environmentId: ENV_1, host: "gitlab.com", number: 2 });
+    const legacy = entry({ environmentId: ENV_2, host: "github.com", number: 3 });
+
+    expect(
+      retainPullRequestEntriesForVerifiedViewers(
+        [github, gitlab, legacy],
+        {
+          "env-1 github.com": "Bilal",
+          "env-1 gitlab.com": "Theo",
+          "env-2 github.com": "Legacy",
+        },
+        { "env-1 github.com": "Bilal" },
+        new Set(["env-1"]),
+      ).map((item) => item.number),
+    ).toEqual([1, 3]);
   });
 
   it("hydrates the retained rows so ghosts never replace them", () => {
