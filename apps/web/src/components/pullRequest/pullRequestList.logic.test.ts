@@ -688,6 +688,23 @@ describe("the list snapshot across a reload", () => {
     ).toBe(false);
   });
 
+  it("accepts live rows when fresh verification could not read one host", () => {
+    expect(
+      pullRequestListViewersMatchVerification(
+        { "env-1 github.com": "Bilal", "env-1 gitlab.com": "Theo" },
+        { "env-1 github.com": "Bilal" },
+        new Set(["env-1"]),
+      ),
+    ).toBe(true);
+    expect(
+      pullRequestListViewersMatchVerification(
+        { "env-1 github.com": "Octocat", "env-1 gitlab.com": "Theo" },
+        { "env-1 github.com": "Bilal" },
+        new Set(["env-1"]),
+      ),
+    ).toBe(false);
+  });
+
   it("hydrates the retained rows so ghosts never replace them", () => {
     const storage = makeStorage();
     writePullRequestListSnapshot(storage, "env-1", { scope: "env-1:open:all::", data }, NOW);
