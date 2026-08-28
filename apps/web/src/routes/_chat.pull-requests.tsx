@@ -943,22 +943,13 @@ function PullRequestsRouteView() {
         queriedViewerEnvironmentIds,
         retainedViewerKeys,
       );
-    if (viewerGate.shouldClearRetainedRows && viewers === null) {
-      setLoaded(null);
-      setOrdered(null);
-      setPage({ key: filterKey, size: PAGE_SIZE, cursors: null, regrown: [] });
-      return;
-    }
-    if (
-      (viewerGate.shouldClearRetainedRows || retainedViewerMismatch) &&
-      loaded !== null &&
-      viewers !== null
-    ) {
+    if ((viewerGate.shouldClearRetainedRows || retainedViewerMismatch) && loaded !== null) {
+      const verifiedViewers = viewers ?? {};
       const retainVerified = (entries: ReadonlyArray<EnvironmentPullRequestEntry>) =>
         retainPullRequestEntriesForVerifiedViewers(
           entries,
           loaded.data.viewers,
-          viewers,
+          verifiedViewers,
           queriedViewerEnvironmentIds,
         );
       const heldOrdered = ordered?.entries ?? loaded.data.entries;

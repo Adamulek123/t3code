@@ -731,6 +731,14 @@ describe("the list snapshot across a reload", () => {
         new Set(["env-1", "env-2"]),
       ).map((item) => item.number),
     ).toEqual([1]);
+    expect(
+      retainPullRequestEntriesForVerifiedViewers(
+        [github, legacy],
+        { "env-1 github.com": "Bilal", "env-2 github.com": "Legacy" },
+        {},
+        new Set(["env-1"]),
+      ).map((item) => item.number),
+    ).toEqual([3]);
 
     const alreadyVerified = [github, legacy];
     expect(
