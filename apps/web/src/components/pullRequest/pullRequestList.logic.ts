@@ -647,12 +647,14 @@ export const retainPullRequestEntriesForVerifiedViewers = (
   listedViewers: PullRequestViewers,
   verifiedViewers: PullRequestViewers,
   verifiedEnvironmentIds: ReadonlySet<string>,
-): ReadonlyArray<EnvironmentPullRequestEntry> =>
-  entries.filter((entry) => {
+): ReadonlyArray<EnvironmentPullRequestEntry> => {
+  const retained = entries.filter((entry) => {
     if (!verifiedEnvironmentIds.has(entry.environmentId)) return true;
     const key = pullRequestViewerKey(entry);
     return listedViewers[key] !== undefined && listedViewers[key] === verifiedViewers[key];
   });
+  return retained.length === entries.length ? entries : retained;
+};
 
 /**
  * Decoded with the contract's own schema rather than trusted from a cast: storage is writable

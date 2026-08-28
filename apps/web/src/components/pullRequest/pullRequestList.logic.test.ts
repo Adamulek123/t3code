@@ -731,6 +731,16 @@ describe("the list snapshot across a reload", () => {
         new Set(["env-1", "env-2"]),
       ).map((item) => item.number),
     ).toEqual([1]);
+
+    const alreadyVerified = [github, legacy];
+    expect(
+      retainPullRequestEntriesForVerifiedViewers(
+        alreadyVerified,
+        { "env-1 github.com": "Bilal", "env-2 github.com": "Legacy" },
+        { "env-1 github.com": "Bilal" },
+        new Set(["env-1"]),
+      ),
+    ).toBe(alreadyVerified);
   });
 
   it("hydrates the retained rows so ghosts never replace them", () => {

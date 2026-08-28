@@ -965,22 +965,34 @@ function PullRequestsRouteView() {
           viewers,
           queriedViewerEnvironmentIds,
         );
-      const retainedOrdered =
-        ordered?.key === filterKey
-          ? retainVerified(ordered.entries)
-          : retainVerified(loaded.data.entries);
+      const heldOrdered = ordered?.key === filterKey ? ordered.entries : loaded.data.entries;
+      const retainedOrdered = retainVerified(heldOrdered);
+      const retainedDataEntries = retainVerified(loaded.data.entries);
+      const retainedAuthored =
+        loaded.partitions === undefined ? undefined : retainVerified(loaded.partitions.authored);
+      const retainedReviewing =
+        loaded.partitions === undefined ? undefined : retainVerified(loaded.partitions.reviewing);
+      if (
+        retainedOrdered === heldOrdered &&
+        retainedDataEntries === loaded.data.entries &&
+        (loaded.partitions === undefined ||
+          (retainedAuthored === loaded.partitions.authored &&
+            retainedReviewing === loaded.partitions.reviewing))
+      ) {
+        return;
+      }
       setLoaded((current) =>
         current === null
           ? null
           : {
               ...current,
-              data: { ...current.data, entries: retainVerified(current.data.entries) },
+              data: { ...current.data, entries: retainedDataEntries },
               ...(current.partitions === undefined
                 ? {}
                 : {
                     partitions: {
-                      authored: retainVerified(current.partitions.authored),
-                      reviewing: retainVerified(current.partitions.reviewing),
+                      authored: retainedAuthored ?? [],
+                      reviewing: retainedReviewing ?? [],
                     },
                   }),
             },
