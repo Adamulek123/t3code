@@ -724,7 +724,7 @@ describe("the list snapshot across a reload", () => {
         includeEntry: (item) => item.host === "github.com",
       });
 
-    expect(readGithub("Bilal")?.data.entries).toHaveLength(2);
+    expect(readGithub("Bilal")?.data.entries.map((item) => item.host)).toEqual(["github.com"]);
     expect(readGithub("Octocat")).toBeNull();
     expect(readGithub(undefined)).toBeNull();
   });

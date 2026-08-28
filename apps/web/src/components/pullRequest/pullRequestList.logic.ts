@@ -705,14 +705,13 @@ export function readPullRequestListSnapshot(
     if (context.includeEntry === undefined) {
       if (!pullRequestViewersMatch(decoded.value.data.viewers, viewers)) return null;
     } else {
+      const includedEntries = decoded.value.data.entries.filter(context.includeEntry);
+      const includedAuthored = decoded.value.partitions?.authored.filter(context.includeEntry);
+      const includedReviewing = decoded.value.partitions?.reviewing.filter(context.includeEntry);
       const requiredViewerKeys = new Set(
-        [
-          ...decoded.value.data.entries,
-          ...(decoded.value.partitions?.authored ?? []),
-          ...(decoded.value.partitions?.reviewing ?? []),
-        ]
-          .filter(context.includeEntry)
-          .map(pullRequestViewerKey),
+        [...includedEntries, ...(includedAuthored ?? []), ...(includedReviewing ?? [])].map(
+          pullRequestViewerKey,
+        ),
       );
       if (
         [...requiredViewerKeys].some(
@@ -723,6 +722,15 @@ export function readPullRequestListSnapshot(
       ) {
         return null;
       }
+      return {
+        ...decoded.value,
+        data: { ...decoded.value.data, entries: includedEntries },
+        ...(decoded.value.partitions === undefined
+          ? {}
+          : {
+              partitions: { authored: includedAuthored ?? [], reviewing: includedReviewing ?? [] },
+            }),
+      };
     }
     return decoded.value;
   } catch {
