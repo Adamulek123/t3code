@@ -917,7 +917,7 @@ function PullRequestsRouteView() {
       loaded === null
         ? []
         : [
-            ...(ordered?.key === filterKey ? ordered.entries : loaded.data.entries),
+            ...(ordered?.entries ?? loaded.data.entries),
             ...(loaded.partitions?.authored ?? []),
             ...(loaded.partitions?.reviewing ?? []),
           ];
@@ -925,11 +925,7 @@ function PullRequestsRouteView() {
       environmentQueries.map(({ environmentId, projectIds }) => [environmentId, projectIds]),
     );
     const retainedViewerKeys = new Set(
-      narrowPullRequestsToFilters(retainedEntries, {
-        state: search.state,
-        projectId: scopedProjectId,
-        host: search.host,
-      })
+      retainedEntries
         .filter((entry) => {
           const projectIds = projectScopes.get(entry.environmentId);
           return projectIds === undefined || projectIds.includes(entry.projectId);
@@ -965,7 +961,7 @@ function PullRequestsRouteView() {
           viewers,
           queriedViewerEnvironmentIds,
         );
-      const heldOrdered = ordered?.key === filterKey ? ordered.entries : loaded.data.entries;
+      const heldOrdered = ordered?.entries ?? loaded.data.entries;
       const retainedOrdered = retainVerified(heldOrdered);
       const retainedDataEntries = retainVerified(loaded.data.entries);
       const retainedAuthored =
@@ -981,29 +977,41 @@ function PullRequestsRouteView() {
       ) {
         return;
       }
-      setLoaded((current) =>
-        current === null
-          ? null
-          : {
-              ...current,
-              data: { ...current.data, entries: retainedDataEntries },
-              ...(current.partitions === undefined
-                ? {}
-                : {
-                    partitions: {
-                      authored: retainedAuthored ?? [],
-                      reviewing: retainedReviewing ?? [],
-                    },
-                  }),
-            },
-      );
+      if (
+        retainedDataEntries !== loaded.data.entries ||
+        (loaded.partitions !== undefined &&
+          (retainedAuthored !== loaded.partitions.authored ||
+            retainedReviewing !== loaded.partitions.reviewing))
+      ) {
+        setLoaded((current) =>
+          current === null
+            ? null
+            : {
+                ...current,
+                data: { ...current.data, entries: retainedDataEntries },
+                ...(current.partitions === undefined
+                  ? {}
+                  : {
+                      partitions: {
+                        authored: retainedAuthored ?? [],
+                        reviewing: retainedReviewing ?? [],
+                      },
+                    }),
+              },
+        );
+      }
       if (retainedOrdered !== heldOrdered) {
-        setOrdered({ key: filterKey, entries: retainedOrdered });
+        setOrdered({ key: ordered?.key ?? filterKey, entries: retainedOrdered });
+      }
+      const heldVisible = ordered?.key === filterKey ? heldOrdered : loaded.data.entries;
+      const retainedVisible = ordered?.key === filterKey ? retainedOrdered : retainedDataEntries;
+      if (retainedVisible === heldVisible) {
+        return;
       }
       setPage({
         key: filterKey,
         size: Math.min(
-          Math.max(pageSize, Math.ceil(retainedOrdered.length / PAGE_SIZE) * PAGE_SIZE),
+          Math.max(pageSize, Math.ceil(retainedVisible.length / PAGE_SIZE) * PAGE_SIZE),
           MAX_PAGE_SIZE,
         ),
         cursors: null,
