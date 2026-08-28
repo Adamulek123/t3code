@@ -685,10 +685,15 @@ const decodeSnapshot = Schema.decodeUnknownOption(
 export function readPullRequestListSnapshot(
   storage: SnapshotStorage | undefined,
   environmentSetKey: string,
-  context: { readonly viewers: PullRequestViewers | null; readonly now?: number },
+  context: {
+    readonly viewers: PullRequestViewers | null;
+    readonly now?: number;
+    readonly includeEntry?: (entry: EnvironmentPullRequestEntry) => boolean;
+  },
 ): PullRequestListSnapshot | null {
   try {
     if (context.viewers === null) return null;
+    const viewers = context.viewers;
     const raw = storage?.getItem(snapshotStorageKey(environmentSetKey));
     if (!raw) return null;
     const decoded = decodeSnapshot(JSON.parse(raw));
@@ -697,7 +702,28 @@ export function readPullRequestListSnapshot(
     if (decoded.value.writtenAt > now || now - decoded.value.writtenAt > SNAPSHOT_MAX_AGE_MS) {
       return null;
     }
-    if (!pullRequestViewersMatch(decoded.value.data.viewers, context.viewers)) return null;
+    if (context.includeEntry === undefined) {
+      if (!pullRequestViewersMatch(decoded.value.data.viewers, viewers)) return null;
+    } else {
+      const requiredViewerKeys = new Set(
+        [
+          ...decoded.value.data.entries,
+          ...(decoded.value.partitions?.authored ?? []),
+          ...(decoded.value.partitions?.reviewing ?? []),
+        ]
+          .filter(context.includeEntry)
+          .map(pullRequestViewerKey),
+      );
+      if (
+        [...requiredViewerKeys].some(
+          (key) =>
+            decoded.value.data.viewers[key] === undefined ||
+            decoded.value.data.viewers[key] !== viewers[key],
+        )
+      ) {
+        return null;
+      }
+    }
     return decoded.value;
   } catch {
     return null;

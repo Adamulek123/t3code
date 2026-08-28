@@ -964,7 +964,20 @@ function PullRequestsRouteView() {
       const snapshot = readPullRequestListSnapshot(
         typeof window === "undefined" ? undefined : window.localStorage,
         environmentKey,
-        { viewers },
+        {
+          viewers,
+          includeEntry: (entry) => {
+            const projectIds = projectScopes.get(entry.environmentId);
+            return (
+              (projectIds === undefined || projectIds.includes(entry.projectId)) &&
+              narrowPullRequestsToFilters([entry], {
+                state: search.state,
+                projectId: scopedProjectId,
+                host: search.host,
+              }).length > 0
+            );
+          },
+        },
       );
       if (snapshot === null) return null;
       return {

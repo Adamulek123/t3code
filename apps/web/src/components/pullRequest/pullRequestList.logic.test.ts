@@ -696,6 +696,39 @@ describe("the list snapshot across a reload", () => {
     expect(snapshot?.data.entries.map((item) => item.number)).toEqual([1]);
   });
 
+  it("hydrates across scopes only when every relevant row keeps its viewer", () => {
+    const storage = makeStorage();
+    const github = entry({ environmentId: ENV_1, host: "github.com", number: 1 });
+    const gitlab = entry({ environmentId: ENV_1, host: "gitlab.com", number: 2 });
+    writePullRequestListSnapshot(
+      storage,
+      "env-1",
+      {
+        scope: "broad",
+        data: {
+          entries: [github, gitlab],
+          viewers: { "env-1 github.com": "Bilal", "env-1 gitlab.com": "Theo" },
+          providers: [],
+          errors: [],
+          truncated: false,
+          nextCursors: {},
+          truncatedEnvironments: [],
+        },
+      },
+      NOW,
+    );
+    const readGithub = (viewer: string | undefined) =>
+      readPullRequestListSnapshot(storage, "env-1", {
+        viewers: viewer === undefined ? {} : { "env-1 github.com": viewer },
+        now: NOW,
+        includeEntry: (item) => item.host === "github.com",
+      });
+
+    expect(readGithub("Bilal")?.data.entries).toHaveLength(2);
+    expect(readGithub("Octocat")).toBeNull();
+    expect(readGithub(undefined)).toBeNull();
+  });
+
   it("carries neither stale failures nor stale cursors", () => {
     const storage = makeStorage();
     writePullRequestListSnapshot(storage, "env-1", { scope: "s", data }, NOW);
