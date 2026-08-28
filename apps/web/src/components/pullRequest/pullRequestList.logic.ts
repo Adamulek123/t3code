@@ -602,16 +602,23 @@ export const pullRequestViewersMatchForEnvironments = (
   listedViewers: PullRequestViewers,
   verifiedViewers: PullRequestViewers,
   environmentIds: ReadonlySet<string>,
+  requiredViewerKeys?: ReadonlySet<string>,
 ): boolean => {
   const prefixes = [...environmentIds].map((environmentId) => `${environmentId} `);
-  return pullRequestViewersMatch(
-    Object.fromEntries(
-      Object.entries(listedViewers).filter(([key]) =>
-        prefixes.some((prefix) => key.startsWith(prefix)),
-      ),
+  const scopedListedViewers = Object.fromEntries(
+    Object.entries(listedViewers).filter(([key]) =>
+      prefixes.some((prefix) => key.startsWith(prefix)),
     ),
-    verifiedViewers,
   );
+  if (requiredViewerKeys === undefined) {
+    return pullRequestViewersMatch(scopedListedViewers, verifiedViewers);
+  }
+  return [...requiredViewerKeys]
+    .filter((key) => prefixes.some((prefix) => key.startsWith(prefix)))
+    .every(
+      (key) =>
+        scopedListedViewers[key] !== undefined && scopedListedViewers[key] === verifiedViewers[key],
+    );
 };
 
 export const pullRequestListViewersMatchVerification = (

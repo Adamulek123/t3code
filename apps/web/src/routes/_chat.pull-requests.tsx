@@ -40,6 +40,7 @@ import {
   partitionPullRequestsWithPriority,
   pullRequestEntryKey,
   pullRequestEntryViewer,
+  pullRequestViewerKey,
   rankPullRequestMatches,
   pullRequestEnvironmentSetKey,
   pullRequestListViewersMatchVerification,
@@ -911,6 +912,29 @@ function PullRequestsRouteView() {
   useEffect(() => {
     const viewers = viewerQuery.viewers;
     if (environmentKey.length === 0) return;
+    const retainedEntries =
+      loaded === null
+        ? []
+        : [
+            ...(ordered?.key === filterKey ? ordered.entries : loaded.data.entries),
+            ...(loaded.partitions?.authored ?? []),
+            ...(loaded.partitions?.reviewing ?? []),
+          ];
+    const projectScopes = new Map(
+      environmentQueries.map(({ environmentId, projectIds }) => [environmentId, projectIds]),
+    );
+    const retainedViewerKeys = new Set(
+      narrowPullRequestsToFilters(retainedEntries, {
+        state: search.state,
+        projectId: scopedProjectId,
+        host: search.host,
+      })
+        .filter((entry) => {
+          const projectIds = projectScopes.get(entry.environmentId);
+          return projectIds === undefined || projectIds.includes(entry.projectId);
+        })
+        .map(pullRequestViewerKey),
+    );
     const retainedViewerMismatch =
       !viewerQuery.isPending &&
       loaded !== null &&
@@ -920,6 +944,7 @@ function PullRequestsRouteView() {
         loaded.data.viewers,
         viewers,
         queriedViewerEnvironmentIds,
+        retainedViewerKeys,
       );
     if (viewerGate.shouldClearRetainedRows || retainedViewerMismatch) {
       setLoaded(null);
@@ -952,9 +977,14 @@ function PullRequestsRouteView() {
     });
   }, [
     environmentKey,
+    environmentQueries,
     filterKey,
     loaded,
+    ordered,
     queriedViewerEnvironmentIds,
+    scopedProjectId,
+    search.host,
+    search.state,
     viewerGate,
     viewerQuery.isPending,
     viewerQuery.viewers,

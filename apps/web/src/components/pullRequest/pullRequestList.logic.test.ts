@@ -622,6 +622,34 @@ describe("the list snapshot across a reload", () => {
     ).toBe(false);
   });
 
+  it("compares only retained hosts relevant to a narrower scope", () => {
+    const capable = new Set(["env-1"]);
+    expect(
+      pullRequestViewersMatchForEnvironments(
+        { "env-1 github.com": "Bilal", "env-1 gitlab.com": "Theo" },
+        { "env-1 github.com": "Bilal" },
+        capable,
+        new Set(["env-1 github.com"]),
+      ),
+    ).toBe(true);
+    expect(
+      pullRequestViewersMatchForEnvironments(
+        { "env-1 github.com": "Bilal", "env-1 gitlab.com": "Theo" },
+        { "env-1 github.com": "Octocat" },
+        capable,
+        new Set(["env-1 github.com"]),
+      ),
+    ).toBe(false);
+    expect(
+      pullRequestViewersMatchForEnvironments(
+        { "env-1 github.com": "Bilal", "env-1 gitlab.com": "Theo" },
+        { "env-1 github.com": "Bilal" },
+        capable,
+        new Set(["env-1 gitlab.com"]),
+      ),
+    ).toBe(false);
+  });
+
   it("accepts live rows when the current scope queries only legacy servers", () => {
     expect(
       pullRequestListViewersMatchVerification({ "env-2 github.com": "Legacy" }, null, new Set()),
