@@ -969,6 +969,17 @@ function PullRequestsRouteView() {
         return;
       }
       if (
+        retainedOrdered.length === 0 &&
+        retainedDataEntries.length === 0 &&
+        (loaded.partitions === undefined ||
+          (retainedAuthored?.length === 0 && retainedReviewing?.length === 0))
+      ) {
+        setLoaded(null);
+        setOrdered(null);
+        setPage({ key: filterKey, size: PAGE_SIZE, cursors: null, regrown: [] });
+        return;
+      }
+      if (
         retainedDataEntries !== loaded.data.entries ||
         (loaded.partitions !== undefined &&
           (retainedAuthored !== loaded.partitions.authored ||
