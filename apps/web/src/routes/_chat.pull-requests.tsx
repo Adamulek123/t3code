@@ -997,7 +997,9 @@ function PullRequestsRouteView() {
                   }),
             },
       );
-      setOrdered({ key: filterKey, entries: retainedOrdered });
+      if (retainedOrdered !== heldOrdered) {
+        setOrdered({ key: filterKey, entries: retainedOrdered });
+      }
       setPage({
         key: filterKey,
         size: Math.min(
