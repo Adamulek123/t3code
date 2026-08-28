@@ -723,6 +723,14 @@ describe("the list snapshot across a reload", () => {
         new Set(["env-1"]),
       ).map((item) => item.number),
     ).toEqual([1, 3]);
+    expect(
+      retainPullRequestEntriesForVerifiedViewers(
+        [github, entry({ environmentId: ENV_2, host: "github.com", number: 4 })],
+        { "env-1 github.com": "Bilal", "env-2 github.com": "Octocat" },
+        { "env-1 github.com": "Bilal" },
+        new Set(["env-1", "env-2"]),
+      ).map((item) => item.number),
+    ).toEqual([1]);
   });
 
   it("hydrates the retained rows so ghosts never replace them", () => {
