@@ -6999,7 +6999,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
   );
 
-  it.effect("preserves an interleaved message while coalescing a tool lifecycle", () =>
+  it.effect("flushes a tool update before an interleaved message", () =>
     Effect.gen(function* () {
       const thread = makeDefaultOrchestrationReadModel().threads[0]!;
       const liveEvents = yield* PubSub.unbounded<OrchestrationEvent>();
@@ -7051,7 +7051,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         withWsRpcClient(wsUrl, (client) =>
           client[ORCHESTRATION_WS_METHODS.subscribeThread]({
             threadId: defaultThreadId,
-          }).pipe(Stream.take(3), Stream.runCollect),
+          }).pipe(Stream.take(4), Stream.runCollect),
         ),
       ).pipe(Effect.timeout("2 seconds"));
 
@@ -7061,13 +7061,14 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           .slice(1)
           .map((item) => (item.kind === "event" ? [item.event.sequence, item.event.type] : null)),
         [
+          [2, "thread.activity-appended"],
           [3, "thread.message-sent"],
           [4, "thread.activity-appended"],
         ],
       );
       assert.equal(
-        items[2]?.kind === "event" && items[2].event.type === "thread.activity-appended"
-          ? items[2].event.payload.activity.kind
+        items[3]?.kind === "event" && items[3].event.type === "thread.activity-appended"
+          ? items[3].event.payload.activity.kind
           : null,
         "tool.completed",
       );
