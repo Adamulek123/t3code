@@ -134,10 +134,7 @@ export function useComposerCommandMenu({
         });
       }
 
-      const skillItems = getProviderSkillsForSlashMenu(
-        selectedProviderStatus?.skills ?? [],
-        true,
-      )
+      const skillItems = getProviderSkillsForSlashMenu(selectedProviderStatus?.skills ?? [], true)
         .filter((skill) => matchesSlashSkillQuery(skill, q))
         .map((skill) => ({
           id: `skill:${skill.name}`,
