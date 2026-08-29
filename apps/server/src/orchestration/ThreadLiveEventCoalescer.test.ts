@@ -6,10 +6,11 @@ import {
   type OrchestrationEvent,
   type OrchestrationThreadActivity,
 } from "@t3tools/contracts";
+import { it } from "@effect/vitest";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as TestClock from "effect/testing/TestClock";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect } from "vite-plus/test";
 
 import {
   coalesceLiveToolUpdatedEvents,
@@ -40,7 +41,7 @@ function makeToolActivity(
     payload: {
       itemType: "file_change",
       title: "Editing app.ts",
-      data: { ...(toolCallId ? { toolCallId } : {}) },
+      data: toolCallId ? { toolCallId } : {},
     },
     turnId: activityTurnId,
     createdAt: "2026-01-01T00:00:01.000Z",
@@ -126,49 +127,45 @@ describe("ThreadLiveEventCoalescer", () => {
     expect(coalesceLiveToolUpdatedEvents(events).map((event) => event.sequence)).toEqual([2, 3, 4]);
   });
 
-  it("flushes pending tool updates as soon as an unrelated event arrives", async () => {
-    await Effect.runPromise(
-      Effect.scoped(
-        Effect.gen(function* () {
-          const coalescer = yield* makeThreadLiveEventCoalescer({ coalesceWindow: "500 millis" });
-          const startedAt = yield* Clock.currentTimeMillis;
-          yield* Effect.forEach(
-            Array.from({ length: 10 }, (_, index) => index + 2),
-            (sequence) =>
-              coalescer.offerAndWait({ kind: "event", event: makeToolActivity(sequence) }),
-            { discard: true },
-          );
-          yield* coalescer.offerAndWait({ kind: "event", event: makeMessage(12) });
+  it.effect("flushes pending tool updates as soon as an unrelated event arrives", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const coalescer = yield* makeThreadLiveEventCoalescer({ coalesceWindow: "500 millis" });
+        const startedAt = yield* Clock.currentTimeMillis;
+        yield* Effect.forEach(
+          Array.from({ length: 10 }, (_, index) => index + 2),
+          (sequence) =>
+            coalescer.offerAndWait({ kind: "event", event: makeToolActivity(sequence) }),
+          { discard: true },
+        );
+        yield* coalescer.offerAndWait({ kind: "event", event: makeMessage(12) });
 
-          expect(yield* Clock.currentTimeMillis).toBe(startedAt);
-          expect(
-            Array.from(yield* coalescer.takeAll).map((item) =>
-              item.kind === "event" ? item.event.sequence : item.kind,
-            ),
-          ).toEqual([11, 12]);
-        }),
-      ).pipe(Effect.provide(TestClock.layer())),
-    );
-  });
+        expect(yield* Clock.currentTimeMillis).toBe(startedAt);
+        expect(
+          Array.from(yield* coalescer.takeAll).map((item) =>
+            item.kind === "event" ? item.event.sequence : item.kind,
+          ),
+        ).toEqual([11, 12]);
+      }),
+    ).pipe(Effect.provide(TestClock.layer())),
+  );
 
-  it("flushes pending tool updates as soon as a synchronization marker arrives", async () => {
-    await Effect.runPromise(
-      Effect.scoped(
-        Effect.gen(function* () {
-          const coalescer = yield* makeThreadLiveEventCoalescer({ coalesceWindow: "500 millis" });
-          const startedAt = yield* Clock.currentTimeMillis;
-          yield* coalescer.offerAndWait({ kind: "event", event: makeToolActivity(2) });
-          yield* coalescer.offerAndWait({ kind: "event", event: makeToolActivity(3) });
-          yield* coalescer.offerAndWait({ kind: "synchronized" });
+  it.effect("flushes pending tool updates as soon as a synchronization marker arrives", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const coalescer = yield* makeThreadLiveEventCoalescer({ coalesceWindow: "500 millis" });
+        const startedAt = yield* Clock.currentTimeMillis;
+        yield* coalescer.offerAndWait({ kind: "event", event: makeToolActivity(2) });
+        yield* coalescer.offerAndWait({ kind: "event", event: makeToolActivity(3) });
+        yield* coalescer.offerAndWait({ kind: "synchronized" });
 
-          expect(yield* Clock.currentTimeMillis).toBe(startedAt);
-          expect(
-            Array.from(yield* coalescer.takeAll).map((item) =>
-              item.kind === "event" ? item.event.sequence : item.kind,
-            ),
-          ).toEqual([3, "synchronized"]);
-        }),
-      ).pipe(Effect.provide(TestClock.layer())),
-    );
-  });
+        expect(yield* Clock.currentTimeMillis).toBe(startedAt);
+        expect(
+          Array.from(yield* coalescer.takeAll).map((item) =>
+            item.kind === "event" ? item.event.sequence : item.kind,
+          ),
+        ).toEqual([3, "synchronized"]);
+      }),
+    ).pipe(Effect.provide(TestClock.layer())),
+  );
 });
