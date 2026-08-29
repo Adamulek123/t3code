@@ -20,16 +20,15 @@ import { HOME_HORIZONTAL_INSET } from "../../lib/layoutMetrics";
 import { relativeTime } from "../../lib/time";
 import { themeColorWithAlpha } from "../../lib/mobileTheme";
 import { useUniwindTheme } from "../../lib/useUniwindTheme";
-import { useThreadRunningTerminalCount } from "../../state/use-terminal-session";
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
+import { useThreadHasRunningTerminal } from "../../state/use-terminal-session";
 import { useThreadPr, type ThreadPr } from "../../state/use-thread-pr";
 import type { HomeGroupDisplayAction } from "../home/homeListItems";
 import { ThreadSwipeable } from "../home/thread-swipe-actions";
+import { TerminalRunningIndicator } from "../terminal/TerminalRunningIndicator";
 import { buildThreadTitleRegenerationMenuItems } from "./thread-title-regeneration-menu";
 import { resolveThreadStatus } from "./threadPresentation";
 import { ThreadSearchMatchExcerpt } from "./thread-search-match";
-import { TerminalRunningIndicator } from "../terminal/TerminalRunningIndicator";
-import { terminalRunningSessionLabel } from "../terminal/terminalRunningStatus";
 
 /**
  * Shared presentation for the thread lists: the compact (phone) Home list and
@@ -456,19 +455,16 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
 
   const { thread, onSelectThread, onArchiveThread, onDeleteThread, onRegenerateThreadTitle } =
     props;
-  const runningTerminalCount = useThreadRunningTerminalCount({
+  const hasRunningTerminal = useThreadHasRunningTerminal({
     environmentId: thread.environmentId,
     threadId: thread.id,
   });
-  const terminalRunningLabel = terminalRunningSessionLabel(runningTerminalCount);
   const status = resolveThreadStatus(thread);
   const pr = useThreadPr(thread, props.projectCwd);
   const timestamp = relativeTime(
     thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt,
   );
-  const threadAccessibilityLabel = [thread.title, pr?.accessibilityLabel, terminalRunningLabel]
-    .filter((part): part is string => Boolean(part))
-    .join(", ");
+  const threadAccessibilityLabel = pr ? `${thread.title}, ${pr.accessibilityLabel}` : thread.title;
   const subtitleParts = [props.environmentLabel, thread.branch].filter((part): part is string =>
     Boolean(part),
   );
@@ -530,8 +526,9 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
   ) : null;
 
   const subtitleRow =
-    subtitleParts.length > 0 || pr !== null ? (
+    subtitleParts.length > 0 || pr !== null || hasRunningTerminal ? (
       <View className="mt-px flex-row items-center gap-1.5">
+        {hasRunningTerminal ? <TerminalRunningIndicator /> : null}
         {subtitleParts.length > 0 ? (
           <>
             <Text
@@ -602,7 +599,6 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
                 {thread.title}
               </Text>
               <View className="flex-row items-center gap-2">
-                <TerminalRunningIndicator sessionCount={runningTerminalCount} />
                 {statusPill}
                 <Text className="text-base tabular-nums text-foreground-tertiary">{timestamp}</Text>
                 <SymbolView
@@ -662,7 +658,6 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
               {thread.title}
             </Text>
             <View className="flex-row items-center gap-2">
-              <TerminalRunningIndicator sessionCount={runningTerminalCount} />
               {statusPill}
               <Text
                 className={cn(

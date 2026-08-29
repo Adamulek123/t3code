@@ -3,27 +3,21 @@ import { Pressable, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { SymbolView, type AppSymbolName } from "./AppSymbol";
-import { StatusPulse } from "./StatusPulse";
 import { AppText as Text } from "./AppText";
 import { cn } from "../lib/cn";
 
 export interface AndroidHeaderAction {
-  readonly id?: string;
   readonly accessibilityLabel: string;
   readonly icon: AppSymbolName;
   readonly onPress: () => void;
   readonly disabled?: boolean;
-  readonly pulse?: boolean;
-  readonly tintColorClassName?: string;
 }
 
-export function AppHeaderIconButton(props: {
+export function AndroidHeaderIconButton(props: {
   readonly accessibilityLabel: string;
   readonly icon: AppSymbolName;
   readonly onPress?: () => void;
   readonly disabled?: boolean;
-  readonly pulse?: boolean;
-  readonly tintColorClassName?: string;
 }) {
   return (
     <Pressable
@@ -37,22 +31,15 @@ export function AppHeaderIconButton(props: {
         props.disabled && "opacity-55",
       )}
     >
-      <StatusPulse active={props.pulse === true && !props.disabled}>
-        <SymbolView
-          name={props.icon}
-          size={20}
-          tintColorClassName={
-            props.tintColorClassName ??
-            (props.disabled ? "accent-icon-subtle" : "accent-foreground")
-          }
-          type="monochrome"
-        />
-      </StatusPulse>
+      <SymbolView
+        name={props.icon}
+        size={20}
+        tintColorClassName={props.disabled ? "accent-icon-subtle" : "accent-foreground"}
+        type="monochrome"
+      />
     </Pressable>
   );
 }
-
-export const AndroidHeaderIconButton = AppHeaderIconButton;
 
 export function AndroidScreenHeader(props: {
   readonly title: string;
@@ -104,14 +91,12 @@ export function AndroidScreenHeader(props: {
         </View>
 
         {props.actions?.map((action) => (
-          <AppHeaderIconButton
-            key={action.id ?? action.accessibilityLabel}
+          <AndroidHeaderIconButton
+            key={action.accessibilityLabel}
             accessibilityLabel={action.accessibilityLabel}
             disabled={action.disabled}
             icon={action.icon}
             onPress={action.onPress}
-            pulse={action.pulse}
-            tintColorClassName={action.tintColorClassName}
           />
         ))}
         {props.trailing}

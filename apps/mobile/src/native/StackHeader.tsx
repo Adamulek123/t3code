@@ -336,17 +336,6 @@ function convertToolbarChild(child: ReactNode): NativeStackHeaderItem | null {
     };
   }
 
-  if (typeName === "NativeHeaderToolbarCustom") {
-    const element = Children.toArray(child.props.children).find((entry) => isValidElement(entry));
-    return element
-      ? {
-          type: "custom",
-          element,
-          hidesSharedBackground: Boolean(child.props.hidesSharedBackground),
-        }
-      : null;
-  }
-
   if (typeName === "NativeHeaderToolbarSpacer") {
     return {
       type: "spacing",
@@ -452,14 +441,6 @@ function NativeHeaderToolbarMenuAction(_props: {
 }
 NativeHeaderToolbarMenuAction.displayName = "NativeHeaderToolbarMenuAction";
 
-function NativeHeaderToolbarCustom(_props: {
-  readonly children: ReactElement;
-  readonly hidesSharedBackground?: boolean;
-}) {
-  return null;
-}
-NativeHeaderToolbarCustom.displayName = "NativeHeaderToolbarCustom";
-
 function NativeHeaderToolbarLabel(_props: { readonly children?: ReactNode }) {
   return null;
 }
@@ -481,7 +462,6 @@ NativeHeaderToolbarSearchBarSlot.displayName = "NativeHeaderToolbarSearchBarSlot
 
 export const NativeHeaderToolbar = Object.assign(NativeHeaderToolbarRoot, {
   Button: NativeHeaderToolbarButton,
-  Custom: NativeHeaderToolbarCustom,
   Label: NativeHeaderToolbarLabel,
   Menu: Object.assign(NativeHeaderToolbarMenu, {
     Action: NativeHeaderToolbarMenuAction,
