@@ -2,14 +2,12 @@ import { View } from "react-native";
 
 import { SymbolView } from "../../components/AppSymbol";
 import { StatusPulse } from "../../components/StatusPulse";
-import { useThemeColor } from "../../lib/useThemeColor";
 import { terminalRunningSessionLabel } from "./terminalRunningStatus";
 
 export function TerminalRunningIndicator(props: {
   readonly sessionCount: number;
   readonly size?: number;
 }) {
-  const activeColor = useThemeColor("--color-terminal-active");
   const accessibilityLabel = terminalRunningSessionLabel(props.sessionCount);
 
   if (accessibilityLabel === null) {
@@ -22,7 +20,7 @@ export function TerminalRunningIndicator(props: {
         <SymbolView
           name="terminal"
           size={props.size ?? 13}
-          tintColor={activeColor}
+          tintColorClassName="accent-terminal-active"
           type="monochrome"
         />
       </StatusPulse>

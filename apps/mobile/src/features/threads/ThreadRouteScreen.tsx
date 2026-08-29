@@ -27,7 +27,6 @@ import {
 } from "../../components/AndroidScreenHeader";
 import { LoadingScreen } from "../../components/LoadingScreen";
 import { scopedThreadKey } from "../../lib/scopedEntities";
-import { useThemeColor } from "../../lib/useThemeColor";
 import { NATIVE_LIQUID_GLASS_SUPPORTED } from "../../native/native-glass";
 import { connectionTone } from "../connection/connectionTone";
 
@@ -429,7 +428,6 @@ function ThreadRouteContent(
   // panes bring their own nested native headers (which underlap the status
   // bar); elsewhere the pane content pads itself below the top inset.
   const safeAreaInsets = useSafeAreaInsets();
-  const terminalActiveColor = useThemeColor("--color-terminal-active");
   const inspectorHeaderInset = Platform.OS === "ios" ? 0 : safeAreaInsets.top;
   const GitInspector = useCallback(
     () => (
@@ -714,7 +712,7 @@ function ThreadRouteContent(
         icon: "terminal",
         onPress: () => handleOpenTerminal(null),
         pulse: terminalRunningLabel !== null,
-        tintColor: terminalRunningLabel === null ? undefined : terminalActiveColor,
+        tintColorClassName: terminalRunningLabel === null ? undefined : "accent-terminal-active",
       });
     }
     actions.push({
@@ -739,7 +737,6 @@ function ThreadRouteContent(
     props.onReturnToThread,
     selectedThreadCwd,
     selectedThreadProject?.workspaceRoot,
-    terminalActiveColor,
     terminalRunningLabel,
   ]);
 

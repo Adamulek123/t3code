@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Pressable, View, type ColorValue } from "react-native";
+import { Pressable, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { SymbolView, type AppSymbolName } from "./AppSymbol";
@@ -14,7 +14,7 @@ export interface AndroidHeaderAction {
   readonly onPress: () => void;
   readonly disabled?: boolean;
   readonly pulse?: boolean;
-  readonly tintColor?: ColorValue;
+  readonly tintColorClassName?: string;
 }
 
 export function AppHeaderIconButton(props: {
@@ -23,7 +23,7 @@ export function AppHeaderIconButton(props: {
   readonly onPress?: () => void;
   readonly disabled?: boolean;
   readonly pulse?: boolean;
-  readonly tintColor?: ColorValue;
+  readonly tintColorClassName?: string;
 }) {
   return (
     <Pressable
@@ -41,13 +41,9 @@ export function AppHeaderIconButton(props: {
         <SymbolView
           name={props.icon}
           size={20}
-          tintColor={props.tintColor}
           tintColorClassName={
-            props.tintColor
-              ? undefined
-              : props.disabled
-                ? "accent-icon-subtle"
-                : "accent-foreground"
+            props.tintColorClassName ??
+            (props.disabled ? "accent-icon-subtle" : "accent-foreground")
           }
           type="monochrome"
         />
@@ -115,7 +111,7 @@ export function AndroidScreenHeader(props: {
             icon={action.icon}
             onPress={action.onPress}
             pulse={action.pulse}
-            tintColor={action.tintColor}
+            tintColorClassName={action.tintColorClassName}
           />
         ))}
         {props.trailing}

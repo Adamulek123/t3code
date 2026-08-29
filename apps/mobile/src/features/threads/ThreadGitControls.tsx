@@ -18,7 +18,6 @@ import { NativeHeaderToolbar } from "../../native/StackHeader";
 import { useCallback, useMemo } from "react";
 import { Alert } from "react-native";
 import { tryOpenExternalUrl } from "../../lib/openExternalUrl";
-import { useThemeColor } from "../../lib/useThemeColor";
 import {
   basename,
   getTerminalStatusLabel,
@@ -115,7 +114,6 @@ type ThreadGitControlsProps = ThreadGitMenuProps & {
 };
 
 function TerminalHeaderMenuButton(props: ThreadGitControlsProps) {
-  const terminalActiveColor = useThemeColor("--color-terminal-active");
   const terminalRunningLabel = terminalRunningSessionLabel(
     countRunningTerminalSessions(props.terminalSessions),
   );
@@ -190,7 +188,7 @@ function TerminalHeaderMenuButton(props: ThreadGitControlsProps) {
       disabled={!props.canOpenTerminal}
       icon="terminal"
       pulse={terminalRunningLabel !== null}
-      tintColor={terminalRunningLabel === null ? undefined : terminalActiveColor}
+      tintColorClassName={terminalRunningLabel === null ? undefined : "accent-terminal-active"}
     />
   );
 
