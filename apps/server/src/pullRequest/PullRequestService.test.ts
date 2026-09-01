@@ -747,6 +747,46 @@ it.effect("does not let an older viewer request replace a newer identity", () =>
   }),
 );
 
+it.effect("does not let an in-flight viewer request survive invalidation", () =>
+  Effect.gen(function* () {
+    const staleRequestStarted = yield* Deferred.make<void>();
+    const releaseStaleRequest = yield* Deferred.make<void>();
+    let viewerCalls = 0;
+    const service = yield* makeService({
+      projects: [
+        project({ id: "p1", title: "t3code", workspaceRoot: "/a", repository: "pingdotgg/t3code" }),
+      ],
+      providers: [
+        fakeProvider("github", {
+          getViewer: () =>
+            Effect.gen(function* () {
+              viewerCalls += 1;
+              if (viewerCalls === 2) {
+                yield* Deferred.succeed(staleRequestStarted, undefined);
+                yield* Deferred.await(releaseStaleRequest);
+              }
+              return viewerCalls < 3 ? "Bilal" : "Octocat";
+            }),
+        }),
+      ],
+    });
+
+    assert.deepStrictEqual((yield* service.list({ state: "open" })).viewers, {
+      "github.com": "Bilal",
+    });
+    const stale = yield* service.viewers({}).pipe(Effect.forkChild);
+    yield* Deferred.await(staleRequestStarted);
+    yield* service.invalidate({});
+    yield* Deferred.succeed(releaseStaleRequest, undefined);
+    assert.deepStrictEqual((yield* Fiber.join(stale)).viewers, { "github.com": "Bilal" });
+
+    assert.deepStrictEqual((yield* service.list({ state: "open" })).viewers, {
+      "github.com": "Octocat",
+    });
+    assert.strictEqual(viewerCalls, 3);
+  }),
+);
+
 it.effect("keeps a healthy host when another host's viewer verification fails", () =>
   Effect.gen(function* () {
     const service = yield* makeService({

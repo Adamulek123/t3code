@@ -2452,7 +2452,10 @@ export const make = Effect.gen(function* () {
     }
     return Effect.sync(() => {
       listingsEpoch = ++epochCounter;
+      // A whole-workspace refresh is the reader asking to be re-answered from the hosts,
+      // and that includes who the hosts say they are.
       viewersByHost.clear();
+      latestViewerRequestByHost.clear();
     }).pipe(Effect.andThen(Cache.invalidateAll(viewerFlights)));
   };
 
