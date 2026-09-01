@@ -7,7 +7,11 @@ export interface ServerConfigProjection {
   readonly source: "cache" | "live";
 }
 
-/** Removes machine-owned themes before a config enters durable storage or a replay snapshot. */
+/**
+ * Cached config keeps the provider and model catalog available across reconnects.
+ * Published themes are current machine state, so a cache could restore themes
+ * that the machine no longer publishes. Replay sends themes as a separate event.
+ */
 export function withoutEnvironmentThemes(config: ServerConfig): ServerConfig {
   if (config.environmentThemes === undefined) return config;
   const { environmentThemes: _ephemeral, ...rest } = config;
@@ -21,7 +25,8 @@ export function applyServerConfigProjection(
   switch (event.type) {
     case "snapshot": {
       // Wire snapshots never contain published themes. Keep the previous set
-      // until a capable server sends its authoritative theme event.
+      // until a capable server sends its authoritative theme event. A legacy
+      // server cannot send a later removal, so a downgrade must clear the set.
       const carried =
         event.config.environment.capabilities.environmentThemes === true && Option.isSome(current)
           ? current.value.config.environmentThemes
