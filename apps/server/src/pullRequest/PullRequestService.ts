@@ -752,7 +752,58 @@ export const make = Effect.gen(function* () {
   // signed-out after the reader has signed in.
   let epochCounter = 0;
   let listingsEpoch = 0;
+  let viewerRequestCounter = 0;
   const viewersByHost = new Map<string, { readonly at: number; readonly result: ResolvedViewer }>();
+  const latestViewerRequestByHost = new Map<string, number>();
+  const readViewer = Effect.fn("PullRequestService.readViewer")(function* (
+    host: string,
+    kind: SourceControlProviderKind,
+    roots: ReadonlyArray<string>,
+    options: { readonly fresh?: boolean } = {},
+  ) {
+    const registered = registry.get(kind);
+    if (registered === null) {
+      return yield* Effect.die(new Error(`Missing pull request provider: ${kind}`));
+    }
+    const api = withRateLimitBackoff(registered, host, rateLimits);
+    const held = viewersByHost.get(host);
+    const request = ++viewerRequestCounter;
+    latestViewerRequestByHost.set(host, request);
+    return yield* Effect.firstSuccessOf(roots.map((cwd) => api.getViewer({ cwd }))).pipe(
+      Effect.map((viewer) => ({
+        host,
+        kind,
+        viewer: viewer as string | null,
+        error: null as PullRequestProviderError | null,
+      })),
+      Effect.tap((result) =>
+        Effect.map(Clock.currentTimeMillis, (at) => {
+          if (latestViewerRequestByHost.get(host) !== request) return;
+          if (
+            options.fresh === true &&
+            held !== undefined &&
+            held.result.viewer !== result.viewer
+          ) {
+            listingsEpoch = ++epochCounter;
+          }
+          viewersByHost.set(host, { at, result });
+        }),
+      ),
+      Effect.catch((error) =>
+        Effect.sync(() => {
+          if (latestViewerRequestByHost.get(host) !== request) {
+            return { host, kind, viewer: null, error };
+          }
+          if (options.fresh === true && held !== undefined && held.result.viewer !== null) {
+            listingsEpoch = ++epochCounter;
+          }
+          viewersByHost.delete(host);
+          return { host, kind, viewer: null, error };
+        }),
+      ),
+    );
+  });
+
   const viewerFlights = yield* Cache.makeWith(
     (key: string): Effect.Effect<ResolvedViewer> => {
       const [host, kind, roots] = JSON.parse(key) as [
@@ -760,30 +811,7 @@ export const make = Effect.gen(function* () {
         SourceControlProviderKind,
         ReadonlyArray<string>,
       ];
-      const registered = registry.get(kind);
-      if (registered === null) {
-        return Effect.die(new Error(`Missing pull request provider: ${kind}`));
-      }
-      const api = withRateLimitBackoff(registered, host, rateLimits);
-      return Effect.firstSuccessOf(roots.map((cwd) => api.getViewer({ cwd }))).pipe(
-        Effect.map((viewer) => ({
-          host,
-          kind,
-          viewer: viewer as string | null,
-          error: null as PullRequestProviderError | null,
-        })),
-        Effect.tap((result) =>
-          Effect.map(Clock.currentTimeMillis, (at) => viewersByHost.set(host, { at, result })),
-        ),
-        Effect.catch((error) =>
-          Effect.succeed({
-            host,
-            kind,
-            viewer: null,
-            error,
-          }),
-        ),
-      );
+      return readViewer(host, kind, roots);
     },
     {
       capacity: VIEWER_CACHE_CAPACITY,
@@ -818,36 +846,9 @@ export const make = Effect.gen(function* () {
           const roots =
             viewerRoots.get(host) ?? forHost.map(({ project }) => project.workspaceRoot);
           const uniqueRoots = [...new Set(roots)].sort();
-          const fresh = Effect.firstSuccessOf(uniqueRoots.map((cwd) => api.getViewer({ cwd }))).pipe(
-            Effect.map((viewer) => ({
-              host,
-              kind: api.kind,
-              viewer: viewer as string | null,
-              error: null as PullRequestProviderError | null,
-            })),
-            Effect.tap((result) =>
-              Effect.map(Clock.currentTimeMillis, (at) => {
-                if (
-                  options.fresh === true &&
-                  held !== undefined &&
-                  held.result.viewer !== result.viewer
-                ) {
-                  listingsEpoch = ++epochCounter;
-                }
-                viewersByHost.set(host, { at, result });
-              }),
-            ),
-            Effect.catch((error) =>
-              Effect.sync(() => {
-                if (options.fresh === true && held !== undefined && held.result.viewer !== null) {
-                  listingsEpoch = ++epochCounter;
-                }
-                viewersByHost.delete(host);
-                return { host, kind: api.kind, viewer: null, error };
-              }),
-            ),
-          );
-          if (options.fresh === true) return fresh;
+          if (options.fresh === true) {
+            return readViewer(host, api.kind, uniqueRoots, options);
+          }
           const key = JSON.stringify([host, api.kind, uniqueRoots]);
           return Cache.get(viewerFlights, key);
         }),

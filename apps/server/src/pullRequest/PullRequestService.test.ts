@@ -698,6 +698,55 @@ it.effect("reads snapshot viewer identity freshly after the host account changes
   }),
 );
 
+it.effect("does not let an older viewer request replace a newer identity", () =>
+  Effect.gen(function* () {
+    const firstFreshStarted = yield* Deferred.make<void>();
+    const releaseFirstFresh = yield* Deferred.make<void>();
+    let viewerCalls = 0;
+    let listCalls = 0;
+    const service = yield* makeService({
+      projects: [
+        project({ id: "p1", title: "t3code", workspaceRoot: "/a", repository: "pingdotgg/t3code" }),
+      ],
+      providers: [
+        fakeProvider("github", {
+          getViewer: () =>
+            Effect.gen(function* () {
+              viewerCalls += 1;
+              if (viewerCalls === 2) {
+                yield* Deferred.succeed(firstFreshStarted, undefined);
+                yield* Deferred.await(releaseFirstFresh);
+                return "Bilal";
+              }
+              return viewerCalls === 1 ? "Bilal" : "Octocat";
+            }),
+          listChangeRequests: () => {
+            listCalls += 1;
+            return Effect.succeed({
+              items: [changeRequest(listCalls, `2026-07-0${listCalls}T00:00:00Z`)],
+              truncated: false,
+              continues: true,
+            });
+          },
+        }),
+      ],
+    });
+
+    assert.deepStrictEqual((yield* service.list({ state: "open" })).viewers, {
+      "github.com": "Bilal",
+    });
+    const older = yield* service.viewers({}).pipe(Effect.forkChild);
+    yield* Deferred.await(firstFreshStarted);
+    assert.deepStrictEqual((yield* service.viewers({})).viewers, { "github.com": "Octocat" });
+    yield* Deferred.succeed(releaseFirstFresh, undefined);
+    assert.deepStrictEqual((yield* Fiber.join(older)).viewers, { "github.com": "Bilal" });
+
+    const current = yield* service.list({ state: "open" });
+    assert.deepStrictEqual(current.viewers, { "github.com": "Octocat" });
+    assert.strictEqual(listCalls, 2);
+  }),
+);
+
 it.effect("keeps a healthy host when another host's viewer verification fails", () =>
   Effect.gen(function* () {
     const service = yield* makeService({
