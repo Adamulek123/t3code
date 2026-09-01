@@ -204,8 +204,8 @@ export function subscribeDynamic<TTag extends EnvironmentSubscriptionRpcTag>(
             onNone: () => Stream.empty,
             onSome: (session) => {
               const method = (
-                tag === WS_METHODS.subscribeServerConfig && session.serverConfigEvents !== undefined
-                  ? () => session.serverConfigEvents
+                tag === WS_METHODS.subscribeServerConfig
+                  ? session.subscribeServerConfig
                   : session.client[tag]
               ) as (
                 input: EnvironmentRpcInput<TTag>,
