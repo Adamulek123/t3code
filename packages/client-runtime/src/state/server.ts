@@ -47,6 +47,9 @@ import {
   withoutEnvironmentThemes,
 } from "./serverConfigProjection.ts";
 
+// Exported server state includes this type in its inferred public return type.
+export type { ServerConfigProjection } from "./serverConfigProjection.ts";
+
 export type ServerUpdateStage = "downloading" | "installing" | "resuming";
 
 export type ServerUpdateState =
