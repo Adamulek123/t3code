@@ -46,7 +46,10 @@ function subscribeToSharedStatusPulse() {
   };
 }
 
-function ActiveStatusPulse(props: { readonly children: ReactNode }) {
+function ActiveStatusPulse(props: {
+  readonly children: ReactNode;
+  readonly minimumOpacity: number;
+}) {
   const reduceMotion = useReducedMotion();
 
   useEffect(() => {
@@ -57,14 +60,26 @@ function ActiveStatusPulse(props: { readonly children: ReactNode }) {
   }, [reduceMotion]);
 
   const animatedStyle = useAnimatedStyle(
-    () => ({ opacity: reduceMotion ? 1 : sharedStatusPulseOpacity.value }),
-    [reduceMotion],
+    () => ({
+      opacity: reduceMotion ? 1 : Math.max(props.minimumOpacity, sharedStatusPulseOpacity.value),
+    }),
+    [props.minimumOpacity, reduceMotion],
   );
 
   return <Animated.View style={animatedStyle}>{props.children}</Animated.View>;
 }
 
 /** A shared, display-rate-independent status pulse for persistent activity indicators. */
-export function StatusPulse(props: { readonly active: boolean; readonly children: ReactNode }) {
-  return props.active ? <ActiveStatusPulse>{props.children}</ActiveStatusPulse> : props.children;
+export function StatusPulse(props: {
+  readonly active: boolean;
+  readonly children: ReactNode;
+  readonly minimumOpacity?: number;
+}) {
+  return props.active ? (
+    <ActiveStatusPulse minimumOpacity={props.minimumOpacity ?? 0}>
+      {props.children}
+    </ActiveStatusPulse>
+  ) : (
+    props.children
+  );
 }

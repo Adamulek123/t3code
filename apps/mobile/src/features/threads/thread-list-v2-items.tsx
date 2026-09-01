@@ -731,7 +731,9 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         </View>
       ) : null}
       <View className="mt-1 flex-row items-center gap-2">
-        {terminalIndicatorPlacement === "metadata" ? <TerminalRunningIndicator /> : null}
+        {terminalIndicatorPlacement === "metadata" ? (
+          <TerminalRunningIndicator selected={selected} />
+        ) : null}
         {status === "failed" && thread.session?.lastError ? (
           <Text
             className={cn(
@@ -914,7 +916,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
               : relativeTime(thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt)}
           </Text>
           {terminalIndicatorPlacement === "trailing" ? (
-            <TerminalRunningIndicator size={12} />
+            <TerminalRunningIndicator selected={selected} size={12} />
           ) : null}
         </View>
       </Pressable>

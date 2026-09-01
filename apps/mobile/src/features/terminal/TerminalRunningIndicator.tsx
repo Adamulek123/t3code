@@ -4,14 +4,19 @@ import { SymbolView } from "../../components/AppSymbol";
 import { StatusPulse } from "../../components/StatusPulse";
 import { TERMINAL_RUNNING_ACCESSIBILITY_LABEL } from "./terminalRunningStatus";
 
-export function TerminalRunningIndicator(props: { readonly size?: number }) {
+export function TerminalRunningIndicator(props: {
+  readonly selected?: boolean;
+  readonly size?: number;
+}) {
   return (
     <View accessibilityLabel={TERMINAL_RUNNING_ACCESSIBILITY_LABEL} accessibilityRole="image">
-      <StatusPulse active>
+      <StatusPulse active minimumOpacity={props.selected ? 0.6 : undefined}>
         <SymbolView
           name="terminal"
           size={props.size ?? 13}
-          tintColorClassName="accent-terminal-active"
+          tintColorClassName={
+            props.selected ? "accent-user-bubble-foreground" : "accent-terminal-active"
+          }
           type="monochrome"
         />
       </StatusPulse>

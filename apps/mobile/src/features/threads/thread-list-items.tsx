@@ -540,7 +540,9 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
   const subtitleRow =
     subtitleParts.length > 0 || pr !== null || hasRunningTerminal ? (
       <View className="mt-px flex-row items-center gap-1.5">
-        {terminalIndicatorPlacement === "metadata" ? <TerminalRunningIndicator /> : null}
+        {terminalIndicatorPlacement === "metadata" ? (
+          <TerminalRunningIndicator selected={selected} />
+        ) : null}
         {subtitleParts.length > 0 ? (
           <>
             <Text
