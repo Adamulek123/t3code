@@ -733,6 +733,7 @@ function ThreadRouteContent(
     handleOpenGitInspector,
     handleToggleInspector,
     props.onReturnToThread,
+    runningTerminalCount,
     selectedThreadCwd,
     selectedThreadProject?.workspaceRoot,
     terminalRunningLabel,
