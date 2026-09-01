@@ -706,7 +706,9 @@ export const make = Effect.gen(function* () {
   // signed-out after the reader has signed in.
   let epochCounter = 0;
   let listingsEpoch = 0;
+  let viewerRequestCounter = 0;
   const viewersByHost = new Map<string, { readonly at: number; readonly result: ResolvedViewer }>();
+  const latestViewerRequestByHost = new Map<string, number>();
 
   const resolveViewers = (
     projects: ReadonlyArray<SupportedProject>,
@@ -727,6 +729,8 @@ export const make = Effect.gen(function* () {
           }
           const forHost = projects.filter((project) => project.host === host);
           const api = forHost[0]!.api;
+          const request = ++viewerRequestCounter;
+          latestViewerRequestByHost.set(host, request);
           // Every checkout on the host, not just the ones that survived de-duplication: one
           // unreadable worktree would otherwise report the whole host as signed out.
           const roots =
@@ -740,6 +744,7 @@ export const make = Effect.gen(function* () {
             })),
             Effect.tap((result) =>
               Effect.map(Clock.currentTimeMillis, (at) => {
+                if (latestViewerRequestByHost.get(host) !== request) return;
                 if (
                   options.fresh === true &&
                   held !== undefined &&
@@ -752,6 +757,9 @@ export const make = Effect.gen(function* () {
             ),
             Effect.catch((error) =>
               Effect.sync(() => {
+                if (latestViewerRequestByHost.get(host) !== request) {
+                  return { host, kind: api.kind, viewer: null, error };
+                }
                 if (options.fresh === true && held !== undefined && held.result.viewer !== null) {
                   listingsEpoch = ++epochCounter;
                 }
