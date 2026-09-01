@@ -47,11 +47,6 @@ import {
   withoutEnvironmentThemes,
 } from "./serverConfigProjection.ts";
 
-export {
-  applyServerConfigProjection,
-  type ServerConfigProjection,
-} from "./serverConfigProjection.ts";
-
 export type ServerUpdateStage = "downloading" | "installing" | "resuming";
 
 export type ServerUpdateState =
