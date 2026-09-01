@@ -94,6 +94,8 @@ import {
   PullRequestListResult,
   PullRequestListStatsInput,
   PullRequestListStatsResult,
+  PullRequestViewerInput,
+  PullRequestViewerResult,
   PullRequestOperationError,
   PullRequestReactionInput,
   PullRequestRef,
@@ -304,6 +306,7 @@ export const WS_METHODS = {
 
   // Pull request methods
   pullRequestsList: "pullRequests.list",
+  pullRequestsViewers: "pullRequests.viewers",
   pullRequestsListStats: "pullRequests.listStats",
   pullRequestsSummary: "pullRequests.summary",
   pullRequestsDetail: "pullRequests.detail",
@@ -513,6 +516,12 @@ const PullRequestRpcError = Schema.Union([
 export const WsPullRequestsListRpc = Rpc.make(WS_METHODS.pullRequestsList, {
   payload: PullRequestListInput,
   success: PullRequestListResult,
+  error: PullRequestRpcError,
+});
+
+export const WsPullRequestsViewersRpc = Rpc.make(WS_METHODS.pullRequestsViewers, {
+  payload: PullRequestViewerInput,
+  success: PullRequestViewerResult,
   error: PullRequestRpcError,
 });
 
@@ -1087,6 +1096,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsCloudGetRelayClientStatusRpc,
   WsCloudInstallRelayClientRpc,
   WsPullRequestsListRpc,
+  WsPullRequestsViewersRpc,
   WsPullRequestsListStatsRpc,
   WsPullRequestsSummaryRpc,
   WsPullRequestsDetailRpc,
