@@ -65,6 +65,7 @@ import {
   withDiffStat,
   writePullRequestListSnapshot,
   scorePullRequestMatch,
+  pullRequestStatsRefreshBatches,
   pullRequestStatsRequestBatches,
   retainVisiblePullRequestStatsBatches,
   type EnvironmentPullRequestEntry,
@@ -72,6 +73,7 @@ import {
   type PullRequestDiffStats,
   type PullRequestStatsBatch,
   type PullRequestStatsPolicy,
+  type PullRequestStatsScope,
   type PullRequestPartitionsSnapshot,
 } from "../components/pullRequest/pullRequestList.logic";
 import { assignProjectsToEnvironments } from "../components/pullRequest/pullRequestProjectAssignment.logic";
@@ -621,6 +623,8 @@ function PullRequestsRouteView() {
   // Page size is view state, not a URL concern: a shared link should open the first page.
   const scopeKey = `${environmentKey}:${assignmentKey}:${search.state}:${search.involvement}:${scopedProjectId ?? ""}:${search.host ?? ""}:${search.draft ?? ""}:${search.review ?? ""}:${search.checks ?? ""}:${search.author ?? ""}:${search.labels?.join("\u0000") ?? ""}`;
   const filterKey = `${scopeKey}:${sentQuery}`;
+  const statsScopeRef = useRef<PullRequestStatsScope>({ key: filterKey, policy: statsPolicy });
+  statsScopeRef.current = { key: filterKey, policy: statsPolicy };
   // Where the next slice carries on from, per repository within each environment, as that
   // environment handed it back. Sending it is what makes a second page cost a second page rather
   // than the whole list again — and a repository it does not name has run out and is not read a
@@ -794,6 +798,7 @@ function PullRequestsRouteView() {
   // of its own work is a button that gets pressed again, and buys the whole cascade twice.
   const [invalidating, setInvalidating] = useState(false);
   const refreshFromHost = async () => {
+    const requestedStatsScope = statsScopeRef.current;
     setInvalidating(true);
     try {
       // Every environment the page is reading, since what the reader pressed refresh for is the
@@ -810,16 +815,17 @@ function PullRequestsRouteView() {
     authoredQuery.refresh();
     reviewingQuery.refresh();
     const visible = visibleStatsKeys.current;
-    const batches = pullRequestStatsRequestBatches({
+    const batches = pullRequestStatsRefreshBatches({
+      requestedScope: requestedStatsScope,
+      currentScope: statsScopeRef.current,
       entriesByKey: entriesByStatsKey.current,
-      candidateKeys: visible.key === filterKey ? visible.values : new Set(),
-      policy: statsPolicy,
-      activeBatches: [],
+      candidateKeys: visible.key === requestedStatsScope.key ? visible.values : new Set(),
       statsByRow: statsByRowRef.current,
-      refresh: true,
     });
-    setStatsTargetState({ key: filterKey, batches });
-    statsQuery.refresh(batches.map(({ environmentId, input }) => ({ environmentId, input })));
+    if (batches !== null) {
+      setStatsTargetState({ key: requestedStatsScope.key, batches });
+      statsQuery.refresh(batches.map(({ environmentId, input }) => ({ environmentId, input })));
+    }
     setDetailRefreshToken((token) => token + 1);
   };
   const refreshing = invalidating || listQuery.isPending;

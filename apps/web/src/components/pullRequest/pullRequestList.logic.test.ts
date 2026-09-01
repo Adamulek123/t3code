@@ -13,6 +13,7 @@ import {
   parsePullRequestQuery,
   pullRequestStatsBatches,
   pullRequestStatsKeysToRequest,
+  pullRequestStatsRefreshBatches,
   pullRequestStatsRequestBatches,
   mergePullRequestDiffStats,
   narrowPullRequestsToFilters,
@@ -187,6 +188,25 @@ describe("visible pull request line-count targets", () => {
       refresh: true,
     });
     expect(eager[0]?.input.refs.map((ref) => ref.number)).toEqual([1, 2, 3]);
+  });
+
+  it("ignores a late refresh after the filter or stats policy changes", () => {
+    const entries = [entry({ number: 1 }), entry({ number: 2 })];
+    const entriesByKey = new Map(entries.map((item) => [pullRequestEntryKey(item), item]));
+    const visibleKeys = new Set([pullRequestEntryKey(entries[1]!)]);
+    const requestedScope = { key: "open", policy: "visible" } as const;
+    const refresh = (currentScope: { key: string; policy: "visible" | "eager" }) =>
+      pullRequestStatsRefreshBatches({
+        requestedScope,
+        currentScope,
+        entriesByKey,
+        candidateKeys: visibleKeys,
+        statsByRow: new Map(),
+      });
+
+    expect(refresh(requestedScope)?.[0]?.input.refs.map((ref) => ref.number)).toEqual([2]);
+    expect(refresh({ key: "closed", policy: "visible" })).toBeNull();
+    expect(refresh({ key: "open", policy: "eager" })).toBeNull();
   });
 
   it("does not add request batches again while rows are active or cached", () => {

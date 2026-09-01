@@ -447,6 +447,11 @@ export interface PullRequestStatsBatch extends PullRequestStatsTarget {
 
 export type PullRequestStatsPolicy = "visible" | "eager";
 
+export interface PullRequestStatsScope {
+  readonly key: string;
+  readonly policy: PullRequestStatsPolicy;
+}
+
 const MAX_PULL_REQUEST_STATS_REFS = 500;
 
 /** Excludes rows already covered by an active batch or the received-count cache. */
@@ -532,6 +537,33 @@ export function pullRequestStatsRequestBatches({
     ? requestedKeys
     : pullRequestStatsKeysToRequest(entriesByKey, requestedKeys, activeBatches, statsByRow);
   return pullRequestStatsBatches(entriesByKey, keys);
+}
+
+/** Ignores a refresh that finished after the list moved to another filter or stats policy. */
+export function pullRequestStatsRefreshBatches({
+  requestedScope,
+  currentScope,
+  entriesByKey,
+  candidateKeys,
+  statsByRow,
+}: {
+  readonly requestedScope: PullRequestStatsScope;
+  readonly currentScope: PullRequestStatsScope;
+  readonly entriesByKey: ReadonlyMap<string, EnvironmentPullRequestEntry>;
+  readonly candidateKeys: ReadonlySet<string>;
+  readonly statsByRow: ReadonlyMap<string, unknown>;
+}): ReadonlyArray<PullRequestStatsBatch> | null {
+  if (requestedScope.key !== currentScope.key || requestedScope.policy !== currentScope.policy) {
+    return null;
+  }
+  return pullRequestStatsRequestBatches({
+    entriesByKey,
+    candidateKeys,
+    policy: requestedScope.policy,
+    activeBatches: [],
+    statsByRow,
+    refresh: true,
+  });
 }
 
 /** Drops completed batches once every row in them has left the observer window. */
