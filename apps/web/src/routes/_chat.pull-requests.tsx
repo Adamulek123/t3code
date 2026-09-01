@@ -65,13 +65,13 @@ import {
   withDiffStat,
   writePullRequestListSnapshot,
   scorePullRequestMatch,
-  pullRequestStatsBatches,
-  pullRequestStatsKeysToRequest,
+  pullRequestStatsRequestBatches,
   retainVisiblePullRequestStatsBatches,
   type EnvironmentPullRequestEntry,
   type MergedPullRequestList,
   type PullRequestDiffStats,
   type PullRequestStatsBatch,
+  type PullRequestStatsPolicy,
   type PullRequestPartitionsSnapshot,
 } from "../components/pullRequest/pullRequestList.logic";
 import { assignProjectsToEnvironments } from "../components/pullRequest/pullRequestProjectAssignment.logic";
@@ -285,6 +285,8 @@ export const Route = createFileRoute("/_chat/pull-requests")({
 function PullRequestsRouteView() {
   const search = Route.useSearch();
   const sort = search.sort ?? "updated";
+  const statsPolicy: PullRequestStatsPolicy =
+    sort === "largest" || sort === "smallest" ? "eager" : "visible";
   const navigate = useNavigate({ from: Route.fullPath });
   const { environments } = useEnvironments();
   // Every connected environment that has said it can list pull requests. Sorted, so the query
@@ -808,11 +810,16 @@ function PullRequestsRouteView() {
     authoredQuery.refresh();
     reviewingQuery.refresh();
     const visible = visibleStatsKeys.current;
-    if (visible.key === filterKey) {
-      const batches = pullRequestStatsBatches(entriesByStatsKey.current, visible.values);
-      setStatsTargetState({ key: filterKey, batches });
-      statsQuery.refresh(batches.map(({ environmentId, input }) => ({ environmentId, input })));
-    }
+    const batches = pullRequestStatsRequestBatches({
+      entriesByKey: entriesByStatsKey.current,
+      candidateKeys: visible.key === filterKey ? visible.values : new Set(),
+      policy: statsPolicy,
+      activeBatches: [],
+      statsByRow: statsByRowRef.current,
+      refresh: true,
+    });
+    setStatsTargetState({ key: filterKey, batches });
+    statsQuery.refresh(batches.map(({ environmentId, input }) => ({ environmentId, input })));
     setDetailRefreshToken((token) => token + 1);
   };
   const refreshing = invalidating || listQuery.isPending;
@@ -1238,8 +1245,8 @@ function PullRequestsRouteView() {
     viewers,
   ]);
 
-  // Line counts are optional decoration. Keep the query bounded to the rows near the viewport;
-  // results already received stay in statsByRow, while refresh does not revisit old scroll pages.
+  // Date sorts keep optional line-count reads near the viewport. Size sorts need every loaded
+  // count before their order is final. Received counts stay cached across both policies.
   const entriesByStatsKey = useRef<ReadonlyMap<string, EnvironmentPullRequestEntry>>(new Map());
   entriesByStatsKey.current = new Map(
     groups.flatMap((group) =>
@@ -1266,6 +1273,8 @@ function PullRequestsRouteView() {
   const statsObserver = useRef<IntersectionObserver | null>(null);
   const statsRows = useRef(new Set<HTMLButtonElement>());
   const statsPending = useRef(true);
+  const statsPolicyRef = useRef(statsPolicy);
+  statsPolicyRef.current = statsPolicy;
   const registerStatsRow = useCallback((node: HTMLButtonElement | null) => {
     if (node === null || typeof IntersectionObserver === "undefined") return;
     statsRows.current.add(node);
@@ -1275,7 +1284,14 @@ function PullRequestsRouteView() {
       statsObserver.current?.unobserve(node);
       const key = node.dataset.pullRequestStatsKey;
       const visible = visibleStatsKeys.current;
-      if (key === undefined || !visible.values.delete(key) || statsPending.current) return;
+      if (
+        statsPolicyRef.current !== "visible" ||
+        key === undefined ||
+        !visible.values.delete(key) ||
+        statsPending.current
+      ) {
+        return;
+      }
       setStatsTargetState((current) => {
         if (current.key !== visible.key) return current;
         const batches = retainVisiblePullRequestStatsBatches(current.batches, visible.values);
@@ -1284,7 +1300,22 @@ function PullRequestsRouteView() {
     };
   }, []);
   useEffect(() => {
-    if (typeof IntersectionObserver === "undefined") return;
+    if (statsPolicy !== "eager") return;
+    setStatsTargetState((current) => {
+      const batches = current.key === filterKey ? current.batches : [];
+      const added = pullRequestStatsRequestBatches({
+        entriesByKey: entriesByStatsKey.current,
+        candidateKeys: visibleStatsKeys.current.values,
+        policy: statsPolicy,
+        activeBatches: batches,
+        statsByRow: statsByRowRef.current,
+      });
+      if (added.length === 0 && current.key === filterKey) return current;
+      return { key: filterKey, batches: [...batches, ...added] };
+    });
+  }, [filterKey, groups, statsPolicy]);
+  useEffect(() => {
+    if (statsPolicy !== "visible" || typeof IntersectionObserver === "undefined") return;
     visibleStatsKeys.current = { key: filterKey, values: new Set() };
     const observer = new IntersectionObserver(
       (observed) => {
@@ -1307,16 +1338,16 @@ function PullRequestsRouteView() {
         if (!changed) return;
         setStatsTargetState((current) => {
           const batches = current.key === filterKey ? current.batches : [];
-          const newKeys = pullRequestStatsKeysToRequest(
-            entriesByStatsKey.current,
-            entered,
-            batches,
-            statsByRowRef.current,
-          );
           const retained = statsPending.current
             ? batches
             : retainVisiblePullRequestStatsBatches(batches, visible.values);
-          const added = pullRequestStatsBatches(entriesByStatsKey.current, newKeys);
+          const added = pullRequestStatsRequestBatches({
+            entriesByKey: entriesByStatsKey.current,
+            candidateKeys: entered,
+            policy: statsPolicy,
+            activeBatches: batches,
+            statsByRow: statsByRowRef.current,
+          });
           if (added.length === 0 && retained.length === batches.length) return current;
           return { key: filterKey, batches: [...retained, ...added] };
         });
@@ -1329,18 +1360,18 @@ function PullRequestsRouteView() {
       observer.disconnect();
       if (statsObserver.current === observer) statsObserver.current = null;
     };
-  }, [filterKey]);
+  }, [filterKey, statsPolicy]);
   const statsQuery = usePullRequestListStats(statsTargets);
   statsPending.current = statsQuery.isPending;
   useEffect(() => {
-    if (statsQuery.isPending) return;
+    if (statsPolicy !== "visible" || statsQuery.isPending) return;
     const visible = visibleStatsKeys.current;
     setStatsTargetState((current) => {
       if (current.key !== filterKey || visible.key !== filterKey) return current;
       const batches = retainVisiblePullRequestStatsBatches(current.batches, visible.values);
       return batches.length === current.batches.length ? current : { key: current.key, batches };
     });
-  }, [filterKey, statsQuery.isPending]);
+  }, [filterKey, statsPolicy, statsQuery.isPending]);
   // Adding or removing one row keys a fresh stats query with nothing in it yet, so the counts
   // are merged into what is already held rather than rebuilt: every count on screen stays until
   // its replacement arrives.

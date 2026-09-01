@@ -445,6 +445,10 @@ export interface PullRequestStatsBatch extends PullRequestStatsTarget {
   readonly keys: ReadonlySet<string>;
 }
 
+export type PullRequestStatsPolicy = "visible" | "eager";
+
+const MAX_PULL_REQUEST_STATS_REFS = 500;
+
 /** Excludes rows already covered by an active batch or the received-count cache. */
 export function pullRequestStatsKeysToRequest(
   entriesByKey: ReadonlyMap<string, EnvironmentPullRequestEntry>,
@@ -456,37 +460,78 @@ export function pullRequestStatsKeysToRequest(
   return new Set(
     [...enteredKeys].filter((key) => {
       const entry = entriesByKey.get(key);
-      return entry !== undefined && !requested.has(key) && !statsByRow.has(diffStatKey(entry));
+      return (
+        entry !== undefined && !requested.has(key) && !statsByRow.has(pullRequestDiffStatKey(entry))
+      );
     }),
   );
 }
 
-/** Groups newly visible rows into one immutable line-count read per environment. */
+/** Groups selected rows into bounded, immutable line-count reads per environment. */
 export function pullRequestStatsBatches(
   entriesByKey: ReadonlyMap<string, EnvironmentPullRequestEntry>,
   keys: ReadonlySet<string>,
 ): ReadonlyArray<PullRequestStatsBatch> {
   const byEnvironment = new Map<
     EnvironmentId,
-    { keys: Set<string>; refs: Array<PullRequestStatsTarget["input"]["refs"][number]> }
+    Array<{
+      readonly key: string;
+      readonly ref: PullRequestStatsTarget["input"]["refs"][number];
+    }>
   >();
   for (const key of keys) {
     const entry = entriesByKey.get(key);
     if (entry === undefined) continue;
-    const batch = byEnvironment.get(entry.environmentId) ?? { keys: new Set(), refs: [] };
-    batch.keys.add(key);
-    batch.refs.push({
-      projectId: entry.projectId,
-      repository: entry.repository,
-      number: entry.number,
+    const rows = byEnvironment.get(entry.environmentId) ?? [];
+    rows.push({
+      key,
+      ref: {
+        projectId: entry.projectId,
+        repository: entry.repository,
+        number: entry.number,
+      },
     });
-    byEnvironment.set(entry.environmentId, batch);
+    byEnvironment.set(entry.environmentId, rows);
   }
-  return [...byEnvironment].map(([environmentId, batch]) => ({
-    environmentId,
-    input: { refs: batch.refs },
-    keys: batch.keys,
-  }));
+  return [...byEnvironment].flatMap(([environmentId, rows]) => {
+    const batches: PullRequestStatsBatch[] = [];
+    for (let index = 0; index < rows.length; index += MAX_PULL_REQUEST_STATS_REFS) {
+      const batch = rows.slice(index, index + MAX_PULL_REQUEST_STATS_REFS);
+      batches.push({
+        environmentId,
+        input: { refs: batch.map((row) => row.ref) },
+        keys: new Set(batch.map((row) => row.key)),
+      });
+    }
+    return batches;
+  });
+}
+
+/**
+ * Selects the next immutable stats batches. Size sorting needs every loaded row, while the other
+ * modes only need rows near the viewport. Normal reads skip active and cached rows; an explicit
+ * refresh asks for the selected rows again.
+ */
+export function pullRequestStatsRequestBatches({
+  entriesByKey,
+  candidateKeys,
+  policy,
+  activeBatches,
+  statsByRow,
+  refresh = false,
+}: {
+  readonly entriesByKey: ReadonlyMap<string, EnvironmentPullRequestEntry>;
+  readonly candidateKeys: ReadonlySet<string>;
+  readonly policy: PullRequestStatsPolicy;
+  readonly activeBatches: ReadonlyArray<PullRequestStatsBatch>;
+  readonly statsByRow: ReadonlyMap<string, unknown>;
+  readonly refresh?: boolean;
+}): ReadonlyArray<PullRequestStatsBatch> {
+  const requestedKeys = policy === "eager" ? new Set(entriesByKey.keys()) : candidateKeys;
+  const keys = refresh
+    ? requestedKeys
+    : pullRequestStatsKeysToRequest(entriesByKey, requestedKeys, activeBatches, statsByRow);
+  return pullRequestStatsBatches(entriesByKey, keys);
 }
 
 /** Drops completed batches once every row in them has left the observer window. */

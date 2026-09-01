@@ -31,7 +31,7 @@ export interface EnvironmentQueryTarget<Input> {
 }
 
 interface MergedEnvironmentQueryView<A> {
-  /** One entry per environment that has answered, in the order the targets were given. */
+  /** One entry per query target that has answered, in the order the targets were given. */
   readonly values: ReadonlyArray<readonly [EnvironmentId, A]>;
   /** The first environment that failed. Others may still have answered — this is not fatal. */
   readonly error: string | null;

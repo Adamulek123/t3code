@@ -13,6 +13,7 @@ import {
   parsePullRequestQuery,
   pullRequestStatsBatches,
   pullRequestStatsKeysToRequest,
+  pullRequestStatsRequestBatches,
   mergePullRequestDiffStats,
   narrowPullRequestsToFilters,
   partitionPullRequestsWithPriority,
@@ -100,6 +101,134 @@ describe("visible pull request line-count targets", () => {
     expect(retained.flatMap((batch) => batch.input.refs.map((ref) => ref.number))).toEqual(
       entries.slice(-12).map((item) => item.number),
     );
+  });
+
+  it("keeps every per-environment batch within the stats contract limit", () => {
+    const entries = Array.from({ length: 501 }, (_, index) => entry({ number: index + 1 }));
+    const entriesByKey = new Map(entries.map((item) => [pullRequestEntryKey(item), item]));
+    const batches = pullRequestStatsBatches(
+      entriesByKey,
+      new Set(entries.map(pullRequestEntryKey)),
+    );
+
+    expect(batches.map((batch) => batch.input.refs.length)).toEqual([500, 1]);
+    expect(batches.flatMap((batch) => [...batch.keys])).toEqual(entries.map(pullRequestEntryKey));
+  });
+
+  it("selects visible rows for date modes and every uncached row for size modes", () => {
+    const entries = [
+      entry({ number: 1 }),
+      entry({ number: 2 }),
+      entry({ number: 3, environmentId: "env-2" as EnvironmentId }),
+    ];
+    const entriesByKey = new Map(entries.map((item) => [pullRequestEntryKey(item), item]));
+    const [firstKey, secondKey] = entries.map(pullRequestEntryKey);
+    const cachedStats = mergePullRequestDiffStats(new Map(), [
+      {
+        environmentId: ENV_1,
+        projectId: "project-1",
+        number: 1,
+        additions: 1,
+        deletions: 1,
+      },
+    ]);
+
+    const visible = pullRequestStatsRequestBatches({
+      entriesByKey,
+      candidateKeys: new Set([firstKey!, secondKey!]),
+      policy: "visible",
+      activeBatches: [],
+      statsByRow: cachedStats,
+    });
+    expect(visible.flatMap((batch) => batch.input.refs.map((ref) => ref.number))).toEqual([2]);
+
+    const eager = pullRequestStatsRequestBatches({
+      entriesByKey,
+      candidateKeys: new Set([firstKey!]),
+      policy: "eager",
+      activeBatches: [],
+      statsByRow: cachedStats,
+    });
+    expect(eager.map((batch) => batch.environmentId)).toEqual([ENV_1, "env-2"]);
+    expect(eager.flatMap((batch) => batch.input.refs.map((ref) => ref.number))).toEqual([2, 3]);
+  });
+
+  it("refreshes only visible rows unless size sorting needs every loaded row", () => {
+    const entries = [entry({ number: 1 }), entry({ number: 2 }), entry({ number: 3 })];
+    const entriesByKey = new Map(entries.map((item) => [pullRequestEntryKey(item), item]));
+    const visibleKeys = new Set([pullRequestEntryKey(entries[1]!)]);
+    const cachedStats = mergePullRequestDiffStats(
+      new Map(),
+      entries.map((item) => ({
+        environmentId: ENV_1,
+        projectId: item.projectId,
+        number: item.number,
+        additions: item.additions,
+        deletions: item.deletions,
+      })),
+    );
+
+    const visible = pullRequestStatsRequestBatches({
+      entriesByKey,
+      candidateKeys: visibleKeys,
+      policy: "visible",
+      activeBatches: [],
+      statsByRow: cachedStats,
+      refresh: true,
+    });
+    expect(visible[0]?.input.refs.map((ref) => ref.number)).toEqual([2]);
+
+    const eager = pullRequestStatsRequestBatches({
+      entriesByKey,
+      candidateKeys: visibleKeys,
+      policy: "eager",
+      activeBatches: [],
+      statsByRow: cachedStats,
+      refresh: true,
+    });
+    expect(eager[0]?.input.refs.map((ref) => ref.number)).toEqual([1, 2, 3]);
+  });
+
+  it("does not add request batches again while rows are active or cached", () => {
+    const entries = [entry({ number: 1 }), entry({ number: 2 })];
+    const entriesByKey = new Map(entries.map((item) => [pullRequestEntryKey(item), item]));
+    const first = pullRequestStatsRequestBatches({
+      entriesByKey,
+      candidateKeys: new Set(),
+      policy: "eager",
+      activeBatches: [],
+      statsByRow: new Map(),
+    });
+
+    expect(
+      pullRequestStatsRequestBatches({
+        entriesByKey,
+        candidateKeys: new Set(),
+        policy: "eager",
+        activeBatches: first,
+        statsByRow: new Map(),
+      }),
+    ).toEqual([]);
+
+    const cachedStats = mergePullRequestDiffStats(
+      new Map(),
+      entries.map((item) => ({
+        environmentId: ENV_1,
+        projectId: item.projectId,
+        number: item.number,
+        additions: item.additions,
+        deletions: item.deletions,
+      })),
+    );
+    expect(
+      pullRequestStatsRequestBatches({
+        entriesByKey,
+        candidateKeys: new Set(entries.map(pullRequestEntryKey)),
+        policy: "visible",
+        activeBatches: [],
+        statsByRow: cachedStats,
+      }),
+    ).toEqual([]);
   });
 });
 
