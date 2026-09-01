@@ -852,12 +852,7 @@ export const pullRequestListViewersMatchVerification = (
   );
   if (scopedViewers.length === 0) return true;
   if (verifiedViewers === null) return false;
-  // The gated live list runs after the fresh viewer read. A host omitted by that read has had its
-  // server cache cleared, so the list's own viewer is a fresh retry; only a known disagreement is
-  // an account switch. Snapshot and retained-row checks remain strict about missing identities.
-  return scopedViewers.every(
-    ([key, viewer]) => verifiedViewers[key] === undefined || verifiedViewers[key] === viewer,
-  );
+  return scopedViewers.every(([key, viewer]) => verifiedViewers[key] === viewer);
 };
 
 export const retainPullRequestEntriesForVerifiedViewers = (

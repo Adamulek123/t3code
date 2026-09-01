@@ -901,6 +901,7 @@ function PullRequestsRouteView() {
   // another account.
   const verifiedListData = acceptVerifiedData(listQuery.data);
   const verifiedBaselineData = acceptVerifiedData(baselineQuery.data);
+  const verifiedFacetData = acceptVerifiedData(facetQuery.data);
   const verifiedAuthoredData = acceptVerifiedData(authoredQuery.data);
   const verifiedReviewingData = acceptVerifiedData(reviewingQuery.data);
   const rejectedRefreshes = useRef(new Map<string, () => void>());
@@ -911,6 +912,7 @@ function PullRequestsRouteView() {
     const queries = [
       ["list", listQuery, verifiedListData],
       ["baseline", baselineQuery, verifiedBaselineData],
+      ["facet", facetQuery, verifiedFacetData],
       ["authored", authoredQuery, verifiedAuthoredData],
       ["reviewing", reviewingQuery, verifiedReviewingData],
     ] as const;
@@ -938,6 +940,10 @@ function PullRequestsRouteView() {
     baselineQuery.error,
     baselineQuery.isPending,
     baselineQuery.refresh,
+    facetQuery.data,
+    facetQuery.error,
+    facetQuery.isPending,
+    facetQuery.refresh,
     listQuery.data,
     listQuery.error,
     listQuery.isPending,
@@ -948,6 +954,7 @@ function PullRequestsRouteView() {
     reviewingQuery.refresh,
     verifiedAuthoredData,
     verifiedBaselineData,
+    verifiedFacetData,
     verifiedListData,
     verifiedReviewingData,
     viewerQuery.error,
@@ -1236,17 +1243,31 @@ function PullRequestsRouteView() {
   // row it excludes. Narrowed to nothing there is nothing to carry, and the skeletons below are
   // right after all. Rows read from a different set of environments are dropped rather than
   // narrowed: one of those environments may no longer be connected.
+  const verifiedLoadedData = loaded === null ? null : acceptVerifiedData(loaded.data);
   const narrowed = useMemo(() => {
-    if (loaded === null || loaded.environmentKey !== environmentKey || loaded.scope === scopeKey) {
+    if (
+      loaded === null ||
+      verifiedLoadedData === null ||
+      loaded.environmentKey !== environmentKey ||
+      loaded.scope === scopeKey
+    ) {
       return null;
     }
-    const entries = narrowPullRequestsToFilters(loaded.data.entries, {
+    const entries = narrowPullRequestsToFilters(verifiedLoadedData.entries, {
       state: search.state,
       projectId: scopedProjectId,
       host: search.host,
     });
-    return entries.length === 0 ? null : { ...loaded.data, entries };
-  }, [environmentKey, loaded, scopeKey, scopedProjectId, search.host, search.state]);
+    return entries.length === 0 ? null : { ...verifiedLoadedData, entries };
+  }, [
+    environmentKey,
+    loaded,
+    scopeKey,
+    scopedProjectId,
+    search.host,
+    search.state,
+    verifiedLoadedData,
+  ]);
   // With nothing typed and nothing to carry on from, the answer is taken from the read that is
   // keyed to exactly that question. Otherwise a search's answer lingers for a render after the
   // text has gone — the data cannot say which question it belongs to, but the read it came from
@@ -1258,12 +1279,12 @@ function PullRequestsRouteView() {
     (sentQuery.length === 0 && sentCursors === null && pageSize === PAGE_SIZE
       ? verifiedBaselineData
       : verifiedListData) ??
-    (loaded?.scope === scopeKey && loaded.query === sentQuery ? loaded.data : null);
+    (loaded?.scope === scopeKey && loaded.query === sentQuery ? verifiedLoadedData : null);
   // Clearing a search returns to a list that has already been read, so it comes back at once
   // rather than after another round trip: the search was the temporary state, not the list.
   const carried =
     (sentQuery.length === 0 ? verifiedBaselineData : undefined) ??
-    (loaded?.scope === scopeKey ? loaded.data : null) ??
+    (loaded?.scope === scopeKey ? verifiedLoadedData : null) ??
     narrowed;
   const listData = answered ?? carried;
   const baselineAnswers = sentQuery.length === 0 && sentCursors === null && pageSize === PAGE_SIZE;
@@ -1395,12 +1416,12 @@ function PullRequestsRouteView() {
     () =>
       collectPullRequestListFacets(
         [
-          ...(facetQuery.data?.entries ?? []),
+          ...(verifiedFacetData?.entries ?? []),
           ...(verifiedBaselineData?.entries ?? listData?.entries ?? []),
         ],
         search.state,
       ),
-    [facetQuery.data?.entries, listData?.entries, search.state, verifiedBaselineData?.entries],
+    [listData?.entries, search.state, verifiedBaselineData?.entries, verifiedFacetData?.entries],
   );
 
   /** The hosts that narrowed the listing themselves, so their answer is not narrowed again. */
@@ -1415,7 +1436,10 @@ function PullRequestsRouteView() {
   );
 
   const entries = useMemo(() => {
-    const known = ordered?.key === filterKey ? ordered.entries : (listData?.entries ?? []);
+    const known =
+      verifiedLoadedData !== null && ordered?.key === filterKey
+        ? ordered.entries
+        : (listData?.entries ?? []);
     const involvementEntries = filterPullRequestsByInvolvement(known, viewers, search.involvement);
     // The hosts search more than the row shows — a body, a review, a commit message — so once
     // their answer is in, narrowing it again here would throw away matches the reader asked for.
@@ -1455,6 +1479,7 @@ function PullRequestsRouteView() {
     searchingHosts,
     showingCarried,
     typedParsed.text,
+    verifiedLoadedData,
     viewers,
   ]);
 

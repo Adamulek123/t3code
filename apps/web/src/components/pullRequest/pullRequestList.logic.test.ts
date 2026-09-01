@@ -886,14 +886,14 @@ describe("the list snapshot across a reload", () => {
     ).toBe(false);
   });
 
-  it("accepts live rows when fresh verification could not read one host", () => {
+  it("rejects live rows when fresh verification could not read one listed host", () => {
     expect(
       pullRequestListViewersMatchVerification(
         { "env-1 github.com": "Bilal", "env-1 gitlab.com": "Theo" },
         { "env-1 github.com": "Bilal" },
         new Set(["env-1"]),
       ),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       pullRequestListViewersMatchVerification(
         { "env-1 github.com": "Octocat", "env-1 gitlab.com": "Theo" },
