@@ -19,7 +19,7 @@ import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import type * as Rpc from "effect/unstable/rpc/Rpc";
 import * as RpcClient from "effect/unstable/rpc/RpcClient";
-import type * as RpcClientError from "effect/unstable/rpc/RpcClientError";
+import * as RpcClientError from "effect/unstable/rpc/RpcClientError";
 import * as RpcSerialization from "effect/unstable/rpc/RpcSerialization";
 import * as Socket from "effect/unstable/socket/Socket";
 
@@ -283,6 +283,22 @@ export const make = Effect.fn("RpcSessionFactory.make")(function* (
         return Stream.concat(
           Stream.fromIterable(serverConfigReplayEvents(snapshot.value)),
           Stream.merge(updates, terminal, { haltStrategy: "either" }),
+        );
+      }),
+    ).pipe(
+      Stream.catchCause((cause) => {
+        if (Cause.hasInterruptsOnly(cause)) {
+          return Stream.failCause(cause);
+        }
+        // The supervisor keeps the original cause. Shared durable consumers
+        // need a transport-shaped failure so they wait for its replacement.
+        return Stream.fail(
+          new RpcClientError.RpcClientError({
+            reason: new RpcClientError.RpcClientDefect({
+              message: `${connection.label} config subscription failed.`,
+              cause,
+            }),
+          }),
         );
       }),
     );
