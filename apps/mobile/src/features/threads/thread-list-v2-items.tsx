@@ -23,6 +23,10 @@ import { useThreadPr } from "../../state/use-thread-pr";
 import { ThreadSwipeable } from "../home/thread-swipe-actions";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import { TerminalRunningIndicator } from "../terminal/TerminalRunningIndicator";
+import {
+  threadRunningAccessibilityLabel,
+  threadRunningIndicatorPlacement,
+} from "../terminal/terminalRunningStatus";
 import { buildThreadTitleRegenerationMenuItems } from "./thread-title-regeneration-menu";
 import {
   resolveThreadListV2SnoozeMenuSelection,
@@ -399,6 +403,14 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     environmentId: thread.environmentId,
     threadId: thread.id,
   });
+  const threadAccessibilityLabel = threadRunningAccessibilityLabel({
+    title: thread.title,
+    hasRunningTerminal,
+  });
+  const terminalIndicatorPlacement = threadRunningIndicatorPlacement({
+    variant,
+    hasRunningTerminal,
+  });
 
   const pr = useThreadPr(thread, props.projectCwd ?? props.project?.workspaceRoot ?? null);
 
@@ -719,7 +731,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         </View>
       ) : null}
       <View className="mt-1 flex-row items-center gap-2">
-        {hasRunningTerminal ? <TerminalRunningIndicator /> : null}
+        {terminalIndicatorPlacement === "metadata" ? <TerminalRunningIndicator /> : null}
         {status === "failed" && thread.session?.lastError ? (
           <Text
             className={cn(
@@ -789,7 +801,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     variant === "card" ? (
       <Pressable
         accessibilityHint={swipeAccessibilityHint}
-        accessibilityLabel={thread.title}
+        accessibilityLabel={threadAccessibilityLabel}
         accessibilityRole="button"
         accessibilityState={{ selected }}
         onPress={() => {
@@ -829,7 +841,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     ) : (
       <Pressable
         accessibilityHint={swipeAccessibilityHint}
-        accessibilityLabel={thread.title}
+        accessibilityLabel={threadAccessibilityLabel}
         accessibilityRole="button"
         accessibilityState={{ selected }}
         className={sidebarPane ? undefined : "bg-screen"}
@@ -901,6 +913,9 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
               ? props.snoozeWakeLabelText
               : relativeTime(thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt)}
           </Text>
+          {terminalIndicatorPlacement === "trailing" ? (
+            <TerminalRunningIndicator size={12} />
+          ) : null}
         </View>
       </Pressable>
     );

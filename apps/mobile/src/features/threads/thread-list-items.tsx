@@ -26,6 +26,10 @@ import { useThreadPr, type ThreadPr } from "../../state/use-thread-pr";
 import type { HomeGroupDisplayAction } from "../home/homeListItems";
 import { ThreadSwipeable } from "../home/thread-swipe-actions";
 import { TerminalRunningIndicator } from "../terminal/TerminalRunningIndicator";
+import {
+  threadRunningAccessibilityLabel,
+  threadRunningIndicatorPlacement,
+} from "../terminal/terminalRunningStatus";
 import { buildThreadTitleRegenerationMenuItems } from "./thread-title-regeneration-menu";
 import { resolveThreadStatus } from "./threadPresentation";
 import { ThreadSearchMatchExcerpt } from "./thread-search-match";
@@ -464,7 +468,15 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
   const timestamp = relativeTime(
     thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt,
   );
-  const threadAccessibilityLabel = pr ? `${thread.title}, ${pr.accessibilityLabel}` : thread.title;
+  const threadAccessibilityLabel = threadRunningAccessibilityLabel({
+    title: thread.title,
+    detail: pr?.accessibilityLabel,
+    hasRunningTerminal,
+  });
+  const terminalIndicatorPlacement = threadRunningIndicatorPlacement({
+    variant: "v1",
+    hasRunningTerminal,
+  });
   const subtitleParts = [props.environmentLabel, thread.branch].filter((part): part is string =>
     Boolean(part),
   );
@@ -528,7 +540,7 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
   const subtitleRow =
     subtitleParts.length > 0 || pr !== null || hasRunningTerminal ? (
       <View className="mt-px flex-row items-center gap-1.5">
-        {hasRunningTerminal ? <TerminalRunningIndicator /> : null}
+        {terminalIndicatorPlacement === "metadata" ? <TerminalRunningIndicator /> : null}
         {subtitleParts.length > 0 ? (
           <>
             <Text
