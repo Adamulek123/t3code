@@ -909,6 +909,13 @@ describe("the list snapshot across a reload", () => {
     ).toBe(true);
     expect(
       pullRequestViewersMatchForEnvironments(
+        { "env-1 github.com": "Bilal" },
+        { "env-1 github.com": "Bilal", "env-2 github.com": "Octocat" },
+        capable,
+      ),
+    ).toBe(true);
+    expect(
+      pullRequestViewersMatchForEnvironments(
         { "env-1 github.com": "Bilal", "env-2 github.com": "Legacy" },
         { "env-1 github.com": "Octocat" },
         capable,

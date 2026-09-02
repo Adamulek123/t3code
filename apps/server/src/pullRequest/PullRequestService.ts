@@ -846,10 +846,12 @@ export const make = Effect.gen(function* () {
           const roots =
             viewerRoots.get(host) ?? forHost.map(({ project }) => project.workspaceRoot);
           const uniqueRoots = [...new Set(roots)].sort();
-          if (options.fresh === true) {
-            return readViewer(host, api.kind, uniqueRoots, options);
-          }
           const key = JSON.stringify([host, api.kind, uniqueRoots]);
+          if (options.fresh === true) {
+            return readViewer(host, api.kind, uniqueRoots, options).pipe(
+              Effect.tap(() => Cache.invalidate(viewerFlights, key)),
+            );
+          }
           return Cache.get(viewerFlights, key);
         }),
       { concurrency: REPOSITORY_CONCURRENCY },

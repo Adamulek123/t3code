@@ -698,6 +698,35 @@ it.effect("reads snapshot viewer identity freshly after the host account changes
   }),
 );
 
+it.effect("does not reuse a cached viewer after fresh verification fails", () =>
+  Effect.gen(function* () {
+    let viewerCalls = 0;
+    const service = yield* makeService({
+      projects: [
+        project({ id: "p1", title: "t3code", workspaceRoot: "/a", repository: "pingdotgg/t3code" }),
+      ],
+      providers: [
+        fakeProvider("github", {
+          getViewer: () => {
+            viewerCalls += 1;
+            if (viewerCalls === 2) return Effect.fail(requestFailed);
+            return Effect.succeed(viewerCalls === 1 ? "Bilal" : "Octocat");
+          },
+        }),
+      ],
+    });
+
+    assert.deepStrictEqual((yield* service.list({ state: "open" })).viewers, {
+      "github.com": "Bilal",
+    });
+    assert.deepStrictEqual((yield* service.viewers({})).viewers, {});
+    assert.deepStrictEqual((yield* service.list({ state: "open" })).viewers, {
+      "github.com": "Octocat",
+    });
+    assert.strictEqual(viewerCalls, 3);
+  }),
+);
+
 it.effect("does not let an older viewer request replace a newer identity", () =>
   Effect.gen(function* () {
     const firstFreshStarted = yield* Deferred.make<void>();

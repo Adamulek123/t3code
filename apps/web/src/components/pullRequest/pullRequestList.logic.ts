@@ -823,16 +823,18 @@ export const pullRequestViewersMatchForEnvironments = (
   requiredViewerKeys?: ReadonlySet<string>,
 ): boolean => {
   const prefixes = [...environmentIds].map((environmentId) => `${environmentId} `);
+  const belongsToEnvironment = (key: string) => prefixes.some((prefix) => key.startsWith(prefix));
   const scopedListedViewers = Object.fromEntries(
-    Object.entries(listedViewers).filter(([key]) =>
-      prefixes.some((prefix) => key.startsWith(prefix)),
-    ),
+    Object.entries(listedViewers).filter(([key]) => belongsToEnvironment(key)),
   );
   if (requiredViewerKeys === undefined) {
-    return pullRequestViewersMatch(scopedListedViewers, verifiedViewers);
+    const scopedVerifiedViewers = Object.fromEntries(
+      Object.entries(verifiedViewers).filter(([key]) => belongsToEnvironment(key)),
+    );
+    return pullRequestViewersMatch(scopedListedViewers, scopedVerifiedViewers);
   }
   return [...requiredViewerKeys]
-    .filter((key) => prefixes.some((prefix) => key.startsWith(prefix)))
+    .filter(belongsToEnvironment)
     .every(
       (key) =>
         scopedListedViewers[key] !== undefined && scopedListedViewers[key] === verifiedViewers[key],
