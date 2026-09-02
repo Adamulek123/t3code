@@ -779,11 +779,7 @@ export const make = Effect.gen(function* () {
       Effect.tap((result) =>
         Effect.map(Clock.currentTimeMillis, (at) => {
           if (latestViewerRequestByHost.get(host) !== request) return;
-          if (
-            options.fresh === true &&
-            held !== undefined &&
-            held.result.viewer !== result.viewer
-          ) {
+          if (options.fresh === true && held?.result.viewer !== result.viewer) {
             listingsEpoch = ++epochCounter;
           }
           viewersByHost.set(host, { at, result });
@@ -794,7 +790,7 @@ export const make = Effect.gen(function* () {
           if (latestViewerRequestByHost.get(host) !== request) {
             return { host, kind, viewer: null, error };
           }
-          if (options.fresh === true && held !== undefined && held.result.viewer !== null) {
+          if (options.fresh === true && held?.result.viewer !== null) {
             listingsEpoch = ++epochCounter;
           }
           viewersByHost.delete(host);

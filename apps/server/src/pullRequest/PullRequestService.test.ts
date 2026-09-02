@@ -727,6 +727,58 @@ it.effect("does not reuse a cached viewer after fresh verification fails", () =>
   }),
 );
 
+it.effect("strands a cold list when fresh verification wins its viewer race", () =>
+  Effect.gen(function* () {
+    const firstViewerStarted = yield* Deferred.make<void>();
+    const releaseFirstViewer = yield* Deferred.make<void>();
+    let viewerCalls = 0;
+    let listCalls = 0;
+    const service = yield* makeService({
+      projects: [
+        project({ id: "p1", title: "t3code", workspaceRoot: "/a", repository: "pingdotgg/t3code" }),
+      ],
+      providers: [
+        fakeProvider("github", {
+          getViewer: () =>
+            Effect.gen(function* () {
+              viewerCalls += 1;
+              if (viewerCalls === 1) {
+                yield* Deferred.succeed(firstViewerStarted, undefined);
+                yield* Deferred.await(releaseFirstViewer);
+                return "Bilal";
+              }
+              return "Octocat";
+            }),
+          listChangeRequests: () => {
+            listCalls += 1;
+            return Effect.succeed({
+              items: [changeRequest(listCalls, `2026-07-0${listCalls}T00:00:00Z`)],
+              truncated: false,
+              continues: true,
+            });
+          },
+        }),
+      ],
+    });
+
+    const oldListing = yield* service.list({ state: "open" }).pipe(Effect.forkChild);
+    yield* Deferred.await(firstViewerStarted);
+    assert.deepStrictEqual((yield* service.viewers({})).viewers, { "github.com": "Octocat" });
+
+    yield* Deferred.succeed(releaseFirstViewer, undefined);
+    assert.deepStrictEqual((yield* Fiber.join(oldListing)).viewers, { "github.com": "Bilal" });
+
+    const current = yield* service.list({ state: "open" });
+    assert.deepStrictEqual(current.viewers, { "github.com": "Octocat" });
+    assert.deepStrictEqual(
+      current.entries.map((entry) => entry.number),
+      [2],
+    );
+    assert.strictEqual(viewerCalls, 2);
+    assert.strictEqual(listCalls, 2);
+  }),
+);
+
 it.effect("does not let an older viewer request replace a newer identity", () =>
   Effect.gen(function* () {
     const firstFreshStarted = yield* Deferred.make<void>();
