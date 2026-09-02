@@ -21,10 +21,14 @@ describe("hasWideMarkdownBlock", () => {
     const prompt = 'before\n\n    def search(x):\n        return x\n\n"""\n\nafter';
     expect(hasWideMarkdownBlock(prompt)).toBe(true);
     expect(hasWideMarkdownBlock("before\n\n\treturn x\n\nafter")).toBe(true);
+    expect(hasWideMarkdownBlock("before\n\n \treturn x\n\nafter")).toBe(true);
+    expect(hasWideMarkdownBlock(">     return x")).toBe(true);
+    expect(hasWideMarkdownBlock("> >  \treturn x")).toBe(true);
     expect(hasWideMarkdownBlock("    1. indented code")).toBe(true);
     expect(hasWideMarkdownBlock("    - code-like bullet")).toBe(true);
     expect(hasWideMarkdownBlock("before\n   not code\nafter")).toBe(false);
     expect(hasWideMarkdownBlock("before\n    \nafter")).toBe(false);
+    expect(hasWideMarkdownBlock("before\n \t\nafter")).toBe(false);
   });
 
   it("detects top-level and blockquoted ordered-list markers", () => {
