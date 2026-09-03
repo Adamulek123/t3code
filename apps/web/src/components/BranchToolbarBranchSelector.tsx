@@ -34,7 +34,7 @@ import { vcsEnvironment } from "../state/vcs";
 import { cn } from "../lib/utils";
 import { parsePullRequestReference } from "../pullRequestReference";
 import { getSourceControlPresentation } from "../sourceControlPresentation";
-import { composerFloatingLayerProps } from "./chat/composerEventScope";
+import { composerFloatingLayerProps, composerFocusScopeProps } from "./chat/composerEventScope";
 import {
   deriveLocalBranchNameFromRemoteRef,
   resolveBranchTriggerLabel,
@@ -729,6 +729,7 @@ export function BranchToolbarBranchSelector({
       <div
         className={cn("flex min-w-0 items-center gap-1", className)}
         data-composer-context-control
+        {...composerFocusScopeProps}
       >
         {branchPr && branchPrStatus ? (
           <Tooltip>

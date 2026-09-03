@@ -61,8 +61,9 @@ import {
 import {
   composerFloatingLayerProps,
   isInsideCollapsedComposerControls,
-  isInsideComposerFloatingLayer,
+  isInsideComposerFocusScope,
   isInsideRestingComposerControlScope,
+  resolveDesktopComposerFocus,
 } from "./composerEventScope";
 import {
   type ComposerFileAttachment,
@@ -4346,7 +4347,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       const composerSurface = composerSurfaceRef.current;
       const composerForm = composerFormRef.current;
       const activeElement = document.activeElement;
-      if (isInsideRestingComposerControlScope(activeElement)) {
+      if (
+        isInsideRestingComposerControlScope(activeElement) ||
+        isInsideComposerFocusScope(activeElement)
+      ) {
         return;
       }
       if (
@@ -4397,10 +4401,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     if (isMobileViewport || !isComposerFocused) return;
 
     const isInsideDesktopComposerFocusScope = (target: EventTarget | null) =>
-      Boolean(
-        target instanceof Node &&
-        (composerFormRef.current?.contains(target) || isInsideRestingComposerControlScope(target)),
-      );
+      resolveDesktopComposerFocus({
+        currentFocused: isComposerFocused,
+        composerForm: composerFormRef.current,
+        target,
+      });
     const handleFocusIn = (event: FocusEvent) => {
       if (!isInsideDesktopComposerFocusScope(event.target)) {
         if (desktopOutsidePointerInFlightRef.current) {
