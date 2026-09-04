@@ -31,8 +31,8 @@ export function resolveDesktopComposerFocus(input: {
   if (!input.currentFocused || !(input.target instanceof Node)) return false;
   return Boolean(
     input.composerForm?.contains(input.target) ||
-      isInsideComposerFocusScope(input.target) ||
-      isInsideRestingComposerControlScope(input.target),
+    isInsideComposerFocusScope(input.target) ||
+    isInsideRestingComposerControlScope(input.target),
   );
 }
 
