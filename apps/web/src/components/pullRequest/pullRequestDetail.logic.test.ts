@@ -256,10 +256,7 @@ describe("pull request activity refresh", () => {
       ),
     ).toBe(false);
     expect(
-      isPullRequestActivityStale(
-        { comments: [], commentCount: 0, commentsTruncated: false, reviewThreads: [], commits: [] },
-        liveAt,
-      ),
+      isPullRequestActivityStale({ comments: [], reviewThreads: [], commits: [] }, liveAt),
     ).toBe(false);
     expect(isPullRequestActivityStale(null, liveAt)).toBe(false);
   });
