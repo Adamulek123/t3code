@@ -1,6 +1,5 @@
+// @effect-diagnostics nodeBuiltinImport:off - Source tripwire reads the sibling panel file, same as threadSidebarWidth.test.ts.
 import * as NodeFS from "node:fs";
-import * as NodePath from "node:path";
-import * as NodeURL from "node:url";
 import { describe, expect, it } from "vite-plus/test";
 
 /**
@@ -25,11 +24,7 @@ import { describe, expect, it } from "vite-plus/test";
  * allowed on hover/focus, and only the diff data is the MB-scale regression.
  */
 function readDetailPanelSource(): string {
-  const filePath = NodePath.join(
-    NodePath.dirname(NodeURL.fileURLToPath(import.meta.url)),
-    "PullRequestDetailPanel.tsx",
-  );
-  return NodeFS.readFileSync(filePath, "utf8");
+  return NodeFS.readFileSync(new URL("./PullRequestDetailPanel.tsx", import.meta.url), "utf8");
 }
 
 describe("pull request detail lazy diff", () => {
