@@ -197,6 +197,37 @@ describe("pull request file-contents revision", () => {
     );
     expect(keyFor([], "2026-08-13T13:00:00Z")).not.toBe(keyFor([], "2026-08-13T13:01:00Z"));
   });
+
+  it("busts on a base-branch advance without a head commit, where the host counted it", () => {
+    const before = pullRequestFileContentsRevisionKey({ commits, commit: null, behindBy: 2 });
+    const after = pullRequestFileContentsRevisionKey({ commits, commit: null, behindBy: 5 });
+    expect(before).not.toBeNull();
+    expect(after).not.toBe(before);
+    expect(after).toBe(`${before!.split(":behind")[0]}:behind5`);
+  });
+
+  it("keeps the old key shape where behindBy is absent", () => {
+    const without = pullRequestFileContentsRevisionKey({ commits, commit: null });
+    expect(without).toMatch(/^commits:2:[0-9a-z]+$/);
+    expect(pullRequestFileContentsRevisionKey({ commits, commit: null, behindBy: undefined })).toBe(
+      without,
+    );
+    expect(pullRequestFileContentsRevisionKey({ commits, commit: null, behindBy: null })).toBe(
+      without,
+    );
+  });
+
+  it("keeps one commit's own comparison keyed by its oid alone, whatever the base did", () => {
+    expect(pullRequestFileContentsRevisionKey({ commits, commit: "bbb", behindBy: 5 })).toBe(
+      "commit:bbb",
+    );
+  });
+
+  it("stays unknown while the activity has not loaded, even where the base count is known", () => {
+    expect(
+      pullRequestFileContentsRevisionKey({ commits: [], commit: null, behindBy: 5 }),
+    ).toBeNull();
+  });
 });
 describe("review thread comment pages", () => {
   it("appends new comments once and keeps refreshed base comments", () => {

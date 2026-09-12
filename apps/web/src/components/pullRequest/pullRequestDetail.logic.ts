@@ -146,14 +146,17 @@ export function shouldRefreshPullRequestActivity(
  * Null where the revision cannot be known yet (activity not loaded): the caller falls back to
  * `updatedAt` rather than sharing one key across revisions it cannot tell apart.
  *
- * A base-branch advance without a new head commit keeps the same key and may serve the
- * previous base side until the commit set moves. An explicit refresh re-reads the patch but
- * keeps expanded files: threading its token into this key would also bust on every metadata
+ * A base-branch advance without a new head commit leaves the commit set alone but moves
+ * `behindBy`, so the count rides along as a `:behindN` suffix and busts the key where the
+ * host counted it. Absent (a host that cannot compare, or an older caller) keeps the
+ * commit-set key exactly as before. An explicit refresh re-reads the patch but keeps
+ * expanded files: threading its token into this key would also bust on every metadata
  * touch, which is the thrash revision-scoping exists to avoid.
  */
 export function pullRequestFileContentsRevisionKey(input: {
   readonly commits: ReadonlyArray<{ readonly oid: string }>;
   readonly commit: string | null;
+  readonly behindBy?: number | null | undefined;
 }): string | null {
   if (input.commit !== null) return `commit:${input.commit}`;
   const oids = input.commits
@@ -168,7 +171,8 @@ export function pullRequestFileContentsRevisionKey(input: {
   const joined = oids.join("\u0000");
   const low = fnv1a32(joined);
   const high = fnv1a32(joined, 0x9e3779b9, 0x85ebca6b);
-  return `commits:${oids.length}:${low.toString(36)}${high.toString(36)}`;
+  const base = `commits:${oids.length}:${low.toString(36)}${high.toString(36)}`;
+  return input.behindBy == null ? base : `${base}:behind${input.behindBy}`;
 }
 
 /** Appends fetched pages without replacing fresher comments already in the activity response. */

@@ -222,6 +222,33 @@ describe("createPullRequestDiffFileContentsLoader", () => {
     );
   });
 
+  it("carries the revision key into each file so a base advance busts the render cache", async () => {
+    const getDiffFileContents = vi.fn(async () =>
+      AsyncResult.success<PullRequestDiffFileContentsResult>({
+        oldContents: "before\n",
+        newContents: "after\n",
+      }),
+    );
+    // The `:behindN` suffix is folded into the revision key upstream (PullRequestCodeTab);
+    // the loader stays opaque to it, but the per-file keys Pierre hydrates against must
+    // differ when it moves, or the previous base side would be served as this one's.
+    const loadBehind = createPullRequestDiffFileContentsLoader(getDiffFileContents, {
+      ...PR_SOURCE,
+      cacheKey: `${PR_SOURCE.cacheKey}:behind5`,
+    });
+    const loadAhead = createPullRequestDiffFileContentsLoader(getDiffFileContents, {
+      ...PR_SOURCE,
+      cacheKey: `${PR_SOURCE.cacheKey}:behind2`,
+    });
+
+    const behind = await loadBehind(prFileDiff());
+    const ahead = await loadAhead(prFileDiff());
+
+    expect(behind.newFile?.cacheKey).toContain(":behind5:");
+    expect(ahead.newFile?.cacheKey).toContain(":behind2:");
+    expect(behind.newFile?.cacheKey).not.toBe(ahead.newFile?.cacheKey);
+  });
+
   it("evicts by total size before the entry cap fills", async () => {
     // One shared side keeps the test cheap: the cap counts lengths, not allocations, and two
     // entries at ~2/3 of the cap each already exceed it with only two files held (cap is 30).
