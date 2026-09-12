@@ -25,6 +25,7 @@ import {
 import { inferReviewCommentFenceLanguage, type ReviewCommentContext } from "~/reviewCommentContext";
 import { reviewCommentContextId } from "~/lib/composerContextRecords";
 import { removeInlineContextReference } from "~/lib/composerContextReferences";
+import { fnv1a32 } from "~/lib/diffRendering";
 
 export const PULL_REQUEST_MERGE_METHOD_LABELS: Record<PullRequestMergeMethod, string> = {
   merge: "Merge",
@@ -134,6 +135,42 @@ export function shouldRefreshPullRequestActivity(
 ): boolean {
   return previous !== null && previous.key === next.key && previous.updatedAt !== next.updatedAt;
 }
+
+/**
+ * The revision a pull request's file contents belong to, for scoping the hunk-expansion cache.
+ * `updatedAt` moves on comments, labels, and reviews while the files stay identical, so keying
+ * the cache on it throws every expanded file away on each of those. The commit set only moves
+ * when the code does — a push, a force-push, a rebase — so it busts exactly when the contents
+ * may have changed. One commit's own comparison is immutable and keyed by its oid directly.
+ *
+ * Null where the revision cannot be known yet (activity not loaded): the caller falls back to
+ * `updatedAt` rather than sharing one key across revisions it cannot tell apart.
+ *
+ * A base-branch advance without a new head commit keeps the same key and may serve the
+ * previous base side until the commit set moves. An explicit refresh re-reads the patch but
+ * keeps expanded files: threading its token into this key would also bust on every metadata
+ * touch, which is the thrash revision-scoping exists to avoid.
+ */
+export function pullRequestFileContentsRevisionKey(input: {
+  readonly commits: ReadonlyArray<{ readonly oid: string }>;
+  readonly commit: string | null;
+}): string | null {
+  if (input.commit !== null) return `commit:${input.commit}`;
+  const oids = input.commits
+    .map((commit) => commit.oid)
+    .filter((oid) => oid.length > 0)
+    .sort();
+  if (oids.length === 0) return null;
+  // The whole set, not just the head: a force-push can keep the length while replacing every
+  // oid, and a faked committer date can hide a new head from a newest-by-date read. NUL joins
+  // so ["ab", "c"] and ["a", "bc"] hash differently. Two independent FNV-1a passes make a
+  // 64-bit fingerprint, since a collision here serves another revision's files as this one's.
+  const joined = oids.join("\u0000");
+  const low = fnv1a32(joined);
+  const high = fnv1a32(joined, 0x9e3779b9, 0x85ebca6b);
+  return `commits:${oids.length}:${low.toString(36)}${high.toString(36)}`;
+}
+
 /** Appends fetched pages without replacing fresher comments already in the activity response. */
 export function mergePullRequestThreadComments<T extends { readonly id: string }>(
   base: ReadonlyArray<T>,

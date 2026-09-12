@@ -34,6 +34,7 @@ import {
   pullRequestActionNeedsHostRefresh,
   pullRequestCheckoutCommand,
   pullRequestComposerTarget,
+  pullRequestFileContentsRevisionKey,
   pullRequestFindingKey,
   pullRequestHandoffLabels,
   pullRequestReviewOutcome,
@@ -132,6 +133,69 @@ describe("pull request activity refresh", () => {
         updatedAt: "2026-08-13T13:01:00Z",
       }),
     ).toBe(false);
+  });
+});
+
+describe("pull request file-contents revision", () => {
+  const commits = [{ oid: "aaa" }, { oid: "bbb" }];
+
+  it("keys one commit's own comparison by its oid alone", () => {
+    expect(pullRequestFileContentsRevisionKey({ commits, commit: "bbb" })).toBe("commit:bbb");
+    // Independent of the whole-PR commit set: the commit itself is immutable.
+    expect(pullRequestFileContentsRevisionKey({ commits: [{ oid: "zzz" }], commit: "bbb" })).toBe(
+      "commit:bbb",
+    );
+  });
+
+  it("holds still while only metadata moves", () => {
+    // Same commit set as after an unrelated updatedAt bump: identical key, so the loader and
+    // Pierre keep every expanded file instead of re-reading them.
+    expect(pullRequestFileContentsRevisionKey({ commits, commit: null })).toBe(
+      pullRequestFileContentsRevisionKey({
+        commits: [{ oid: "bbb" }, { oid: "aaa" }],
+        commit: null,
+      }),
+    );
+  });
+
+  it("busts on a push and on a same-length force-push", () => {
+    const before = pullRequestFileContentsRevisionKey({ commits, commit: null });
+    expect(
+      pullRequestFileContentsRevisionKey({ commits: [...commits, { oid: "ccc" }], commit: null }),
+    ).not.toBe(before);
+    expect(
+      pullRequestFileContentsRevisionKey({
+        commits: [{ oid: "aaa" }, { oid: "ccc" }],
+        commit: null,
+      }),
+    ).not.toBe(before);
+  });
+
+  it("tells apart oid sets that only differ by a separator boundary", () => {
+    expect(
+      pullRequestFileContentsRevisionKey({ commits: [{ oid: "ab" }, { oid: "c" }], commit: null }),
+    ).not.toBe(
+      pullRequestFileContentsRevisionKey({ commits: [{ oid: "a" }, { oid: "bc" }], commit: null }),
+    );
+  });
+
+  it("reports unknown while the activity has not loaded", () => {
+    expect(pullRequestFileContentsRevisionKey({ commits: [], commit: null })).toBe(null);
+    expect(pullRequestFileContentsRevisionKey({ commits: [{ oid: "" }], commit: null })).toBe(null);
+  });
+
+  it("keeps the CodeTab cache key still across updatedAt bumps while the revision is known", () => {
+    // Mirrors PullRequestCodeTab's `revisionKey ?? updated:${updatedAt}`: the loader's memo
+    // survives comments/labels/reviews, and only the unknown-revision fallback tracks updatedAt.
+    const keyFor = (oids: ReadonlyArray<string>, updatedAt: string) =>
+      pullRequestFileContentsRevisionKey({
+        commits: oids.map((oid) => ({ oid })),
+        commit: null,
+      }) ?? `updated:${updatedAt}`;
+    expect(keyFor(["aaa", "bbb"], "2026-08-13T13:00:00Z")).toBe(
+      keyFor(["aaa", "bbb"], "2026-08-13T13:01:00Z"),
+    );
+    expect(keyFor([], "2026-08-13T13:00:00Z")).not.toBe(keyFor([], "2026-08-13T13:01:00Z"));
   });
 });
 describe("review thread comment pages", () => {
