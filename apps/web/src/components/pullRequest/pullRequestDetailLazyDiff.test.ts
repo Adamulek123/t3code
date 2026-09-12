@@ -1,4 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off - Source tripwire reads the sibling panel file, same as threadSidebarWidth.test.ts.
+// @effect-diagnostics nodeBuiltinImport:off - Source tripwire reads the sibling panel file, same as bundledDev.test.ts.
 import * as NodeFS from "node:fs";
 import { describe, expect, it } from "vite-plus/test";
 
