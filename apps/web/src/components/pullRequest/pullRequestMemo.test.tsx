@@ -190,10 +190,21 @@ describe("pull request tab memoization", () => {
     });
     expect(buildCalls.timeline).toBe(1);
 
-    // A new conversation still rebuilds, exactly once.
+    // A title-only wrapper update over the same conversation does not rebuild.
     await act(() => {
       renderer?.update(
         <PullRequestTimelineTab {...base} detail={{ ...detail, title: "Changed" }} />,
+      );
+    });
+    expect(buildCalls.timeline).toBe(1);
+
+    // A new conversation still rebuilds, exactly once.
+    await act(() => {
+      renderer?.update(
+        <PullRequestTimelineTab
+          {...base}
+          detail={{ ...detail, comments: [...detail.comments, discussionComment(60)] }}
+        />,
       );
     });
     expect(buildCalls.timeline).toBe(2);

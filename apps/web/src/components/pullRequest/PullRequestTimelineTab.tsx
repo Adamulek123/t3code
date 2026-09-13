@@ -560,11 +560,22 @@ export function PullRequestTimelineTab({
   onOpenCommit: (oid: string) => void;
   onRefresh: () => void;
 }) {
-  // Memoized keyed by the detail: every tab stays mounted behind the active one, so a
-  // panel-level state change (a tab switch, a handoff, a draft-store update) re-renders this
-  // tab too, and each of those rebuilt the whole event list, the editable map and the grouped
-  // rows from scratch.
-  const events = useMemo(() => buildPullRequestTimeline(detail), [detail]);
+  // Memoized keyed by the timeline inputs: every tab stays mounted behind the active one,
+  // so a panel-level state change (a tab switch, a handoff, a draft-store update) re-renders
+  // this tab too, and each of those rebuilt the whole event list, the editable map and the
+  // grouped rows from scratch. Unrelated detail changes (a title edit, a label) keep the same
+  // conversation arrays and skip the rebuild.
+  const events = useMemo(
+    () => buildPullRequestTimeline(detail),
+    [
+      detail.author,
+      detail.closedAt,
+      detail.comments,
+      detail.commits,
+      detail.createdAt,
+      detail.mergedAt,
+    ],
+  );
   const newestCommitAt = useMemo(() => newestPullRequestCommitAt(detail.commits), [detail.commits]);
   const reactions: ReactionSurface = useMemo(
     () => ({
@@ -585,7 +596,8 @@ export function PullRequestTimelineTab({
           .filter((comment) => canEditPullRequestComment(detail, comment))
           .map((comment) => [comment.id, comment] as const),
       ),
-    [detail],
+    // The edit check reads only the comment capability and the viewer beside the comments.
+    [detail.capabilities.edit?.comment, detail.comments, detail.viewer],
   );
   const orderedEvents = useMemo(
     () => (order === "newest" ? events : events.toReversed()),
