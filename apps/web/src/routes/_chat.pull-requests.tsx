@@ -2205,7 +2205,7 @@ function ExpandableSearch({
  * window drag region throughout; its interactive children opt out through the `.drag-region`
  * descendant rules.
  */
-function PullRequestsColumn({
+export function PullRequestsColumn({
   refreshing,
   onRefresh,
   searchValue,
