@@ -152,6 +152,16 @@ export function shouldRefreshPullRequestActivity(
  * commit-set key exactly as before. An explicit refresh re-reads the patch but keeps
  * expanded files: threading its token into this key would also bust on every metadata
  * touch, which is the thrash revision-scoping exists to avoid.
+ *
+ * This key is the coarse gate, not the whole correctness story: a base replacement at
+ * the same `behindBy` count moves neither arm of it, and the commits behind it ride the
+ * activity query while the diff rides its own, so a refreshed diff can outrun a lagging
+ * activity read. The loader closes both windows from the other side — the server echoes
+ * the revisions each file read actually served, and the first read that lands on new
+ * revisions busts the loader memo. Residual: entries settled before the move are served
+ * until the next file read observes it; with no new read, only the key above protects.
+ * Already-expanded files on screen likewise re-render only when the key rebuilds the
+ * loader — the bust covers subsequently expanded files.
  */
 export function pullRequestFileContentsRevisionKey(input: {
   readonly commits: ReadonlyArray<{ readonly oid: string }>;
