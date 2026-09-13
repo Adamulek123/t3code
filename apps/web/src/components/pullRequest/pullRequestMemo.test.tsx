@@ -219,8 +219,6 @@ describe("pull request tab memoization", () => {
       detail,
       activityPending: false,
       activityError: null,
-      actionPending: false,
-      onCommentAction: async () => ({ commentPosted: false }),
       onRefresh: () => {},
     };
     await act(() => {
@@ -235,17 +233,20 @@ describe("pull request tab memoization", () => {
     });
     expect(buildCalls.outcomes).toBe(1);
 
-    // Unrelated panel state (an action arming, a finding handing off) reads the same way.
+    // Unrelated panel state (an activity load, a finding handing off) reads the same way.
+    // The comment composer now floats as a panel sibling, so action arming no longer
+    // reaches this tab; activityPending is the panel-driven prop that does.
     await act(() => {
       renderer?.update(
-        <PullRequestSummaryTab {...base} actionPending pendingFinding="finding:1" />,
+        <PullRequestSummaryTab {...base} activityPending pendingFinding="finding:1" />,
       );
     });
     expect(buildCalls.outcomes).toBe(1);
 
-    // Keystrokes in the composer below stay inside CommentComposer's own `body` state, so
-    // they never re-render this tab at all — there is no rescan to count. The actionPending
-    // flip above is the panel-level re-render a typing-adjacent flow drives through this tab.
+    // Keystrokes in the floating composer stay inside PullRequestCommentComposer's own
+    // `body` state, so they never re-render this tab at all — there is no rescan to
+    // count. The activityPending flip above is the panel-level re-render that reaches
+    // this tab while the conversation stays the same.
 
     // A rebuilt detail wrapper over the same conversation still skips the scan: the memos
     // are keyed by the comment and commit arrays, not by the wrapper's identity.
