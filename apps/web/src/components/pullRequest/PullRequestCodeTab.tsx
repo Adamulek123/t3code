@@ -364,7 +364,11 @@ function PullRequestCodeTab({
   // Pierre holds plus the loader's own memo. The commit set only moves when the code does, so
   // the loader — and its memo — survives metadata touches and is rebuilt on a push. A
   // base-branch advance without a head commit moves `behindBy` instead, so it rides along in
-  // the key where the host counted it. Empty (activity not yet loaded) keeps the previous
+  // the key where the host counted it. The key is the coarse gate: the loader also busts
+  // its memo when a served read echoes new revisions (same-count base replacement, or a
+  // refreshed diff outrunning lagging activity), so files expanded after the move read the
+  // code the host actually served. Already-displayed expansions re-render only when the
+  // key rebuilds the loader. Empty (activity not yet loaded) keeps the previous
   // conservative key rather than sharing one across revisions that cannot be told apart.
   // Preservation is unit-covered in pullRequestDetail.logic.test.ts rather than by a
   // component render here.

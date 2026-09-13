@@ -127,6 +127,22 @@ export function createPullRequestDiffFileContentsLoader<E>(
   const settled = new Map<string, SettledEntry>();
   const inflight = new Map<string, Promise<SettledEntry>>();
   let settledBytes = 0;
+  // The revisions the last-applied read actually served, echoed by the server. The
+  // loader's identity (its cache key) already carries the commit set plus `:behindN`, but
+  // both ride queries that can lag a refreshed diff — and a base replacement at the same
+  // `behindBy` count moves neither. The first read that lands on new revisions therefore
+  // busts the memo it shares with older reads: every entry in it names the old comparison.
+  // Absent (an older server, or a host that cannot report revisions) keeps the previous
+  // behavior — nothing to compare, so nothing to bust on. Ordering is by fetch creation,
+  // not by landing: an older read resolving after a newer one served its caller without
+  // storing, so the memo never steps back to the older comparison.
+  let servedRevision: string | null = null;
+  let servedSequence = -1;
+  let nextSequence = 0;
+  const revisionOf = (result: PullRequestDiffFileContentsResult): string | null => {
+    if (result.headSha === undefined) return null;
+    return `${result.baseSha ?? ""}@${result.headSha}`;
+  };
   // NUL separates the fields: git paths never contain it, while spaces are legal in them.
   const keyOf = (input: {
     readonly changeType: PullRequestDiffFileContentsInput["changeType"];
@@ -172,6 +188,8 @@ export function createPullRequestDiffFileContentsLoader<E>(
     const ongoing = inflight.get(key);
     if (ongoing) return ongoing;
     const pending = (async (): Promise<SettledEntry> => {
+      const sequence = nextSequence;
+      nextSequence += 1;
       const result = await getDiffFileContents({
         environmentId: source.environmentId,
         input: {
@@ -185,18 +203,33 @@ export function createPullRequestDiffFileContentsLoader<E>(
       if (result._tag !== "Success") {
         throw squashAtomCommandFailure(result);
       }
-      return {
+      const value = {
         oldContents: result.value.oldContents,
         newContents: result.value.newContents,
         // UTF-16 units, not bytes (see above): bounded either way, no extra measuring cost.
         size: result.value.oldContents.length + result.value.newContents.length,
       };
+      const served = revisionOf(result.value);
+      if (served === null) {
+        storeSettled(key, value);
+      } else if (sequence >= servedSequence) {
+        if (servedRevision !== null && served !== servedRevision) {
+          // The comparison moved under this loader (push/force-push/base replacement that
+          // the revision key did not catch): entries already settled name the old code.
+          settled.clear();
+          settledBytes = 0;
+        }
+        servedRevision = served;
+        servedSequence = sequence;
+        storeSettled(key, value);
+      }
+      // Otherwise an older read landed after a newer revision was established: its caller
+      // still gets what the host served it, but the memo stays on the newer comparison.
+      return value;
     })();
     inflight.set(key, pending);
     try {
-      const value = await pending;
-      storeSettled(key, value);
-      return value;
+      return await pending;
     } finally {
       inflight.delete(key);
     }
