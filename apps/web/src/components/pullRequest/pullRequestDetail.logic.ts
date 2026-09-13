@@ -225,7 +225,10 @@ export interface PullRequestActivityRefreshDecision {
  * pull-request switch where the previous baseline names another key) walks only where the
  * mounted activity predates live or a shared summary is already newer than the incoming
  * live revision, and otherwise just baselines. A steady run walks where live itself moved,
- * or where a shared summary moved past both the live baseline and what was already seen.
+ * where a shared summary moved past both the live baseline and what was already seen,
+ * or where a late-resolving mount read arrives stale against live (the mount query and
+ * the live query race; the first live arrival may baseline before the mount data lands,
+ * and without this the panel would display stale content until the next live change).
  */
 export function decidePullRequestActivityRefresh(
   previous: PullRequestActivityRevision | null,
@@ -244,6 +247,7 @@ export function decidePullRequestActivityRefresh(
   } else {
     refresh =
       shouldRefreshPullRequestActivity(previous, next) ||
+      isPullRequestActivityStale(mountActivity, next.updatedAt) ||
       (isPullRequestSharedSummaryNewer(previous, key, sharedAt) &&
         (previousShared === null ||
           previousShared.key !== key ||

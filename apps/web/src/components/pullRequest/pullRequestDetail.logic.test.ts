@@ -462,6 +462,50 @@ describe("pull request activity refresh", () => {
     expect(run(null)).toBe(false);
   });
 
+  it("walks a late stale mount in steady scope, then stands once fresh", () => {
+    // Race the panel documents: first live arrival baselines before the mount read lands
+    // (mount null at the time), then the late mount resolves stale. Without steady-scope
+    // staleness the panel displayed stale content until the next live/shared change.
+    const live = { ...first };
+    const staleMount = {
+      comments: [],
+      commits: [],
+      reviewThreads: [{ comments: [{ createdAt: "2026-08-13T12:00:00Z" }] }],
+    };
+    const freshMount = {
+      comments: [{ createdAt: live.updatedAt }],
+      commits: [],
+      reviewThreads: [],
+    };
+    type Rev = { readonly key: string; readonly updatedAt: string } | null;
+    let previous: Rev = null;
+    let previousShared: Rev = null;
+    let refreshes = 0;
+    const step = (mount: Parameters<typeof decidePullRequestActivityRefresh>[4]) => {
+      const decision = decidePullRequestActivityRefresh(
+        previous,
+        previousShared,
+        live,
+        live.key,
+        mount,
+        null,
+      );
+      if (decision.refresh) refreshes += 1;
+      previous = decision.nextPrev;
+      previousShared = decision.nextShared;
+    };
+    step(null);
+    expect(refreshes).toBe(0);
+    step(staleMount);
+    expect(refreshes).toBe(1);
+    // Repeat with the same stale read would walk again, but the panel guards on
+    // activityQuery.isPending (early return, baselines untouched) until the re-read lands.
+    step(freshMount);
+    expect(refreshes).toBe(1);
+    step(null);
+    expect(refreshes).toBe(1);
+  });
+
   it("re-baselines on pull-request switch and re-runs staleness under the new key", () => {
     // Key mismatch is a new scope: steady-state helpers stay quiet, the panel baselines the
     // new PR instead of refreshing, and the stale-mount check runs against the new live.

@@ -792,9 +792,11 @@ export function PullRequestDetailPanel({
   // fire, independent TTLs) its newest instant predates live and it walks again, and a PR
   // switch re-runs that staleness check under the new key. A shared summary newer than
   // live is the other trigger, remembered separately so the next run sees the same shared
-  // instant as already seen rather than as a live change (which re-fired). Accepted: a
-  // metadata-only revision (e.g. label bump) still walks once, and a mount cache resolving
-  // late with stale content waits for the next live/shared change or a manual refresh.
+  // instant as already seen rather than as a live change (which re-fired). A mount cache
+  // resolving late with stale content walks on arrival (steady-scope staleness in the
+  // decider), so the panel self-heals instead of waiting for the next live/shared change
+  // or a manual refresh. Accepted: a
+  // metadata-only revision (e.g. label bump) still walks once.
   const liveDetailUpdatedAt = detailQuery.data?.updatedAt ?? null;
   const sharedSummaryUpdatedAt = sharedSummary?.updatedAt ?? null;
   const mountActivity = activityQuery.data;
