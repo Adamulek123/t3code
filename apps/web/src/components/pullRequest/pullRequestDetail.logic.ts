@@ -251,11 +251,34 @@ export function decidePullRequestActivityRefresh(
   }
   // Baseline stays on live: advancing past it to the shared instant made the next run
   // read live as older-than-baseline (a text/instant inequality either way) and walk again.
+  // The shared baseline is max-seen, never last-seen: storing an invalid or regressed
+  // instant would poison it — an invalid baseline suppresses the next valid update (the
+  // seen-compare returns false), and a regressed one lets an already-seen instant walk
+  // again on oscillation. Preserve until a parseable instant advances the baseline.
+  let nextShared: PullRequestActivityRevision | null;
+  if (sharedAt === null) {
+    nextShared = isNewScope ? null : previousShared;
+  } else {
+    const sharedAtMs = Date.parse(sharedAt);
+    if (Number.isNaN(sharedAtMs)) {
+      nextShared = isNewScope ? null : previousShared;
+    } else if (isNewScope) {
+      nextShared = { key, updatedAt: sharedAt };
+    } else if (
+      previousShared === null ||
+      previousShared.key !== key ||
+      Number.isNaN(Date.parse(previousShared.updatedAt)) ||
+      sharedAtMs > Date.parse(previousShared.updatedAt)
+    ) {
+      nextShared = { key, updatedAt: sharedAt };
+    } else {
+      nextShared = previousShared;
+    }
+  }
   return {
     refresh,
     nextPrev: next,
-    nextShared:
-      sharedAt !== null ? { key, updatedAt: sharedAt } : isNewScope ? null : previousShared,
+    nextShared,
   };
 }
 /** Appends fetched pages without replacing fresher comments already in the activity response. */

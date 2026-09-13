@@ -335,6 +335,67 @@ describe("pull request activity refresh", () => {
     expect(refreshes).toBe(2);
   });
 
+  it("keeps an invalid shared instant from suppressing the next valid one", () => {
+    // Last-seen baselines poison the seen-compare: storing "garbage" makes the next valid
+    // shared update read as already-seen (the compare returns false). The baseline stays
+    // max-seen, so invalid never replaces it and the valid update still walks once.
+    type Rev = { readonly key: string; readonly updatedAt: string } | null;
+    let previous: Rev = null;
+    let previousShared: Rev = null;
+    let refreshes = 0;
+    const step = (liveAt: string, sharedAt: string | null) => {
+      const decision = decidePullRequestActivityRefresh(
+        previous,
+        previousShared,
+        { key: first.key, updatedAt: liveAt },
+        first.key,
+        null,
+        sharedAt,
+      );
+      if (decision.refresh) refreshes += 1;
+      previous = decision.nextPrev;
+      previousShared = decision.nextShared;
+    };
+    const live = "2026-08-13T13:00:00Z";
+    step(live, "not a date");
+    expect(refreshes).toBe(0);
+    expect(previousShared).toBeNull();
+    step(live, "2026-08-13T13:01:00Z");
+    expect(refreshes).toBe(1);
+    step(live, "2026-08-13T13:01:00Z");
+    expect(refreshes).toBe(1);
+  });
+
+  it("keeps a regressed shared instant from re-firing an already-seen one", () => {
+    // Oscillation 13:02 -> 13:01 -> 13:02 must walk once: the regressed read preserves the
+    // max-seen baseline instead of replacing it, so the return to 13:02 reads as seen.
+    type Rev = { readonly key: string; readonly updatedAt: string } | null;
+    let previous: Rev = null;
+    let previousShared: Rev = null;
+    let refreshes = 0;
+    const step = (liveAt: string, sharedAt: string | null) => {
+      const decision = decidePullRequestActivityRefresh(
+        previous,
+        previousShared,
+        { key: first.key, updatedAt: liveAt },
+        first.key,
+        null,
+        sharedAt,
+      );
+      if (decision.refresh) refreshes += 1;
+      previous = decision.nextPrev;
+      previousShared = decision.nextShared;
+    };
+    const live = "2026-08-13T13:00:00Z";
+    step(live, "2026-08-13T13:02:00Z");
+    expect(refreshes).toBe(1);
+    step(live, "2026-08-13T13:01:00Z");
+    expect(refreshes).toBe(1);
+    expect(previousShared).toEqual({ key: first.key, updatedAt: "2026-08-13T13:02:00Z" });
+    step(live, "2026-08-13T13:02:00Z");
+    expect(refreshes).toBe(1);
+  });
+
   it("walks on first mount when the shared summary is already newer than live", () => {
     // Null baselines through the real decider: a stale mount or a shared summary newer
     // than the incoming live revision walks once. A null baseline never reports newer, so
