@@ -146,6 +146,7 @@ import {
   resolvePullRequestMergeMethod,
   type PullRequestFinding,
   decidePullRequestActivityRefresh,
+  type PullRequestMountValidation,
   stripPullRequestHandoffReferences,
   writePullRequestDetailSnapshot,
 } from "./pullRequestDetail.logic";
@@ -785,6 +786,10 @@ export function PullRequestDetailPanel({
   const sharedSeenRevision = useRef<{ readonly key: string; readonly updatedAt: string } | null>(
     null,
   );
+  // Newest mount conversation already covered by a staleness walk: the re-read a walk
+  // triggers comes back equally stale on metadata-only revisions, and must not walk
+  // again or every metadata touch loops the activity refresh (and the diff token).
+  const mountValidatedRevision = useRef<PullRequestMountValidation | null>(null);
   // Live baseline stays on the live detail read alone, never the cached snapshot: seeding
   // from the snapshot makes the first live arrival look like a change and fires a second
   // walk while the mount walk is still in flight. The mount walk is the coverage for the
@@ -795,7 +800,8 @@ export function PullRequestDetailPanel({
   // instant as already seen rather than as a live change (which re-fired). A mount cache
   // resolving late with stale content walks on arrival (steady-scope staleness in the
   // decider), so the panel self-heals instead of waiting for the next live/shared change
-  // or a manual refresh. Accepted: a
+  // or a manual refresh — once per mount content, tracked above, so the equally-stale
+  // re-read the walk triggers on metadata-only revisions walks nothing. Accepted: a
   // metadata-only revision (e.g. label bump) still walks once.
   const liveDetailUpdatedAt = detailQuery.data?.updatedAt ?? null;
   const sharedSummaryUpdatedAt = sharedSummary?.updatedAt ?? null;
@@ -809,6 +815,7 @@ export function PullRequestDetailPanel({
       tabScopeKey,
       mountActivity,
       sharedSummaryUpdatedAt,
+      mountValidatedRevision.current,
     );
     if (decision.refresh) {
       // Let an existing read settle before revalidating the new revision. Interrupting a
@@ -819,6 +826,7 @@ export function PullRequestDetailPanel({
     }
     activityRevision.current = decision.nextPrev;
     sharedSeenRevision.current = decision.nextShared;
+    mountValidatedRevision.current = decision.nextMount;
   }, [
     activityQuery.isPending,
     activityQuery.refresh,

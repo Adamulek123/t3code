@@ -217,6 +217,13 @@ export interface PullRequestActivityRefreshDecision {
   readonly refresh: boolean;
   readonly nextPrev: PullRequestActivityRevision;
   readonly nextShared: PullRequestActivityRevision | null;
+  readonly nextMount: PullRequestMountValidation | null;
+}
+
+/** The newest mount conversation instant already covered, so equal-or-older mounts walk nothing. */
+export interface PullRequestMountValidation {
+  readonly key: string;
+  readonly newestAt: number;
 }
 
 /**
@@ -229,6 +236,11 @@ export interface PullRequestActivityRefreshDecision {
  * or where a late-resolving mount read arrives stale against live (the mount query and
  * the live query race; the first live arrival may baseline before the mount data lands,
  * and without this the panel would display stale content until the next live change).
+ *
+ * The mount walk fires once per mount content, not once per run: the re-read it triggers
+ * comes back equally stale on metadata-only revisions (no new conversation), and walking
+ * on that would loop forever — every walk also bumps the diff refresh token. Only a
+ * mount newer than everything already validated walks again.
  */
 export function decidePullRequestActivityRefresh(
   previous: PullRequestActivityRevision | null,
@@ -237,17 +249,38 @@ export function decidePullRequestActivityRefresh(
   key: string,
   mountActivity: Parameters<typeof isPullRequestActivityStale>[0],
   sharedAt: string | null,
+  previousMount: PullRequestMountValidation | null,
 ): PullRequestActivityRefreshDecision {
+  // Which mount content this run may still learn from: anything at or below the validated
+  // instant was already covered by an earlier walk (or arrived with nothing new), so only
+  // a strictly newer mount can trigger the staleness walk below.
+  const mountNewest = newestPullRequestActivityAt(mountActivity);
+  const mountNewestAt = mountNewest === null ? null : Date.parse(mountNewest);
+  const validatedAt =
+    previousMount !== null && previousMount.key === key ? previousMount.newestAt : null;
+  const mountIsNew =
+    mountNewestAt !== null &&
+    !Number.isNaN(mountNewestAt) &&
+    (validatedAt === null || mountNewestAt > validatedAt);
+  const nextMount: PullRequestMountValidation | null =
+    mountNewestAt === null || Number.isNaN(mountNewestAt)
+      ? validatedAt === null
+        ? null
+        : { key, newestAt: validatedAt }
+      : {
+          key,
+          newestAt: validatedAt === null ? mountNewestAt : Math.max(validatedAt, mountNewestAt),
+        };
   const isNewScope = previous === null || previous.key !== key;
   let refresh: boolean;
   if (isNewScope) {
     refresh =
-      isPullRequestActivityStale(mountActivity, next.updatedAt) ||
+      (mountIsNew && isPullRequestActivityStale(mountActivity, next.updatedAt)) ||
       isPullRequestSharedSummaryNewer(next, key, sharedAt);
   } else {
     refresh =
       shouldRefreshPullRequestActivity(previous, next) ||
-      isPullRequestActivityStale(mountActivity, next.updatedAt) ||
+      (mountIsNew && isPullRequestActivityStale(mountActivity, next.updatedAt)) ||
       (isPullRequestSharedSummaryNewer(previous, key, sharedAt) &&
         (previousShared === null ||
           previousShared.key !== key ||
@@ -283,6 +316,7 @@ export function decidePullRequestActivityRefresh(
     refresh,
     nextPrev: next,
     nextShared,
+    nextMount,
   };
 }
 /** Appends fetched pages without replacing fresher comments already in the activity response. */

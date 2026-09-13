@@ -53,6 +53,7 @@ import {
   editPullRequestThreadComment,
   writePullRequestDetailSnapshot,
 } from "./pullRequestDetail.logic";
+import type { PullRequestMountValidation } from "./pullRequestDetail.logic";
 import type { ReviewCommentContext } from "~/reviewCommentContext";
 
 describe("pull request checkout commands", () => {
@@ -307,6 +308,7 @@ describe("pull request activity refresh", () => {
     type Rev = { readonly key: string; readonly updatedAt: string } | null;
     let previous: Rev = null;
     let previousShared: Rev = null;
+    let previousMount: PullRequestMountValidation | null = null;
     let refreshes = 0;
     const step = (liveAt: string, sharedAt: string | null) => {
       const decision = decidePullRequestActivityRefresh(
@@ -316,10 +318,12 @@ describe("pull request activity refresh", () => {
         first.key,
         null,
         sharedAt,
+        previousMount,
       );
       if (decision.refresh) refreshes += 1;
       previous = decision.nextPrev;
       previousShared = decision.nextShared;
+      previousMount = decision.nextMount;
     };
     const live = "2026-08-13T13:00:00Z";
     step(live, "2026-08-13T13:01:00Z");
@@ -342,6 +346,7 @@ describe("pull request activity refresh", () => {
     type Rev = { readonly key: string; readonly updatedAt: string } | null;
     let previous: Rev = null;
     let previousShared: Rev = null;
+    let previousMount: PullRequestMountValidation | null = null;
     let refreshes = 0;
     const step = (liveAt: string, sharedAt: string | null) => {
       const decision = decidePullRequestActivityRefresh(
@@ -351,10 +356,12 @@ describe("pull request activity refresh", () => {
         first.key,
         null,
         sharedAt,
+        previousMount,
       );
       if (decision.refresh) refreshes += 1;
       previous = decision.nextPrev;
       previousShared = decision.nextShared;
+      previousMount = decision.nextMount;
     };
     const live = "2026-08-13T13:00:00Z";
     step(live, "not a date");
@@ -372,6 +379,7 @@ describe("pull request activity refresh", () => {
     type Rev = { readonly key: string; readonly updatedAt: string } | null;
     let previous: Rev = null;
     let previousShared: Rev = null;
+    let previousMount: PullRequestMountValidation | null = null;
     let refreshes = 0;
     const step = (liveAt: string, sharedAt: string | null) => {
       const decision = decidePullRequestActivityRefresh(
@@ -381,10 +389,12 @@ describe("pull request activity refresh", () => {
         first.key,
         null,
         sharedAt,
+        previousMount,
       );
       if (decision.refresh) refreshes += 1;
       previous = decision.nextPrev;
       previousShared = decision.nextShared;
+      previousMount = decision.nextMount;
     };
     const live = "2026-08-13T13:00:00Z";
     step(live, "2026-08-13T13:02:00Z");
@@ -402,7 +412,7 @@ describe("pull request activity refresh", () => {
     // the shared check runs against the incoming live revision.
     const next = { ...first };
     const firstMountWalks = (sharedAt: string | null) =>
-      decidePullRequestActivityRefresh(null, null, next, next.key, null, sharedAt).refresh;
+      decidePullRequestActivityRefresh(null, null, next, next.key, null, sharedAt, null).refresh;
     expect(firstMountWalks("2026-08-13T13:01:00Z")).toBe(true);
     expect(firstMountWalks(next.updatedAt)).toBe(false);
     expect(firstMountWalks(null)).toBe(false);
@@ -419,6 +429,7 @@ describe("pull request activity refresh", () => {
       null,
       { key: key8, updatedAt: live8 },
       key8,
+      null,
       null,
       null,
     );
@@ -445,6 +456,7 @@ describe("pull request activity refresh", () => {
         key8,
         mount,
         null,
+        null,
       ).refresh;
     expect(walkWith(staleMount)).toBe(true);
     expect(walkWith(freshMount)).toBe(false);
@@ -454,7 +466,7 @@ describe("pull request activity refresh", () => {
 
   it("takes a newer shared summary through the decider, never an older one", () => {
     const run = (sharedAt: string | null) =>
-      decidePullRequestActivityRefresh(first, null, { ...first }, first.key, null, sharedAt)
+      decidePullRequestActivityRefresh(first, null, { ...first }, first.key, null, sharedAt, null)
         .refresh;
     expect(run("2026-08-13T13:01:00Z")).toBe(true);
     expect(run(first.updatedAt)).toBe(false);
@@ -480,6 +492,7 @@ describe("pull request activity refresh", () => {
     type Rev = { readonly key: string; readonly updatedAt: string } | null;
     let previous: Rev = null;
     let previousShared: Rev = null;
+    let previousMount: PullRequestMountValidation | null = null;
     let refreshes = 0;
     const step = (mount: Parameters<typeof decidePullRequestActivityRefresh>[4]) => {
       const decision = decidePullRequestActivityRefresh(
@@ -489,21 +502,75 @@ describe("pull request activity refresh", () => {
         live.key,
         mount,
         null,
+        previousMount,
       );
       if (decision.refresh) refreshes += 1;
       previous = decision.nextPrev;
       previousShared = decision.nextShared;
+      previousMount = decision.nextMount;
     };
     step(null);
     expect(refreshes).toBe(0);
     step(staleMount);
     expect(refreshes).toBe(1);
-    // Repeat with the same stale read would walk again, but the panel guards on
-    // activityQuery.isPending (early return, baselines untouched) until the re-read lands.
+    // The same stale read re-runs walk nothing: its content is already validated. (The
+    // panel's isPending guard is a second net, not the one this relies on.)
+    step(staleMount);
+    expect(refreshes).toBe(1);
     step(freshMount);
     expect(refreshes).toBe(1);
     step(null);
     expect(refreshes).toBe(1);
+  });
+
+  it("walks a validated-stale mount only once per mount content", () => {
+    // Loop regression: the re-read a staleness walk triggers comes back equally stale on
+    // metadata-only revisions (no new conversation). Walking on that would refresh
+    // forever — every walk also bumps the diff token — so only strictly newer mount
+    // content walks again.
+    const live = { ...first };
+    const mountAt = (createdAt: string) => ({
+      comments: [{ createdAt }],
+      commits: [],
+      reviewThreads: [],
+    });
+    type Rev = { readonly key: string; readonly updatedAt: string } | null;
+    let previous: Rev = null;
+    let previousShared: Rev = null;
+    let previousMount: PullRequestMountValidation | null = null;
+    let refreshes = 0;
+    const step = (mount: Parameters<typeof decidePullRequestActivityRefresh>[4]) => {
+      const decision = decidePullRequestActivityRefresh(
+        previous,
+        previousShared,
+        live,
+        live.key,
+        mount,
+        null,
+        previousMount,
+      );
+      if (decision.refresh) refreshes += 1;
+      previous = decision.nextPrev;
+      previousShared = decision.nextShared;
+      previousMount = decision.nextMount;
+    };
+    step(null);
+    expect(refreshes).toBe(0);
+    // Late stale mount walks once...
+    step(mountAt("2026-08-13T12:00:00Z"));
+    expect(refreshes).toBe(1);
+    // ...its equally-stale re-read (new object, same instant — the metadata-only case)
+    // walks nothing...
+    step(mountAt("2026-08-13T12:00:00Z"));
+    expect(refreshes).toBe(1);
+    // ...a newer-but-still-stale mount carries new information and walks...
+    step(mountAt("2026-08-13T12:30:00Z"));
+    expect(refreshes).toBe(2);
+    // ...and a fresh mount stands.
+    step(mountAt(live.updatedAt));
+    expect(refreshes).toBe(2);
+    step(null);
+    expect(refreshes).toBe(2);
   });
 
   it("re-baselines on pull-request switch and re-runs staleness under the new key", () => {
