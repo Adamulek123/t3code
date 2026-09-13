@@ -208,6 +208,56 @@ export function isPullRequestSharedSummaryNewer(
   if (Number.isNaN(prevAt) || Number.isNaN(sharedAt)) return false;
   return sharedAt > prevAt;
 }
+export interface PullRequestActivityRevision {
+  readonly key: string;
+  readonly updatedAt: string;
+}
+
+export interface PullRequestActivityRefreshDecision {
+  readonly refresh: boolean;
+  readonly nextPrev: PullRequestActivityRevision;
+  readonly nextShared: PullRequestActivityRevision | null;
+}
+
+/**
+ * One pure step of the detail panel's activity effect: whether this run walks, and the
+ * baselines its next run compares against. A new scope (first live arrival, or a
+ * pull-request switch where the previous baseline names another key) walks only where the
+ * mounted activity predates live or a shared summary is already newer than the incoming
+ * live revision, and otherwise just baselines. A steady run walks where live itself moved,
+ * or where a shared summary moved past both the live baseline and what was already seen.
+ */
+export function decidePullRequestActivityRefresh(
+  previous: PullRequestActivityRevision | null,
+  previousShared: PullRequestActivityRevision | null,
+  next: PullRequestActivityRevision,
+  key: string,
+  mountActivity: Parameters<typeof isPullRequestActivityStale>[0],
+  sharedAt: string | null,
+): PullRequestActivityRefreshDecision {
+  const isNewScope = previous === null || previous.key !== key;
+  let refresh: boolean;
+  if (isNewScope) {
+    refresh =
+      isPullRequestActivityStale(mountActivity, next.updatedAt) ||
+      isPullRequestSharedSummaryNewer(next, key, sharedAt);
+  } else {
+    refresh =
+      shouldRefreshPullRequestActivity(previous, next) ||
+      (isPullRequestSharedSummaryNewer(previous, key, sharedAt) &&
+        (previousShared === null ||
+          previousShared.key !== key ||
+          isPullRequestSharedSummaryNewer(previousShared, key, sharedAt)));
+  }
+  // Baseline stays on live: advancing past it to the shared instant made the next run
+  // read live as older-than-baseline (a text/instant inequality either way) and walk again.
+  return {
+    refresh,
+    nextPrev: next,
+    nextShared:
+      sharedAt !== null ? { key, updatedAt: sharedAt } : isNewScope ? null : previousShared,
+  };
+}
 /** Appends fetched pages without replacing fresher comments already in the activity response. */
 export function mergePullRequestThreadComments<T extends { readonly id: string }>(
   base: ReadonlyArray<T>,

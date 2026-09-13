@@ -145,9 +145,7 @@ import {
   resolveBaseFreshness,
   resolvePullRequestMergeMethod,
   type PullRequestFinding,
-  isPullRequestActivityStale,
-  isPullRequestSharedSummaryNewer,
-  shouldRefreshPullRequestActivity,
+  decidePullRequestActivityRefresh,
   stripPullRequestHandoffReferences,
   writePullRequestDetailSnapshot,
 } from "./pullRequestDetail.logic";
@@ -802,39 +800,23 @@ export function PullRequestDetailPanel({
   const mountActivity = activityQuery.data;
   useEffect(() => {
     if (liveDetailUpdatedAt === null) return;
-    const next = { key: tabScopeKey, updatedAt: liveDetailUpdatedAt };
-    const previous = activityRevision.current;
-    const previousShared = sharedSeenRevision.current;
-    const isNewScope = previous === null || previous.key !== tabScopeKey;
-    let shouldWalk: boolean;
-    if (isNewScope) {
-      shouldWalk =
-        isPullRequestActivityStale(mountActivity, liveDetailUpdatedAt) ||
-        isPullRequestSharedSummaryNewer(next, tabScopeKey, sharedSummaryUpdatedAt);
-    } else {
-      shouldWalk =
-        shouldRefreshPullRequestActivity(previous, next) ||
-        (isPullRequestSharedSummaryNewer(previous, tabScopeKey, sharedSummaryUpdatedAt) &&
-          (previousShared === null ||
-            previousShared.key !== tabScopeKey ||
-            isPullRequestSharedSummaryNewer(previousShared, tabScopeKey, sharedSummaryUpdatedAt)));
-    }
-    if (shouldWalk) {
+    const decision = decidePullRequestActivityRefresh(
+      activityRevision.current,
+      sharedSeenRevision.current,
+      { key: tabScopeKey, updatedAt: liveDetailUpdatedAt },
+      tabScopeKey,
+      mountActivity,
+      sharedSummaryUpdatedAt,
+    );
+    if (decision.refresh) {
       // Let an existing read settle before revalidating the new revision. Interrupting a
       // mutation's activity refresh can leave SWR displaying its previous value.
       if (activityQuery.isPending) return;
       activityQuery.refresh();
       setRefreshToken((token) => token + 1);
     }
-    // Baseline stays on live: advancing past it to the shared instant made the next run
-    // read live as older-than-baseline (a text/instant inequality either way) and walk again.
-    activityRevision.current = next;
-    sharedSeenRevision.current =
-      sharedSummaryUpdatedAt !== null
-        ? { key: tabScopeKey, updatedAt: sharedSummaryUpdatedAt }
-        : isNewScope
-          ? null
-          : previousShared;
+    activityRevision.current = decision.nextPrev;
+    sharedSeenRevision.current = decision.nextShared;
   }, [
     activityQuery.isPending,
     activityQuery.refresh,

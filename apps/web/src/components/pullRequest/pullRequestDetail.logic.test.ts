@@ -49,6 +49,7 @@ import {
   resolveBaseFreshness,
   resolvePullRequestMergeMethod,
   buildPullRequestTimeline,
+  decidePullRequestActivityRefresh,
   editPullRequestThreadComment,
   writePullRequestDetailSnapshot,
 } from "./pullRequestDetail.logic";
@@ -299,32 +300,26 @@ describe("pull request activity refresh", () => {
   });
 
   it("does not re-fire a shared-triggered walk while live stays put", () => {
-    // Helper-level sequencing for the panel effect (live baseline + shared-seen baseline,
-    // see PullRequestDetailPanel): the baseline stays on live, so a shared walk cannot read
-    // live as older-than-baseline next run. An activity arrival re-runs the effect with the
-    // same live/shared inputs, which is the repeated step below.
+    // Effect-level sequencing through the real decider (live baseline + shared-seen
+    // baseline, see PullRequestDetailPanel): the baseline stays on live, so a shared walk
+    // cannot read live as older-than-baseline next run. An activity arrival re-runs the
+    // effect with the same live/shared inputs, which is the repeated step below.
     type Rev = { readonly key: string; readonly updatedAt: string } | null;
-    let liveBaseline: Rev = null;
-    let sharedSeen: Rev = null;
+    let previous: Rev = null;
+    let previousShared: Rev = null;
     let refreshes = 0;
     const step = (liveAt: string, sharedAt: string | null) => {
-      const key = first.key;
-      const next = { key, updatedAt: liveAt };
-      const isNewScope = liveBaseline === null || liveBaseline.key !== key;
-      if (isNewScope) {
-        if (isPullRequestSharedSummaryNewer(next, key, sharedAt)) refreshes += 1;
-      } else if (
-        shouldRefreshPullRequestActivity(liveBaseline, next) ||
-        (isPullRequestSharedSummaryNewer(liveBaseline, key, sharedAt) &&
-          (sharedSeen === null ||
-            sharedSeen.key !== key ||
-            isPullRequestSharedSummaryNewer(sharedSeen, key, sharedAt)))
-      ) {
-        refreshes += 1;
-      }
-      liveBaseline = next;
-      sharedSeen =
-        sharedAt !== null ? { key, updatedAt: sharedAt } : isNewScope ? null : sharedSeen;
+      const decision = decidePullRequestActivityRefresh(
+        previous,
+        previousShared,
+        { key: first.key, updatedAt: liveAt },
+        first.key,
+        null,
+        sharedAt,
+      );
+      if (decision.refresh) refreshes += 1;
+      previous = decision.nextPrev;
+      previousShared = decision.nextShared;
     };
     const live = "2026-08-13T13:00:00Z";
     step(live, "2026-08-13T13:01:00Z");
@@ -332,7 +327,8 @@ describe("pull request activity refresh", () => {
     step(live, "2026-08-13T13:01:00Z");
     step(live, "2026-08-13T13:01:00Z");
     expect(refreshes).toBe(1);
-    expect(liveBaseline).toEqual({ key: first.key, updatedAt: live });
+    expect(previous).toEqual({ key: first.key, updatedAt: live });
+    expect(previousShared).toEqual({ key: first.key, updatedAt: "2026-08-13T13:01:00Z" });
     step(live, "2026-08-13T13:02:00Z");
     expect(refreshes).toBe(2);
     step(live, "2026-08-13T13:02:00Z");
@@ -340,15 +336,69 @@ describe("pull request activity refresh", () => {
   });
 
   it("walks on first mount when the shared summary is already newer than live", () => {
-    // Null-branch wiring: stale-mount OR shared-newer-than-incoming-live walks once. A null
-    // baseline never reports newer, so the check runs against the incoming live revision.
+    // Null baselines through the real decider: a stale mount or a shared summary newer
+    // than the incoming live revision walks once. A null baseline never reports newer, so
+    // the shared check runs against the incoming live revision.
     const next = { ...first };
     const firstMountWalks = (sharedAt: string | null) =>
-      isPullRequestActivityStale(null, next.updatedAt) ||
-      isPullRequestSharedSummaryNewer(next, next.key, sharedAt);
+      decidePullRequestActivityRefresh(null, null, next, next.key, null, sharedAt).refresh;
     expect(firstMountWalks("2026-08-13T13:01:00Z")).toBe(true);
     expect(firstMountWalks(next.updatedAt)).toBe(false);
     expect(firstMountWalks(null)).toBe(false);
+  });
+
+  it("re-baselines on pull-request switch without refreshing, then walks a stale mount", () => {
+    // A key mismatch is a new scope: the decider baselines the new PR instead of
+    // refreshing, advances the shared baseline only where a summary was seen, and the
+    // stale-mount check runs against the new live revision.
+    const key8 = "project:acme/web#8";
+    const live8 = "2026-08-13T13:05:00Z";
+    const switched = decidePullRequestActivityRefresh(
+      { ...first, updatedAt: "2026-08-13T13:01:00Z" },
+      null,
+      { key: key8, updatedAt: live8 },
+      key8,
+      null,
+      null,
+    );
+    expect(switched.refresh).toBe(false);
+    expect(switched.nextPrev).toEqual({ key: key8, updatedAt: live8 });
+    expect(switched.nextShared).toBeNull();
+    // Stale mount under the new key walks; a fresh or empty mount stands.
+    const staleMount = {
+      comments: [],
+      commits: [],
+      reviewThreads: [{ comments: [{ createdAt: "2026-08-13T12:00:00Z" }] }],
+    };
+    const freshMount = {
+      comments: [{ createdAt: live8 }],
+      commits: [],
+      reviewThreads: [],
+    };
+    const emptyMount = { comments: [], commits: [], reviewThreads: [] };
+    const walkWith = (mount: Parameters<typeof decidePullRequestActivityRefresh>[4]) =>
+      decidePullRequestActivityRefresh(
+        null,
+        null,
+        { key: key8, updatedAt: live8 },
+        key8,
+        mount,
+        null,
+      ).refresh;
+    expect(walkWith(staleMount)).toBe(true);
+    expect(walkWith(freshMount)).toBe(false);
+    expect(walkWith(emptyMount)).toBe(false);
+    expect(walkWith(null)).toBe(false);
+  });
+
+  it("takes a newer shared summary through the decider, never an older one", () => {
+    const run = (sharedAt: string | null) =>
+      decidePullRequestActivityRefresh(first, null, { ...first }, first.key, null, sharedAt)
+        .refresh;
+    expect(run("2026-08-13T13:01:00Z")).toBe(true);
+    expect(run(first.updatedAt)).toBe(false);
+    expect(run("2026-08-13T12:59:00Z")).toBe(false);
+    expect(run(null)).toBe(false);
   });
 
   it("re-baselines on pull-request switch and re-runs staleness under the new key", () => {
