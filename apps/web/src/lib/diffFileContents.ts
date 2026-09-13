@@ -42,12 +42,19 @@ type GetPullRequestDiffFileContents<E> = (request: {
   readonly input: PullRequestDiffFileContentsInput;
 }) => Promise<AtomCommandResult<PullRequestDiffFileContentsResult, E>>;
 
+/** One file read plus the revision it was served from (null where the server echoes none). */
+interface LoadedFileContents {
+  readonly oldContents: string;
+  readonly newContents: string;
+  readonly revision: string | null;
+}
+
 function createDiffFileContentsLoader(
   load: (input: {
     readonly changeType: PullRequestDiffFileContentsInput["changeType"];
     readonly oldPath: string;
     readonly newPath: string;
-  }) => Promise<{ readonly oldContents: string; readonly newContents: string }>,
+  }) => Promise<LoadedFileContents>,
   cacheKey: string,
 ): FileDiffContentsLoader {
   return async (fileDiff) => {
@@ -55,11 +62,15 @@ function createDiffFileContentsLoader(
     const oldPath = fileDiff.prevName
       ? resolveFileDiffPath({ ...fileDiff, name: fileDiff.prevName })
       : newPath;
-    const contents = await load({ changeType: fileDiff.type, oldPath, newPath });
+    const loaded = await load({ changeType: fileDiff.type, oldPath, newPath });
+    // Pierre treats FileContents.cacheKey as a revision identity for worker-pool caching
+    // and hydration reuse: it must move whenever the served revision does, or highlights
+    // from the previous comparison are reused for the new one.
+    const revisionSuffix = loaded.revision === null ? "" : `:${loaded.revision}`;
     const newFile = {
       name: newPath,
-      contents: contents.newContents,
-      cacheKey: `${cacheKey}:new:${newPath}`,
+      contents: loaded.newContents,
+      cacheKey: `${cacheKey}:new:${newPath}${revisionSuffix}`,
     };
     if (fileDiff.type === "rename-pure") {
       return { oldFile: null, newFile };
@@ -67,8 +78,8 @@ function createDiffFileContentsLoader(
     return {
       oldFile: {
         name: oldPath,
-        contents: contents.oldContents,
-        cacheKey: `${cacheKey}:old:${oldPath}`,
+        contents: loaded.oldContents,
+        cacheKey: `${cacheKey}:old:${oldPath}${revisionSuffix}`,
       },
       newFile,
     };
@@ -96,7 +107,12 @@ export function createGitDiffFileContentsLoader<E>(
     if (result._tag !== "Success") {
       throw squashAtomCommandFailure(result);
     }
-    return result.value;
+    // The Git comparison names its own revisions; there is nothing to echo back.
+    return {
+      oldContents: result.value.oldContents,
+      newContents: result.value.newContents,
+      revision: null,
+    };
   }, source.cacheKey);
 }
 
@@ -117,7 +133,9 @@ export function createPullRequestDiffFileContentsLoader<E>(
   // One hunk expansion costs a refs lookup plus up to two raw file reads on the host, so an
   // expansion is memoized by what it reads: the comparison is fixed for the life of this loader
   // (its cache key already carries the revision), and only the file identity varies per call.
-  // Concurrent expansions of the same file share one request rather than racing two.
+  // Concurrent expansions of the same file share one request rather than racing two —
+  // unless that request predates the established revision, in which case a fresh read
+  // supersedes it rather than joining known-stale content.
   // Failures are never kept: a transient host error must not pin a file to its error.
   interface SettledEntry {
     readonly oldContents: string;
@@ -125,7 +143,7 @@ export function createPullRequestDiffFileContentsLoader<E>(
     readonly size: number;
   }
   const settled = new Map<string, SettledEntry>();
-  const inflight = new Map<string, Promise<SettledEntry>>();
+  const inflight = new Map<string, { promise: Promise<LoadedFileContents>; sequence: number }>();
   let settledBytes = 0;
   // The revisions the last-applied read actually served, echoed by the server. The
   // loader's identity (its cache key) already carries the commit set plus `:behindN`, but
@@ -181,15 +199,26 @@ export function createPullRequestDiffFileContentsLoader<E>(
     readonly changeType: PullRequestDiffFileContentsInput["changeType"];
     readonly oldPath: string;
     readonly newPath: string;
-  }): Promise<{ readonly oldContents: string; readonly newContents: string }> => {
+  }): Promise<LoadedFileContents> => {
     const key = keyOf(input);
     const hit = takeSettled(key);
-    if (hit) return hit;
+    // Settled entries always name the established revision (a move busts the memo), so a
+    // hit carries it.
+    if (hit) {
+      return {
+        oldContents: hit.oldContents,
+        newContents: hit.newContents,
+        revision: servedRevision,
+      };
+    }
     const ongoing = inflight.get(key);
-    if (ongoing) return ongoing;
-    const pending = (async (): Promise<SettledEntry> => {
-      const sequence = nextSequence;
-      nextSequence += 1;
+    // Concurrent expansions of the same file share one request rather than racing two —
+    // unless that request predates the established revision, in which case joining it
+    // would serve the new caller known-stale content and a fresh read replaces it.
+    if (ongoing && ongoing.sequence >= servedSequence) return ongoing.promise;
+    const sequence = nextSequence;
+    nextSequence += 1;
+    const pending = (async (): Promise<LoadedFileContents> => {
       const result = await getDiffFileContents({
         environmentId: source.environmentId,
         input: {
@@ -225,13 +254,14 @@ export function createPullRequestDiffFileContentsLoader<E>(
       }
       // Otherwise an older read landed after a newer revision was established: its caller
       // still gets what the host served it, but the memo stays on the newer comparison.
-      return value;
+      return { oldContents: value.oldContents, newContents: value.newContents, revision: served };
     })();
-    inflight.set(key, pending);
+    inflight.set(key, { promise: pending, sequence });
     try {
       return await pending;
     } finally {
-      inflight.delete(key);
+      // A superseding read may have replaced this entry while it was in flight.
+      if (inflight.get(key)?.promise === pending) inflight.delete(key);
     }
   };
   return createDiffFileContentsLoader(load, source.cacheKey);

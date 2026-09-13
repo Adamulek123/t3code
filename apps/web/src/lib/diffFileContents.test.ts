@@ -417,6 +417,96 @@ describe("createPullRequestDiffFileContentsLoader", () => {
     expect(getDiffFileContents).toHaveBeenCalledTimes(2);
   });
 
+  it("supersedes an in-flight read predated by an established revision", async () => {
+    // A new expansion joining file A's still-flying revision-1 read would be served
+    // known-stale content. Once file B establishes revision 2, the new request starts a
+    // fresh read instead of joining; the late revision-1 landing still serves its own
+    // caller without storing.
+    const echoByPath = new Map([
+      ["src/a.ts", { baseSha: "base-1", headSha: "head-1" }],
+      ["src/b.ts", { baseSha: "base-1", headSha: "head-2" }],
+    ]);
+    const release = new Map<string, () => void>();
+    const deferred = new Set(["src/a.ts", "src/b.ts"]);
+    const getDiffFileContents = vi.fn(
+      (request: {
+        input: { newPath: string };
+      }): Promise<AtomCommandResult<PullRequestDiffFileContentsResult, Error>> => {
+        const echo = echoByPath.get(request.input.newPath) ?? {
+          baseSha: "base-1",
+          headSha: "head-2",
+        };
+        const result = AsyncResult.success<PullRequestDiffFileContentsResult>({
+          oldContents: "before\n",
+          newContents: `after@${echo.headSha}\n`,
+          ...echo,
+        });
+        if (!deferred.has(request.input.newPath)) return Promise.resolve(result);
+        deferred.delete(request.input.newPath);
+        return new Promise((resolve) => {
+          release.set(request.input.newPath, () => resolve(result));
+        });
+      },
+    );
+    const load = createPullRequestDiffFileContentsLoader(getDiffFileContents, PR_SOURCE);
+
+    const stale = load(prFileDiff("b/src/a.ts"));
+    const establishing = load(prFileDiff("b/src/b.ts"));
+    release.get("src/b.ts")?.();
+    await establishing;
+    // The world moved on before the replacement read: it serves the new comparison.
+    echoByPath.set("src/a.ts", { baseSha: "base-1", headSha: "head-2" });
+    const replacement = load(prFileDiff("b/src/a.ts"));
+    expect(getDiffFileContents).toHaveBeenCalledTimes(3);
+    release.get("src/a.ts")?.();
+    await expect(stale).resolves.toMatchObject({
+      newFile: { contents: "after@head-1\n" },
+    });
+    await expect(replacement).resolves.toMatchObject({
+      newFile: { contents: "after@head-2\n" },
+    });
+    // The replacement settled; the stale landing stored nothing.
+    await expect(load(prFileDiff("b/src/a.ts"))).resolves.toMatchObject({
+      newFile: { contents: "after@head-2\n" },
+    });
+    expect(getDiffFileContents).toHaveBeenCalledTimes(3);
+  });
+
+  it("keys hydrated files by served revision, legacy shape without echo", async () => {
+    // Pierre treats FileContents.cacheKey as a revision identity for worker-pool caching
+    // and hydration reuse: the same file served from two comparisons must key
+    // differently, or highlights from the previous revision are reused for the new one.
+    let revision = { baseSha: "base-1", headSha: "head-1" };
+    const getDiffFileContents = vi.fn(async () =>
+      AsyncResult.success<PullRequestDiffFileContentsResult>({
+        oldContents: "before\n",
+        newContents: "after\n",
+        ...revision,
+      }),
+    );
+    const load = createPullRequestDiffFileContentsLoader(getDiffFileContents, PR_SOURCE);
+
+    const first = await load(prFileDiff());
+    expect(first.newFile?.cacheKey).toBe(`${PR_SOURCE.cacheKey}:new:src/file.ts:base-1@head-1`);
+    expect(first.oldFile?.cacheKey).toBe(`${PR_SOURCE.cacheKey}:old:src/file.ts:base-1@head-1`);
+    revision = { baseSha: "base-1", headSha: "head-2" };
+    const second = await load(prFileDiff("b/src/other.ts"));
+    expect(second.newFile?.cacheKey).toBe(`${PR_SOURCE.cacheKey}:new:src/other.ts:base-1@head-2`);
+
+    // No echo (older server): exactly the historical shape, so existing highlights keep
+    // hitting.
+    const legacyContents = vi.fn(async () =>
+      AsyncResult.success<PullRequestDiffFileContentsResult>({
+        oldContents: "before\n",
+        newContents: "after\n",
+      }),
+    );
+    const legacy = createPullRequestDiffFileContentsLoader(legacyContents, PR_SOURCE);
+    const legacyFirst = await legacy(prFileDiff());
+    expect(legacyFirst.newFile?.cacheKey).toBe(`${PR_SOURCE.cacheKey}:new:src/file.ts`);
+    expect(legacyFirst.oldFile?.cacheKey).toBe(`${PR_SOURCE.cacheKey}:old:src/file.ts`);
+  });
+
   it("evicts by total size before the entry cap fills", async () => {
     // One shared side keeps the test cheap: the cap counts lengths, not allocations, and two
     // entries at ~2/3 of the cap each already exceed it with only two files held (cap is 30).
