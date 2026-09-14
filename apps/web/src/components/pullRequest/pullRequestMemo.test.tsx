@@ -72,6 +72,42 @@ function discussionComment(index: number): PullRequestComment {
 /** A large-discussion pull request: hundreds of remarks, one commit, no threads. */
 function discussionDetail(commentCount: number): PullRequestDetailView {
   const comments = Array.from({ length: commentCount }, (_, index) => discussionComment(index));
+  const ada = { login: "ada", name: "Ada Lovelace", avatarUrl: null };
+  // The newest remarks, so they sit inside the recent window both tabs read: a standing
+  // approval (reviewer row + badge), a remark the viewer may rewrite (pencil), and a
+  // resolved line thread (collapsed card). These populate the reviewerEntries,
+  // threadByCommentId and editable memos the discussion alone leaves empty.
+  const approval: PullRequestComment = {
+    id: "review-approval",
+    kind: "review",
+    author: ada,
+    body: "Looks good to me.",
+    createdAt: new Date(Date.UTC(2026, 7, 2, 0, 0)).toISOString(),
+    url: null,
+    path: null,
+    reviewState: "APPROVED",
+  };
+  const editable: PullRequestComment = {
+    id: "comment-editable",
+    kind: "issue-comment",
+    author: ada,
+    body: "A note I can rewrite.",
+    createdAt: new Date(Date.UTC(2026, 7, 2, 0, 1)).toISOString(),
+    url: null,
+    path: null,
+    reviewState: null,
+    reactions: [{ content: "thumbs-up", count: 2, actors: ["bilal"], viewerHasReacted: false }],
+  };
+  const threaded: PullRequestComment = {
+    id: "comment-thread-1",
+    kind: "review-comment",
+    author: { login: "bilal", name: null, avatarUrl: null },
+    body: "A line note that got resolved.",
+    createdAt: new Date(Date.UTC(2026, 7, 2, 0, 2)).toISOString(),
+    url: null,
+    path: "src/app.ts",
+    reviewState: null,
+  };
   return {
     provider: "github",
     capabilities: {
@@ -80,8 +116,10 @@ function discussionDetail(commentCount: number): PullRequestDetailView {
       actions: [],
       mergeMethods: [],
       search: false,
+      reactions: true,
       review: { inlineComment: false, reply: false, resolve: false, verdicts: [] },
       reviewers: { request: false, listCandidates: false },
+      edit: { changeRequest: false, comment: true },
     },
     viewerPermissions: {
       actions: [],
@@ -90,6 +128,7 @@ function discussionDetail(commentCount: number): PullRequestDetailView {
       verdicts: [],
       requestReviewers: false,
     },
+    viewer: "ada",
     projectId: "proj-memo" as ProjectId,
     projectTitle: "app",
     workspaceRoot: "/tmp/app",
@@ -111,14 +150,32 @@ function discussionDetail(commentCount: number): PullRequestDetailView {
     updatedAt: new Date(Date.UTC(2026, 7, 2)).toISOString(),
     mergedAt: null,
     closedAt: null,
-    reviewers: [],
+    reviewers: [ada],
     labels: [],
     checks: [],
     mergeCapabilities: { merge: true, squash: true, rebase: true },
-    comments,
-    commentCount: comments.length,
+    comments: [...comments, approval, editable, threaded],
+    commentCount: comments.length + 3,
     commentsTruncated: false,
-    reviewThreads: [],
+    reviewThreads: [
+      {
+        id: "thread-1",
+        path: "src/app.ts",
+        line: 10,
+        side: "right",
+        isResolved: true,
+        isOutdated: false,
+        comments: [
+          {
+            id: "comment-thread-1",
+            author: { login: "bilal", name: null, avatarUrl: null },
+            body: "A line note that got resolved.",
+            createdAt: new Date(Date.UTC(2026, 7, 2, 0, 2)).toISOString(),
+            url: null,
+          },
+        ],
+      },
+    ],
     commits: [
       {
         oid: "abc1234",
@@ -128,6 +185,11 @@ function discussionDetail(commentCount: number): PullRequestDetailView {
     ],
     reactions: [],
   } as PullRequestDetailView;
+}
+
+/** The rendered page as text: memo tests must show the derives still read right, not just rarely. */
+function renderedText(): string {
+  return JSON.stringify(renderer?.toJSON() ?? null);
 }
 
 let renderer: ReactTestRenderer | undefined;
@@ -177,12 +239,19 @@ describe("pull request tab memoization", () => {
       renderer = create(<PullRequestTimelineTab {...base} />);
     });
     expect(buildCalls.timeline).toBe(1);
+    // The derives read right, not just rarely: the standing verdict, the commit headline
+    // and the lifecycle row all come out of the memoized event list. (Conversation bodies
+    // stay inside their collapsed groups until opened, so they cannot prove anything here.)
+    expect(renderedText()).toContain("Approved");
+    expect(renderedText()).toContain("First");
+    expect(renderedText()).toContain("Pull request opened");
 
     // The same conversation behind a panel re-render: no rebuild.
     await act(() => {
       renderer?.update(<PullRequestTimelineTab {...base} />);
     });
     expect(buildCalls.timeline).toBe(1);
+    expect(renderedText()).toContain("Approved");
 
     // Flipping the reading order re-sorts the built events rather than rebuilding them.
     await act(() => {
@@ -197,6 +266,30 @@ describe("pull request tab memoization", () => {
       );
     });
     expect(buildCalls.timeline).toBe(1);
+    expect(renderedText()).toContain("Approved");
+
+    // A new commit is a timeline input too: the branch moved, so the events rebuild.
+    await act(() => {
+      renderer?.update(
+        <PullRequestTimelineTab
+          {...base}
+          detail={{
+            ...detail,
+            commits: [
+              ...detail.commits,
+              {
+                oid: "def5678",
+                messageHeadline: "Second",
+                committedDate: new Date(Date.UTC(2026, 8, 1)).toISOString(),
+              },
+            ],
+          }}
+        />,
+      );
+    });
+    expect(buildCalls.timeline).toBe(2);
+    // The new commit's headline comes out of the rebuilt list.
+    expect(renderedText()).toContain("Second");
 
     // A new conversation still rebuilds, exactly once.
     await act(() => {
@@ -207,7 +300,8 @@ describe("pull request tab memoization", () => {
         />,
       );
     });
-    expect(buildCalls.timeline).toBe(2);
+    expect(buildCalls.timeline).toBe(3);
+    expect(renderedText()).toContain("Approved");
   });
 
   it("does not rescan a 500-comment conversation on panel re-renders", async () => {
@@ -225,6 +319,15 @@ describe("pull request tab memoization", () => {
       renderer = create(<PullRequestSummaryTab {...base} />);
     });
     expect(buildCalls.outcomes).toBe(1);
+    // The populated derives read right: the reviewer's standing verdict, the resolved
+    // thread's card, the pencil on the viewer's own remark, and the recent window's bodies.
+    expect(renderedText()).toContain("Approved");
+    expect(renderedText()).toContain("Resolved");
+    expect(renderedText()).toContain("Edit comment");
+    expect(renderedText()).toContain("Looks good to me.");
+    expect(renderedText()).toContain("A note I can rewrite.");
+    expect(renderedText()).toContain("Comment 499 on the change.");
+    expect(renderedText()).not.toContain("Comment 400 on the change.");
 
     // The same conversation behind a panel re-render (a tab switch, a handoff, a
     // draft-store update): no rescan.
@@ -242,6 +345,11 @@ describe("pull request tab memoization", () => {
       );
     });
     expect(buildCalls.outcomes).toBe(1);
+    // The verdict row lives outside the conversation, so it stays while the activity
+    // load replaces the comments with their skeleton: same panel re-render, no rescan.
+    expect(renderedText()).toContain("Approved");
+    expect(renderedText()).toContain("Loading pull request conversation");
+    expect(renderedText()).not.toContain("Resolved");
 
     // Keystrokes in the floating composer stay inside PullRequestCommentComposer's own
     // `body` state, so they never re-render this tab at all — there is no rescan to
@@ -249,11 +357,14 @@ describe("pull request tab memoization", () => {
     // this tab while the conversation stays the same.
 
     // A rebuilt detail wrapper over the same conversation still skips the scan: the memos
-    // are keyed by the comment and commit arrays, not by the wrapper's identity.
+    // are keyed by the comment and commit arrays, not by the wrapper's identity. The load
+    // is over, so the thread card and the pencil read again.
     await act(() => {
       renderer?.update(<PullRequestSummaryTab {...base} detail={{ ...detail }} />);
     });
     expect(buildCalls.outcomes).toBe(1);
+    expect(renderedText()).toContain("Resolved");
+    expect(renderedText()).toContain("Edit comment");
 
     // A new conversation still rescans, exactly once.
     await act(() => {
@@ -262,5 +373,28 @@ describe("pull request tab memoization", () => {
       );
     });
     expect(buildCalls.outcomes).toBe(2);
+
+    // A new commit is a verdict input too: the branch moved, so the scan runs again.
+    await act(() => {
+      renderer?.update(
+        <PullRequestSummaryTab
+          {...base}
+          detail={{
+            ...detail,
+            commits: [
+              ...detail.commits,
+              {
+                oid: "def5678",
+                messageHeadline: "Second",
+                committedDate: new Date(Date.UTC(2026, 8, 1)).toISOString(),
+              },
+            ],
+          }}
+        />,
+      );
+    });
+    expect(buildCalls.outcomes).toBe(3);
+    // The approval now speaks for older code, but the verdict still reads on the row.
+    expect(renderedText()).toContain("Approved");
   });
 });
