@@ -132,9 +132,9 @@ import {
   buildFixFindingHandoff,
   buildFixFindingsHandoff,
   buildResolveConflictsPrompt,
+  countStandingApprovals,
   handoffPrompt,
   handoffReviewComments,
-  latestPullRequestReviewOutcomes,
   isStackedPullRequestBase,
   pullRequestActionMenuHasGroup,
   pullRequestActionNeedsHostRefresh,
@@ -1514,10 +1514,8 @@ export function PullRequestDetailPanel({
   // of those rescanned every comment for a verdict.
   const approvalCount = useMemo(
     () =>
-      detail && !detail.commentsTruncated
-        ? latestPullRequestReviewOutcomes(detail.comments, detail.commits).filter(
-            (entry) => entry.outcome === "approved" && !entry.stale,
-          ).length
+      detail
+        ? countStandingApprovals(detail.comments, detail.commits, detail.commentsTruncated)
         : 0,
     [detail?.comments, detail?.commits, detail?.commentsTruncated],
   );
