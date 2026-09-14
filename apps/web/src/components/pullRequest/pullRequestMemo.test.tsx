@@ -288,8 +288,10 @@ describe("pull request tab memoization", () => {
       );
     });
     expect(buildCalls.timeline).toBe(2);
-    // The new commit's headline comes out of the rebuilt list.
+    // The new commit's headline comes out of the rebuilt list, and the approval it
+    // overtook reads as stale rather than current.
     expect(renderedText()).toContain("Second");
+    expect(renderedText()).toContain("before the latest commits");
 
     // A new conversation still rebuilds, exactly once.
     await act(() => {
@@ -394,7 +396,9 @@ describe("pull request tab memoization", () => {
       );
     });
     expect(buildCalls.outcomes).toBe(3);
-    // The approval now speaks for older code, but the verdict still reads on the row.
+    // The approval now speaks for older code, but the verdict still reads on the row —
+    // qualified as earlier changes, which only the stale branch renders.
     expect(renderedText()).toContain("Approved");
+    expect(renderedText()).toContain("earlier changes");
   });
 });
