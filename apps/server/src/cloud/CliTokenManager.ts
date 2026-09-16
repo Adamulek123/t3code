@@ -445,6 +445,15 @@ export const make = Effect.gen(function* () {
   });
 
   const refresh = Effect.fn("cloud.cli_token.refresh")(function* (token: PersistedToken) {
+    // A stored credential without a refresh token (the server omitted
+    // refresh_token on a grant that has none to carry over) can never be
+    // refreshed: fail before the network round trip so callers fall through
+    // to a fresh login instead of posting refresh_token="".
+    if (token.refreshToken.length === 0) {
+      return yield* new CloudCliCredentialRefreshError({
+        cause: "stored credential has no refresh token",
+      });
+    }
     const metadata = yield* cloudCliOAuthConfig;
     const { token: refreshed } = yield* exchangeToken(metadata, {
       grant_type: "refresh_token",
