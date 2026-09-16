@@ -315,6 +315,16 @@ const discoverPairTarget = Effect.fn("pair.discoverPairTarget")(function* (
   }
 
   const checkedStatePaths: Array<string> = [];
+  // Cheap local checks (state file present, pid alive) stay sequential so
+  // precedence and the checked-paths error read in discovery order; only the
+  // network probes — up to PAIR_PROBE_TIMEOUT each — run concurrently. The
+  // candidate set is bounded (bases × two variants), and the first hit in
+  // precedence order still wins.
+  const candidates: Array<{
+    readonly baseDir: string;
+    readonly variant: PairStateVariant;
+    readonly state: PersistedServerRuntimeState;
+  }> = [];
   for (const baseDir of new Set(bases)) {
     for (const variant of ["userdata", "dev"] as const) {
       const derivedPaths = yield* ServerConfig.deriveServerPaths(
@@ -334,17 +344,26 @@ const discoverPairTarget = Effect.fn("pair.discoverPairTarget")(function* (
       if (!isProcessAlive(state.value.pid)) {
         continue;
       }
-      const probed = yield* probeEnvironmentDescriptor(state.value.origin);
-      if (probed._tag !== "descriptor") {
-        continue;
-      }
-      return {
-        baseDir,
-        variant,
-        state: state.value,
-        descriptor: probed.descriptor,
-      } satisfies DiscoveredPairTarget;
+      candidates.push({ baseDir, variant, state: state.value });
     }
+  }
+  const probed = yield* Effect.forEach(
+    candidates,
+    (candidate) =>
+      Effect.map(probeEnvironmentDescriptor(candidate.state.origin), (result) => ({
+        ...candidate,
+        result,
+      })),
+    { concurrency: "unbounded" },
+  );
+  const hit = probed.find((candidate) => candidate.result._tag === "descriptor");
+  if (hit !== undefined && hit.result._tag === "descriptor") {
+    return {
+      baseDir: hit.baseDir,
+      variant: hit.variant,
+      state: hit.state,
+      descriptor: hit.result.descriptor,
+    } satisfies DiscoveredPairTarget;
   }
   return yield* new NoRunningServerError({ checkedStatePaths });
 });
@@ -413,7 +432,10 @@ const awaitEnvironmentDescriptor = Effect.fn(function* (baseUrl: string) {
     if (last._tag === "descriptor") {
       return last;
     }
-    yield* Effect.sleep(TAILSCALE_PROBE_RETRY_DELAY);
+    // No sleep after the final attempt: nothing else will use the wait.
+    if (attempt + 1 < TAILSCALE_PROBE_ATTEMPTS) {
+      yield* Effect.sleep(TAILSCALE_PROBE_RETRY_DELAY);
+    }
   }
   return last;
 });
