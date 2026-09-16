@@ -126,7 +126,10 @@ export type EnvironmentConnectorError =
   | EnvironmentLinks.EnvironmentLinkLookupPersistenceError
   | ManagedEndpointAllocations.ManagedEndpointAllocationPersistenceError;
 
-export const ENVIRONMENT_MINT_REQUEST_TIMEOUT_MS = 10_000;
+// Must stay below the relay request deadline (RELAY_REQUEST_DEADLINE_MS in
+// http/Api.ts): a slower downstream budget can never surface its own typed
+// timeout — the deadline 504s first and the extra downstream work is waste.
+export const ENVIRONMENT_MINT_REQUEST_TIMEOUT_MS = 7_000;
 const ENVIRONMENT_HEALTH_CLOCK_SKEW_MILLIS = 60 * 1_000;
 
 export class EnvironmentConnector extends Context.Service<
