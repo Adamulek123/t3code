@@ -295,9 +295,10 @@ describe("t3 pair", () => {
         const server = NodeHttp.createServer((request, response) => {
           if (request.url === "/.well-known/t3/environment") {
             response.writeHead(200, { "content-type": "application/json" });
-            // Valid JSON shape, far beyond any real descriptor: discovery must
-            // classify the occupant without a Schema decode, not pair with it.
-            response.end(JSON.stringify({ padding: "x".repeat(128 * 1024) }));
+            // A schema-valid descriptor padded far beyond any real one:
+            // discovery must reject it on size without a Schema decode
+            // (without the cap this decodes fine and pairs), not pair with it.
+            response.end(JSON.stringify({ ...testDescriptor, padding: "x".repeat(128 * 1024) }));
             return;
           }
           response.writeHead(404);
