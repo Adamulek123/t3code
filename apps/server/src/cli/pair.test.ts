@@ -288,4 +288,49 @@ describe("t3 pair", () => {
       assert.include(rendered, "No running T3 Code server found.");
     }).pipe(Effect.provide(NodeServices.layer)),
   );
+
+  it.effect("does not decode an oversized stranger body as a server descriptor", () =>
+    Effect.acquireUseRelease(
+      Effect.callback<NodeHttp.Server>((resume) => {
+        const server = NodeHttp.createServer((request, response) => {
+          if (request.url === "/.well-known/t3/environment") {
+            response.writeHead(200, { "content-type": "application/json" });
+            // Valid JSON shape, far beyond any real descriptor: discovery must
+            // classify the occupant without a Schema decode, not pair with it.
+            response.end(JSON.stringify({ padding: "x".repeat(128 * 1024) }));
+            return;
+          }
+          response.writeHead(404);
+          response.end();
+        });
+        server.listen(0, "127.0.0.1", () => resume(Effect.succeed(server)));
+      }),
+      (server) =>
+        Effect.gen(function* () {
+          const address = server.address();
+          if (address === null || typeof address === "string") {
+            return Effect.die(new Error("Expected a TCP address"));
+          }
+          const baseDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-pair-big-test-"));
+          const statePath = NodePath.join(baseDir, "userdata", "server-runtime.json");
+          yield* persistServerRuntimeState({
+            path: statePath,
+            state: yield* makePersistedServerRuntimeState({
+              config: { host: "127.0.0.1", devUrl: undefined },
+              port: address.port,
+            }),
+          });
+
+          const error = yield* provideCliTestLayers(
+            runCli(["pair", "--base-dir", baseDir]).pipe(Effect.flip),
+          );
+
+          const rendered = String(
+            typeof error === "object" && error !== null && "cause" in error ? error.cause : error,
+          );
+          assert.include(rendered, "No running T3 Code server found.");
+        }),
+      (server) => Effect.sync(() => server.close()),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
 });

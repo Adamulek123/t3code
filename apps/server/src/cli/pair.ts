@@ -59,6 +59,9 @@ import { baseDirFlag, DurationFromString } from "./config.ts";
 
 const WELL_KNOWN_ENVIRONMENT_PATH = "/.well-known/t3/environment";
 const PAIR_PROBE_TIMEOUT = Duration.millis(2_500);
+// The environment descriptor is a few hundred bytes; anything larger served
+// from the well-known path cannot be a T3 server.
+const MAX_PROBE_BODY_BYTES = 64 * 1024;
 // Tailscale provisions an HTTPS certificate on the first request to a fresh
 // serve mapping, which can take a few seconds.
 const TAILSCALE_PROBE_ATTEMPTS = 5;
@@ -218,14 +221,29 @@ const probeEnvironmentDescriptor = (
     // Bad-gateway family means a proxy (Tailscale Serve) answered for a
     // backend that is gone — a stale mapping, not a live occupant. Treating
     // it as unreachable lets `t3 pair --tailscale` repair its own mapping
-    // after the server's port changed.
+    // after the server's port changed. Drain the body so the pooled
+    // connection is reusable for the re-configured mapping.
     if (response.status === 502 || response.status === 503 || response.status === 504) {
+      yield* Effect.ignore(response.text);
       return { _tag: "unreachable" } as const;
     }
     // Anything else that answered HTTP but not with a valid descriptor is
-    // some other service.
+    // some other service. Refuse to buffer + decode a stranger's body blind:
+    // the descriptor is a few hundred bytes of JSON, so non-JSON content or
+    // anything over the cap is classified without a Schema decode.
+    const contentType = response.headers["content-type"] ?? "";
+    if (!contentType.includes("json")) {
+      return { _tag: "not-a-t3-server" } as const;
+    }
     const descriptor = yield* HttpClientResponse.filterStatusOk(response).pipe(
-      Effect.flatMap(HttpClientResponse.schemaBodyJson(ExecutionEnvironmentDescriptor)),
+      Effect.flatMap((ok) => ok.text),
+      Effect.flatMap((body) =>
+        body.length > MAX_PROBE_BODY_BYTES
+          ? Effect.fail({ _tag: "not-a-t3-server" } as const)
+          : Schema.decodeUnknownEffect(Schema.fromJsonString(ExecutionEnvironmentDescriptor))(
+              body,
+            ).pipe(Effect.mapError(() => ({ _tag: "not-a-t3-server" }) as const)),
+      ),
       Effect.mapError(() => ({ _tag: "not-a-t3-server" }) as const),
     );
     return { _tag: "descriptor", descriptor } as const;
