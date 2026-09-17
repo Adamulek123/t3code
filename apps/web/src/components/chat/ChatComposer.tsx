@@ -214,6 +214,7 @@ import {
 } from "~/lib/composerContextReferences";
 import {
   asKnownContextRecord,
+  buildPendingPullRequestReferenceContext,
   composerContextImportLookupIds,
   isSameComposerContextPayload,
   uploadedAttachmentContextRecord,
@@ -231,6 +232,10 @@ import {
   terminalContextRecord,
 } from "~/lib/composerContextRecords";
 import { requestConfirmDialog } from "~/confirmDialog";
+import {
+  collectComposerContextReferences,
+  selfConsistentPastedPullRequestNumber,
+} from "@t3tools/shared/composerContextReferences";
 import { encodeComposerContextFragment } from "@t3tools/shared/composerContextClipboard";
 import type { ComposerContextClipboardFragment, ComposerContextRecord } from "@t3tools/contracts";
 import { resolveAssetUrl } from "~/assets/assetUrls";
@@ -2303,6 +2308,80 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         }),
   );
 
+  const addComposerDraftReviewComment = useComposerDraftStore((store) => store.addReviewComment);
+  // Pasted `pr-reference` links arrive without records. Ensure a pending chip
+  // immediately (loader, not "unavailable"), then upgrade it in place once the
+  // summary loads. Single flight per number; failures keep the loader so a
+  // retry happens on the next prompt edit rather than busy-looping.
+  const readPastedPullRequestDetail = useAtomQueryRunner(pullRequestEnvironment.detail, {
+    reportFailure: false,
+    reportDefect: false,
+  });
+  const pastedPullRequestInFlightRef = useRef(new Set<number>());
+  useEffect(() => {
+    if (pullRequestProjectId === null || pullRequestRepository === null) return;
+    const numbers = new Set<number>();
+    for (const occurrence of collectComposerContextReferences(prompt)) {
+      if (occurrence.kind !== "review-comment") continue;
+      // Malformed pastes (label number disagrees with the ref) never resolve.
+      const number = selfConsistentPastedPullRequestNumber(occurrence.label, occurrence.contextId);
+      if (number !== null) numbers.add(number);
+    }
+    if (numbers.size === 0) return;
+    const byId = new Map(composerReviewComments.map((comment) => [comment.id, comment]));
+    for (const number of numbers) {
+      const existing = byId.get(`pr-reference:${number}`);
+      if (existing?.pullRequest !== undefined) continue;
+      if (existing === undefined) {
+        addComposerDraftReviewComment(
+          composerDraftTarget,
+          buildPendingPullRequestReferenceContext(number),
+          { appendReference: false },
+        );
+      }
+      if (pastedPullRequestInFlightRef.current.has(number)) continue;
+      pastedPullRequestInFlightRef.current.add(number);
+      const requestProjectId = pullRequestProjectId;
+      const requestRepository = pullRequestRepository;
+      const requestTarget = composerDraftTargetKeyRef.current;
+      void readPastedPullRequestDetail({
+        environmentId,
+        input: { projectId: requestProjectId, repository: requestRepository, number },
+      })
+        .then((result) => {
+          pastedPullRequestInFlightRef.current.delete(number);
+          if (composerDraftTargetKeyRef.current !== requestTarget) return;
+          if (result._tag !== "Success") return;
+          const detail = result.value;
+          addComposerDraftReviewComment(
+            composerDraftTarget,
+            buildPullRequestReferenceContext({
+              number: detail.number,
+              title: detail.title,
+              url: detail.url,
+              headBranch: detail.headBranch,
+              baseBranch: detail.baseBranch,
+              state: detail.state,
+              isDraft: detail.isDraft,
+            }),
+            { appendReference: false },
+          );
+        })
+        .catch(() => {
+          pastedPullRequestInFlightRef.current.delete(number);
+        });
+    }
+  }, [
+    prompt,
+    composerReviewComments,
+    pullRequestProjectId,
+    pullRequestRepository,
+    environmentId,
+    composerDraftTarget,
+    addComposerDraftReviewComment,
+    readPastedPullRequestDetail,
+  ]);
+
   const composerMenuItems = useMemo<ComposerCommandItem[]>(() => {
     if (!composerTrigger) return [];
     if (composerTrigger.kind === "path") {
@@ -2720,7 +2799,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const addComposerDraftTerminalContexts = useComposerDraftStore(
     (store) => store.addTerminalContexts,
   );
-  const addComposerDraftReviewComment = useComposerDraftStore((store) => store.addReviewComment);
   const addComposerDraftPreviewAnnotation = useComposerDraftStore(
     (store) => store.addPreviewAnnotation,
   );
