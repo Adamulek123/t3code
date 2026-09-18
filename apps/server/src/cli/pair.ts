@@ -26,6 +26,7 @@ import * as Console from "effect/Console";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as References from "effect/References";
@@ -237,7 +238,7 @@ interface DiscoveredPairTarget {
   readonly descriptor: ExecutionEnvironmentDescriptor;
 }
 
-const discoverPairTarget = Effect.fn("pair.discoverPairTarget")(function* (
+export const discoverPairTarget = Effect.fn("pair.discoverPairTarget")(function* (
   explicitBaseDir: string | undefined,
 ) {
   const bases: Array<string> = [];
@@ -256,11 +257,6 @@ const discoverPairTarget = Effect.fn("pair.discoverPairTarget")(function* (
   }
 
   const checkedStatePaths: Array<string> = [];
-  // Cheap local checks (state file present, pid alive) stay sequential so
-  // precedence and the checked-paths error read in discovery order; only the
-  // network probes — up to PAIR_PROBE_TIMEOUT each — run concurrently. The
-  // candidate set is bounded (bases × two variants), and the first hit in
-  // precedence order still wins.
   const candidates: Array<{
     readonly baseDir: string;
     readonly variant: PairStateVariant;
@@ -288,23 +284,30 @@ const discoverPairTarget = Effect.fn("pair.discoverPairTarget")(function* (
       candidates.push({ baseDir, variant, state: state.value });
     }
   }
-  const probed = yield* Effect.forEach(
-    candidates,
-    (candidate) =>
-      Effect.map(probeEnvironmentDescriptor(candidate.state.origin), (result) => ({
-        ...candidate,
-        result,
-      })),
-    { concurrency: "unbounded" },
+  const hit = yield* Effect.scoped(
+    Effect.gen(function* () {
+      const fibers = yield* Effect.forEach(candidates, (candidate) =>
+        probeEnvironmentDescriptor(candidate.state.origin).pipe(
+          Effect.forkScoped,
+          Effect.map((fiber) => ({ ...candidate, fiber })),
+        ),
+      );
+      for (const { fiber, baseDir, variant, state } of fibers) {
+        const result = yield* Fiber.join(fiber);
+        if (result._tag === "descriptor") {
+          return Option.some({
+            baseDir,
+            variant,
+            state,
+            descriptor: result.descriptor,
+          } satisfies DiscoveredPairTarget);
+        }
+      }
+      return Option.none<DiscoveredPairTarget>();
+    }),
   );
-  const hit = probed.find((candidate) => candidate.result._tag === "descriptor");
-  if (hit !== undefined && hit.result._tag === "descriptor") {
-    return {
-      baseDir: hit.baseDir,
-      variant: hit.variant,
-      state: hit.state,
-      descriptor: hit.result.descriptor,
-    } satisfies DiscoveredPairTarget;
+  if (Option.isSome(hit)) {
+    return hit.value;
   }
   return yield* new NoRunningServerError({ checkedStatePaths });
 });
@@ -365,7 +368,7 @@ const makePairServerConfig = Effect.fn(function* (input: {
   });
 });
 
-const awaitEnvironmentDescriptor = Effect.fn(function* (baseUrl: string) {
+export const awaitEnvironmentDescriptor = Effect.fn(function* (baseUrl: string) {
   let last: EnvironmentProbeResult = { _tag: "unreachable" };
   for (let attempt = 0; attempt < TAILSCALE_PROBE_ATTEMPTS; attempt += 1) {
     last = yield* probeEnvironmentDescriptor(baseUrl);
