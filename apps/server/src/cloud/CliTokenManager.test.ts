@@ -386,7 +386,8 @@ it.layer(NodeServices.layer)("CliTokenManager.getExisting", (it) => {
         });
         const result = yield* Effect.flip(manager.getExisting);
 
-        assert.instanceOf(result, CliTokenManager.CloudCliCredentialRefreshError);
+        assert.instanceOf(result, CliTokenManager.CloudCliMissingRefreshToken);
+        assert.equal(result._tag, "CloudCliMissingRefreshToken");
         assert.equal(yield* Ref.get(httpCalls), 0);
       }).pipe(provideTestEnv),
   );
