@@ -9,6 +9,7 @@ import * as NetService from "@t3tools/shared/Net";
 import { HostProcessEnvironment } from "@t3tools/shared/hostProcess";
 import { assert, describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Schedule from "effect/Schedule";
@@ -423,8 +424,13 @@ describe("t3 pair", () => {
     ).pipe(Effect.provide(NodeServices.layer)),
   );
 
-  it.live("times out a slow-drip stranger body instead of hanging discovery", () =>
-    Effect.acquireUseRelease(
+  it.live("times out a slow-drip stranger body instead of hanging discovery", () => {
+    // Handoff from the raw Node request handler below: it holds the response
+    // open so the test fiber can drip into it. Completed synchronously from
+    // the callback via `doneUnsafe`, so no manual Effect runtime is created
+    // in the test (see `t3code(no-manual-effect-runtime-in-tests)`).
+    const dripTarget = Deferred.makeUnsafe<NodeHttp.ServerResponse>();
+    return Effect.acquireUseRelease(
       Effect.callback<NodeHttp.Server>((resume) => {
         const server = NodeHttp.createServer((request, response) => {
           if (request.url === "/.well-known/t3/environment") {
@@ -433,17 +439,7 @@ describe("t3 pair", () => {
             // must give up via the body timeout rather than hang on the open
             // stream.
             response.write(`{"environmentId":`);
-            const drip = Effect.runFork(
-              Effect.repeat(
-                Effect.sync(() => {
-                  if (!response.destroyed) {
-                    response.write(" ");
-                  }
-                }),
-                Schedule.spaced("200 millis"),
-              ),
-            );
-            response.on("close", () => Effect.runFork(Fiber.interrupt(drip)));
+            Deferred.doneUnsafe(dripTarget, Effect.succeed(response));
             return;
           }
           response.writeHead(404);
@@ -452,35 +448,52 @@ describe("t3 pair", () => {
         server.listen(0, "127.0.0.1", () => resume(Effect.succeed(server)));
       }),
       (server) =>
-        Effect.gen(function* () {
-          const address = server.address();
-          if (address === null || typeof address === "string") {
-            return Effect.die(new Error("Expected a TCP address"));
-          }
-          const baseDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-pair-drip-test-"));
-          const statePath = NodePath.join(baseDir, "userdata", "server-runtime.json");
-          yield* persistServerRuntimeState({
-            path: statePath,
-            state: yield* makePersistedServerRuntimeState({
-              config: { host: "127.0.0.1", devUrl: undefined },
-              port: address.port,
-            }),
-          });
+        Effect.scoped(
+          Effect.gen(function* () {
+            const address = server.address();
+            if (address === null || typeof address === "string") {
+              return Effect.die(new Error("Expected a TCP address"));
+            }
+            const baseDir = NodeFS.mkdtempSync(
+              NodePath.join(NodeOS.tmpdir(), "t3-pair-drip-test-"),
+            );
+            const statePath = NodePath.join(baseDir, "userdata", "server-runtime.json");
+            yield* persistServerRuntimeState({
+              path: statePath,
+              state: yield* makePersistedServerRuntimeState({
+                config: { host: "127.0.0.1", devUrl: undefined },
+                port: address.port,
+              }),
+            });
 
-          const error = yield* provideCliTestLayers(
-            runCli(["pair", "--base-dir", baseDir]).pipe(Effect.flip),
-          );
+            const cliFiber = yield* provideCliTestLayers(
+              runCli(["pair", "--base-dir", baseDir]).pipe(Effect.flip),
+            ).pipe(Effect.forkChild);
+            // The probe request holds the response open; the drip loop is a
+            // scoped fork, so it is interrupted when the test settles.
+            const dripResponse = yield* Deferred.await(dripTarget);
+            yield* Effect.repeat(
+              Effect.sync(() => {
+                if (!dripResponse.destroyed) {
+                  dripResponse.write(" ");
+                }
+              }),
+              Schedule.spaced("200 millis"),
+            ).pipe(Effect.forkScoped);
 
-          const rendered = String(
-            typeof error === "object" && error !== null && "cause" in error ? error.cause : error,
-          );
-          assert.include(rendered, "No running T3 Code server found.");
-        }),
+            const error = yield* Fiber.join(cliFiber);
+
+            const rendered = String(
+              typeof error === "object" && error !== null && "cause" in error ? error.cause : error,
+            );
+            assert.include(rendered, "No running T3 Code server found.");
+          }),
+        ),
       (server) =>
         Effect.sync(() => {
           server.closeAllConnections();
           server.close();
         }),
-    ).pipe(Effect.provide(NodeServices.layer)),
-  );
+    ).pipe(Effect.provide(NodeServices.layer));
+  });
 });
