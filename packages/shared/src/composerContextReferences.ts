@@ -299,7 +299,7 @@ export function projectComposerContextForProvider(input: {
  * `review-comment_pr-reference-<number>-<hash>`. The number stays in plaintext,
  * so a pasted provider marker can be resolved without its original record.
  */
-const PASTED_PR_REFERENCE_ID_PATTERN = /review-comment_pr-reference-(\d+)-[0-9a-f]+/i;
+const PASTED_PR_REFERENCE_ID_PATTERN = /^review-comment_pr-reference-(\d+)-[0-9a-f]+$/i;
 const PASTED_PR_PROVIDER_MARKER_PATTERN =
   /\[([^\]\n]{0,512}?);\s*ref=(review-comment_pr-reference-\d+-[0-9a-f]+)\]/gi;
 

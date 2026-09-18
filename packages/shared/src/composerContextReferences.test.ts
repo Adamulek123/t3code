@@ -278,6 +278,17 @@ describe("pasted pull-request references", () => {
     ).toBeNull();
   });
 
+  it.each([
+    "prefix_review-comment_pr-reference-11420-c3ac9552f23277bd",
+    "review-comment_pr-reference-11420-c3ac9552f23277bd_suffix",
+    "review-comment_pr-reference-11420-c3ac9552f23277bdz",
+  ])("rejects a noncanonical PR reference ID: %s", (contextId) => {
+    expect(pullRequestNumberFromPastedContextId(contextId)).toBeNull();
+    expect(selfConsistentPastedPullRequestNumber("#11420", contextId)).toBeNull();
+    const marker = `[Review comment: #11420; ref=${contextId}]`;
+    expect(rewritePastedPullRequestMarkers(marker)).toBe(marker);
+  });
+
   it("rewrites provider markers into canonical links", () => {
     const pasted =
       "See [Review comment: #11420; ref=review-comment_pr-reference-11420-c3ac9552f23277bd] please";
