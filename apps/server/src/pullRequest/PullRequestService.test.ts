@@ -727,6 +727,77 @@ it.effect("does not reuse a cached viewer after fresh verification fails", () =>
   }),
 );
 
+it.effect("does not reuse a completed scoped viewer flight after host verification fails", () =>
+  Effect.gen(function* () {
+    let viewerCalls = 0;
+    const service = yield* makeService({
+      projects: [
+        project({ id: "p1", title: "web", workspaceRoot: "/a", repository: "acme/web" }),
+        project({ id: "p2", title: "api", workspaceRoot: "/b", repository: "acme/api" }),
+      ],
+      providers: [
+        fakeProvider("github", {
+          getViewer: () => {
+            viewerCalls += 1;
+            if (viewerCalls === 2 || viewerCalls === 3) return Effect.fail(requestFailed);
+            return Effect.succeed(viewerCalls === 1 ? "Bilal" : "Octocat");
+          },
+        }),
+      ],
+    });
+    const input = { state: "open" as const, projectId: "p1" as ProjectId };
+    assert.deepStrictEqual((yield* service.list(input)).viewers, { "github.com": "Bilal" });
+    assert.deepStrictEqual((yield* service.viewers({})).viewers, {});
+    assert.deepStrictEqual((yield* service.list(input)).viewers, { "github.com": "Octocat" });
+    assert.strictEqual(viewerCalls, 4);
+  }),
+);
+
+for (const scoped of [false, true]) {
+  it.effect(
+    `does not reuse a pending viewer flight after verification fails, scoped: ${scoped}`,
+    () =>
+      Effect.gen(function* () {
+        const firstViewerStarted = yield* Deferred.make<void>();
+        const releaseFirstViewer = yield* Deferred.make<void>();
+        let viewerCalls = 0;
+        const service = yield* makeService({
+          projects: [
+            project({ id: "p1", title: "web", workspaceRoot: "/a", repository: "acme/web" }),
+            project({ id: "p2", title: "api", workspaceRoot: "/b", repository: "acme/api" }),
+          ],
+          providers: [
+            fakeProvider("github", {
+              getViewer: () =>
+                Effect.gen(function* () {
+                  viewerCalls += 1;
+                  if (viewerCalls === 1) {
+                    yield* Deferred.succeed(firstViewerStarted, undefined);
+                    yield* Deferred.await(releaseFirstViewer);
+                    return "Bilal";
+                  }
+                  if (viewerCalls <= 3) return yield* requestFailed;
+                  return "Octocat";
+                }),
+            }),
+          ],
+        });
+        const input = {
+          state: "open" as const,
+          ...(scoped ? { projectId: "p1" as ProjectId } : {}),
+        };
+        const oldListing = yield* service.list(input).pipe(Effect.forkChild);
+        yield* Deferred.await(firstViewerStarted);
+        assert.deepStrictEqual((yield* service.viewers({})).viewers, {});
+        yield* Deferred.succeed(releaseFirstViewer, undefined);
+        assert.deepStrictEqual((yield* Fiber.join(oldListing)).viewers, { "github.com": "Bilal" });
+
+        assert.deepStrictEqual((yield* service.list(input)).viewers, { "github.com": "Octocat" });
+        assert.strictEqual(viewerCalls, 4);
+      }),
+  );
+}
+
 it.effect("strands a cold list when fresh verification wins its viewer race", () =>
   Effect.gen(function* () {
     const firstViewerStarted = yield* Deferred.make<void>();

@@ -806,6 +806,7 @@ export const make = Effect.gen(function* () {
         string,
         SourceControlProviderKind,
         ReadonlyArray<string>,
+        number,
       ];
       return readViewer(host, kind, roots);
     },
@@ -842,7 +843,7 @@ export const make = Effect.gen(function* () {
           const roots =
             viewerRoots.get(host) ?? forHost.map(({ project }) => project.workspaceRoot);
           const uniqueRoots = [...new Set(roots)].sort();
-          const key = JSON.stringify([host, api.kind, uniqueRoots]);
+          const key = JSON.stringify([host, api.kind, uniqueRoots, listingsEpoch]);
           if (options.fresh === true) {
             return readViewer(host, api.kind, uniqueRoots, options).pipe(
               Effect.tap(() => Cache.invalidate(viewerFlights, key)),
