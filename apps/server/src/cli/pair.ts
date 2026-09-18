@@ -232,7 +232,7 @@ const readBoundedProbeBody = (ok: HttpClientResponse.HttpClientResponse) =>
     Effect.timeout(PAIR_PROBE_TIMEOUT),
   );
 
-export const probeEnvironmentDescriptor = (
+const probeEnvironmentDescriptor = (
   baseUrl: string,
 ): Effect.Effect<EnvironmentProbeResult, never, HttpClient.HttpClient> =>
   Effect.gen(function* () {
