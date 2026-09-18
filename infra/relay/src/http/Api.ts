@@ -1277,11 +1277,7 @@ export function resetClerkOAuthClientCache(): void {
   cachedClerkOAuthClient = undefined;
 }
 
-function clerkOAuthClientFor(
-  config: RelayConfiguration.RelayConfiguration["Service"],
-): ClerkOAuthClient {
-  const secretKey = Redacted.value(config.clerkSecretKey);
-  const publishableKey = config.clerkPublishableKey;
+function clerkOAuthClientFor(secretKey: string, publishableKey: string): ClerkOAuthClient {
   const cached = cachedClerkOAuthClient;
   if (
     cached !== undefined &&
@@ -1301,7 +1297,10 @@ function verifyClerkOAuthBearerToken(
 ) {
   return Effect.tryPromise({
     try: async () => {
-      const client = clerkOAuthClientFor(config);
+      const client = clerkOAuthClientFor(
+        Redacted.value(config.clerkSecretKey),
+        config.clerkPublishableKey,
+      );
       const state = await client.authenticateRequest(
         new Request(config.relayIssuer, {
           headers: { authorization: `Bearer ${token}` },
