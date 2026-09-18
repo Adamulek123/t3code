@@ -2313,6 +2313,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     reportDefect: false,
   });
   const pastedPullRequestInFlightRef = useRef(new Set<string>());
+  const pastedPullRequestScopeRef = useRef("");
   // A failed lookup must not deadlock the send gate: drop the pending chips for
   // that number, which also strips the pasted reference from the prompt so the
   // composer no longer sees it as unresolved.
@@ -2350,13 +2351,21 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     const requestRepository = pullRequestRepository;
     const requestTarget = composerDraftTargetKeyRef.current;
     const requestEnvironmentId = environmentId;
+    const requestScope = pastedPullRequestReferenceScope({
+      environmentId: requestEnvironmentId,
+      target: requestTarget,
+      projectId: requestProjectId,
+      repository: requestRepository,
+    });
+    pastedPullRequestScopeRef.current = requestScope;
+    // Ignore completions from an older scope (project/repository changed while
+    // the same draft target stayed active) so stale results never apply to or
+    // drop chips that belong to the current scope.
+    const isStaleCompletion = () =>
+      composerDraftTargetKeyRef.current !== requestTarget ||
+      pastedPullRequestScopeRef.current !== requestScope;
     for (const { number } of unresolved) {
-      const inFlightKey = `${pastedPullRequestReferenceScope({
-        environmentId: requestEnvironmentId,
-        target: requestTarget,
-        projectId: requestProjectId,
-        repository: requestRepository,
-      })}:${number}`;
+      const inFlightKey = `${requestScope}:${number}`;
       if (pastedPullRequestInFlightRef.current.has(inFlightKey)) continue;
       pastedPullRequestInFlightRef.current.add(inFlightKey);
       void readPastedPullRequestDetail({
@@ -2365,7 +2374,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       })
         .then((result) => {
           pastedPullRequestInFlightRef.current.delete(inFlightKey);
-          if (composerDraftTargetKeyRef.current !== requestTarget) return;
+          if (isStaleCompletion()) return;
           if (result._tag !== "Success") {
             dropFailedPastedPullRequestReferences(number);
             return;
@@ -2386,7 +2395,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         })
         .catch(() => {
           pastedPullRequestInFlightRef.current.delete(inFlightKey);
-          if (composerDraftTargetKeyRef.current !== requestTarget) return;
+          if (isStaleCompletion()) return;
           dropFailedPastedPullRequestReferences(number);
         });
     }
