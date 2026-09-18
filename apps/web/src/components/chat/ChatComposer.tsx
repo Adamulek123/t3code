@@ -219,6 +219,8 @@ import {
   uploadedAttachmentContextRecord,
   fileContextReference,
   imageContextReference,
+  pastedPullRequestReferenceScope,
+  unresolvedPastedPullRequestReferences,
   previewAnnotationContextId,
   previewAnnotationContextRecord,
   previewAnnotationFromRecord,
@@ -231,10 +233,7 @@ import {
   terminalContextRecord,
 } from "~/lib/composerContextRecords";
 import { requestConfirmDialog } from "~/confirmDialog";
-import {
-  collectComposerContextReferences,
-  selfConsistentPastedPullRequestNumber,
-} from "@t3tools/shared/composerContextReferences";
+import { collectComposerContextReferences } from "@t3tools/shared/composerContextReferences";
 import { encodeComposerContextFragment } from "@t3tools/shared/composerContextClipboard";
 import type { ComposerContextClipboardFragment, ComposerContextRecord } from "@t3tools/contracts";
 import { resolveAssetUrl } from "~/assets/assetUrls";
@@ -2343,66 +2342,64 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   );
 
   const addComposerDraftReviewComment = useComposerDraftStore((store) => store.addReviewComment);
-  // Pasted `pr-reference` links arrive without records. Ensure a pending chip
-  // immediately (loader, not "unavailable"), then upgrade it in place once the
-  // summary loads. Single flight per number; failures keep the loader so a
-  // retry happens on the next prompt edit rather than busy-looping.
   const readPastedPullRequestDetail = useAtomQueryRunner(pullRequestEnvironment.detail, {
     reportFailure: false,
     reportDefect: false,
   });
-  const pastedPullRequestInFlightRef = useRef(new Set<number>());
+  const pastedPullRequestInFlightRef = useRef(new Set<string>());
   useEffect(() => {
     if (pullRequestProjectId === null || pullRequestRepository === null) return;
-    const numbers = new Set<number>();
-    for (const occurrence of collectComposerContextReferences(prompt)) {
-      if (occurrence.kind !== "review-comment") continue;
-      // Malformed pastes (label number disagrees with the ref) never resolve.
-      const number = selfConsistentPastedPullRequestNumber(occurrence.label, occurrence.contextId);
-      if (number !== null) numbers.add(number);
-    }
-    if (numbers.size === 0) return;
-    const byId = new Map(composerReviewComments.map((comment) => [comment.id, comment]));
-    for (const number of numbers) {
-      const existing = byId.get(`pr-reference:${number}`);
-      if (existing?.pullRequest !== undefined) continue;
-      if (existing === undefined) {
+    const unresolved = unresolvedPastedPullRequestReferences(prompt, composerReviewComments);
+    if (unresolved.length === 0) return;
+    for (const { number, contextId, comment } of unresolved) {
+      if (comment === undefined) {
         addComposerDraftReviewComment(
           composerDraftTarget,
-          buildPendingPullRequestReferenceContext(number),
+          {
+            ...buildPendingPullRequestReferenceContext(number),
+            id: contextId.slice("review-comment_".length),
+          },
           { appendReference: false },
         );
       }
-      if (pastedPullRequestInFlightRef.current.has(number)) continue;
-      pastedPullRequestInFlightRef.current.add(number);
-      const requestProjectId = pullRequestProjectId;
-      const requestRepository = pullRequestRepository;
-      const requestTarget = composerDraftTargetKeyRef.current;
+    }
+    const requestProjectId = pullRequestProjectId;
+    const requestRepository = pullRequestRepository;
+    const requestTarget = composerDraftTargetKeyRef.current;
+    const requestEnvironmentId = environmentId;
+    for (const { number } of unresolved) {
+      const inFlightKey = `${pastedPullRequestReferenceScope({
+        environmentId: requestEnvironmentId,
+        target: requestTarget,
+        projectId: requestProjectId,
+        repository: requestRepository,
+      })}:${number}`;
+      if (pastedPullRequestInFlightRef.current.has(inFlightKey)) continue;
+      pastedPullRequestInFlightRef.current.add(inFlightKey);
       void readPastedPullRequestDetail({
-        environmentId,
+        environmentId: requestEnvironmentId,
         input: { projectId: requestProjectId, repository: requestRepository, number },
       })
         .then((result) => {
-          pastedPullRequestInFlightRef.current.delete(number);
+          pastedPullRequestInFlightRef.current.delete(inFlightKey);
           if (composerDraftTargetKeyRef.current !== requestTarget) return;
           if (result._tag !== "Success") return;
-          const detail = result.value;
-          addComposerDraftReviewComment(
-            composerDraftTarget,
-            buildPullRequestReferenceContext({
-              number: detail.number,
-              title: detail.title,
-              url: detail.url,
-              headBranch: detail.headBranch,
-              baseBranch: detail.baseBranch,
-              state: detail.state,
-              isDraft: detail.isDraft,
-            }),
-            { appendReference: false },
-          );
+          const latest = useComposerDraftStore.getState().getComposerDraft(composerDraftTarget);
+          if (!latest) return;
+          for (const pending of unresolvedPastedPullRequestReferences(
+            latest.prompt,
+            latest.reviewComments,
+          )) {
+            if (pending.number !== number || !pending.comment) continue;
+            addComposerDraftReviewComment(
+              composerDraftTarget,
+              { ...buildPullRequestReferenceContext(result.value), id: pending.comment.id },
+              { appendReference: false },
+            );
+          }
         })
         .catch(() => {
-          pastedPullRequestInFlightRef.current.delete(number);
+          pastedPullRequestInFlightRef.current.delete(inFlightKey);
         });
     }
   }, [
@@ -3887,6 +3884,22 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           type: "info",
           title: "Still bringing a pasted attachment into this message.",
           description: "Send again once its chip resolves.",
+        });
+        return;
+      }
+      if (
+        activePendingProgress === null &&
+        unresolvedPastedPullRequestReferences(
+          promptRef.current,
+          useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)?.reviewComments ??
+            [],
+        ).length > 0
+      ) {
+        event?.preventDefault();
+        toastManager.add({
+          type: "info",
+          title: "Still resolving a pasted pull request.",
+          description: "Send again once its chip stops loading.",
         });
         return;
       }
