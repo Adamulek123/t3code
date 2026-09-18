@@ -2313,7 +2313,19 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     reportDefect: false,
   });
   const pastedPullRequestInFlightRef = useRef(new Set<string>());
+  // Updated during render (never in the passive effect) so a lookup settling
+  // between commit and effect already sees the new scope and is discarded.
   const pastedPullRequestScopeRef = useRef("");
+  const pastedPullRequestScope =
+    pullRequestProjectId === null || pullRequestRepository === null
+      ? "unavailable"
+      : pastedPullRequestReferenceScope({
+          environmentId,
+          target: composerDraftTargetKeyRef.current,
+          projectId: pullRequestProjectId,
+          repository: pullRequestRepository,
+        });
+  pastedPullRequestScopeRef.current = pastedPullRequestScope;
   // A failed lookup must not deadlock the send gate: drop the pending chips for
   // that number, which also strips the pasted reference from the prompt so the
   // composer no longer sees it as unresolved.
@@ -2351,13 +2363,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     const requestRepository = pullRequestRepository;
     const requestTarget = composerDraftTargetKeyRef.current;
     const requestEnvironmentId = environmentId;
-    const requestScope = pastedPullRequestReferenceScope({
-      environmentId: requestEnvironmentId,
-      target: requestTarget,
-      projectId: requestProjectId,
-      repository: requestRepository,
-    });
-    pastedPullRequestScopeRef.current = requestScope;
+    const requestScope = pastedPullRequestScope;
     // Ignore completions from an older scope (project/repository changed while
     // the same draft target stayed active) so stale results never apply to or
     // drop chips that belong to the current scope.
@@ -2409,6 +2415,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     addComposerDraftReviewComment,
     readPastedPullRequestDetail,
     dropFailedPastedPullRequestReferences,
+    pastedPullRequestScope,
   ]);
 
   const composerMenuItems = useMemo<ComposerCommandItem[]>(() => {
