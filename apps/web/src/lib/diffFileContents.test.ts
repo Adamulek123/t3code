@@ -101,7 +101,7 @@ const PR_SOURCE = {
   cacheKey: "pull-request:project-1/acme/web#7:commits:2:abc",
 };
 
-function prFileDiff(name = "b/src/file.ts", type: FileDiffMetadata["type"] = "change") {
+function prFileDiff(name = "src/file.ts", type: FileDiffMetadata["type"] = "change") {
   return { type, name } as FileDiffMetadata;
 }
 
@@ -164,11 +164,11 @@ describe("createPullRequestDiffFileContentsLoader", () => {
     );
     const load = createPullRequestDiffFileContentsLoader(getDiffFileContents, PR_SOURCE);
 
-    await load(prFileDiff("b/src/a.ts"));
-    await load(prFileDiff("b/src/b.ts"));
-    await load(prFileDiff("b/src/a.ts"));
+    await load(prFileDiff("src/a.ts"));
+    await load(prFileDiff("src/b.ts"));
+    await load(prFileDiff("src/a.ts"));
     // Same paths but another comparison: the old side of a deletion is another read.
-    await load(prFileDiff("b/src/a.ts", "deleted"));
+    await load(prFileDiff("src/a.ts", "deleted"));
 
     expect(getDiffFileContents).toHaveBeenCalledTimes(3);
   });
@@ -205,18 +205,18 @@ describe("createPullRequestDiffFileContentsLoader", () => {
     const load = createPullRequestDiffFileContentsLoader(getDiffFileContents, PR_SOURCE);
 
     for (let index = 0; index < PULL_REQUEST_FILE_CONTENTS_CACHE_MAX_ENTRIES + 1; index += 1) {
-      await load(prFileDiff(`b/src/file-${index}.ts`));
+      await load(prFileDiff(`src/file-${index}.ts`));
     }
     // file-0 fell out; file-1 is still held.
-    await load(prFileDiff("b/src/file-1.ts"));
-    await load(prFileDiff("b/src/file-0.ts"));
+    await load(prFileDiff("src/file-1.ts"));
+    await load(prFileDiff("src/file-0.ts"));
 
     expect(getDiffFileContents).toHaveBeenCalledTimes(
       PULL_REQUEST_FILE_CONTENTS_CACHE_MAX_ENTRIES + 2,
     );
     // file-1 survived file-0's return only with recency: FIFO would have dropped file-1 to
     // make room for file-0, so this re-read stays free on LRU and costs one RPC on FIFO.
-    await load(prFileDiff("b/src/file-1.ts"));
+    await load(prFileDiff("src/file-1.ts"));
     expect(getDiffFileContents).toHaveBeenCalledTimes(
       PULL_REQUEST_FILE_CONTENTS_CACHE_MAX_ENTRIES + 2,
     );
@@ -263,15 +263,15 @@ describe("createPullRequestDiffFileContentsLoader", () => {
     );
     const load = createPullRequestDiffFileContentsLoader(getDiffFileContents, PR_SOURCE);
 
-    await expect(load(prFileDiff("b/src/a.ts"))).resolves.toMatchObject({
+    await expect(load(prFileDiff("src/a.ts"))).resolves.toMatchObject({
       newFile: { contents: "after@head-1\n" },
     });
     revision = { baseSha: "base-1", headSha: "head-2" };
-    await expect(load(prFileDiff("b/src/b.ts"))).resolves.toMatchObject({
+    await expect(load(prFileDiff("src/b.ts"))).resolves.toMatchObject({
       newFile: { contents: "after@head-2\n" },
     });
     // Settled under head-1, busted by b.ts's read: a.ts walks again and serves head-2.
-    await expect(load(prFileDiff("b/src/a.ts"))).resolves.toMatchObject({
+    await expect(load(prFileDiff("src/a.ts"))).resolves.toMatchObject({
       newFile: { contents: "after@head-2\n" },
     });
     expect(getDiffFileContents).toHaveBeenCalledTimes(3);
@@ -291,12 +291,12 @@ describe("createPullRequestDiffFileContentsLoader", () => {
     );
     const load = createPullRequestDiffFileContentsLoader(getDiffFileContents, PR_SOURCE);
 
-    await expect(load(prFileDiff("b/src/a.ts"))).resolves.toMatchObject({
+    await expect(load(prFileDiff("src/a.ts"))).resolves.toMatchObject({
       oldFile: { contents: "before@base-1\n" },
     });
     revision = { baseSha: "base-2", headSha: "head-1" };
-    await load(prFileDiff("b/src/b.ts"));
-    await expect(load(prFileDiff("b/src/a.ts"))).resolves.toMatchObject({
+    await load(prFileDiff("src/b.ts"));
+    await expect(load(prFileDiff("src/a.ts"))).resolves.toMatchObject({
       oldFile: { contents: "before@base-2\n" },
     });
     expect(getDiffFileContents).toHaveBeenCalledTimes(3);
@@ -335,8 +335,8 @@ describe("createPullRequestDiffFileContentsLoader", () => {
     );
     const load = createPullRequestDiffFileContentsLoader(getDiffFileContents, PR_SOURCE);
 
-    const pendingA = load(prFileDiff("b/src/a.ts"));
-    const pendingB = load(prFileDiff("b/src/b.ts"));
+    const pendingA = load(prFileDiff("src/a.ts"));
+    const pendingB = load(prFileDiff("src/b.ts"));
     // Newer resolves first, older lands late.
     release.get("src/b.ts")?.();
     await pendingB;
@@ -345,13 +345,13 @@ describe("createPullRequestDiffFileContentsLoader", () => {
       newFile: { contents: "after@head-1\n" },
     });
     // Newer stayed settled; the late older read was served without storing.
-    await expect(load(prFileDiff("b/src/b.ts"))).resolves.toMatchObject({
+    await expect(load(prFileDiff("src/b.ts"))).resolves.toMatchObject({
       newFile: { contents: "after@head-2\n" },
     });
     expect(getDiffFileContents).toHaveBeenCalledTimes(2);
     // The world moved on: a refetch now serves the newer comparison and busts to it.
     echoByPath.set("src/a.ts", { baseSha: "base-1", headSha: "head-2" });
-    await expect(load(prFileDiff("b/src/a.ts"))).resolves.toMatchObject({
+    await expect(load(prFileDiff("src/a.ts"))).resolves.toMatchObject({
       newFile: { contents: "after@head-2\n" },
     });
     expect(getDiffFileContents).toHaveBeenCalledTimes(3);
@@ -372,12 +372,12 @@ describe("createPullRequestDiffFileContentsLoader", () => {
     );
     const load = createPullRequestDiffFileContentsLoader(getDiffFileContents, PR_SOURCE);
 
-    await load(prFileDiff("b/src/a.ts"));
+    await load(prFileDiff("src/a.ts"));
     shouldFail = true;
-    await expect(load(prFileDiff("b/src/b.ts"))).rejects.toBe(failure);
+    await expect(load(prFileDiff("src/b.ts"))).rejects.toBe(failure);
     shouldFail = false;
     // The failed read touched neither the memo nor the revision: a.ts stays settled.
-    await load(prFileDiff("b/src/a.ts"));
+    await load(prFileDiff("src/a.ts"));
     expect(getDiffFileContents).toHaveBeenCalledTimes(2);
   });
 
@@ -392,9 +392,9 @@ describe("createPullRequestDiffFileContentsLoader", () => {
     );
     const load = createPullRequestDiffFileContentsLoader(getDiffFileContents, PR_SOURCE);
 
-    await load(prFileDiff("b/src/a.ts"));
-    await load(prFileDiff("b/src/b.ts"));
-    await load(prFileDiff("b/src/a.ts"));
+    await load(prFileDiff("src/a.ts"));
+    await load(prFileDiff("src/b.ts"));
+    await load(prFileDiff("src/a.ts"));
 
     expect(getDiffFileContents).toHaveBeenCalledTimes(2);
   });
@@ -410,9 +410,9 @@ describe("createPullRequestDiffFileContentsLoader", () => {
     );
     const load = createPullRequestDiffFileContentsLoader(getDiffFileContents, PR_SOURCE);
 
-    await load(prFileDiff("b/src/a.ts"));
-    await load(prFileDiff("b/src/b.ts"));
-    await load(prFileDiff("b/src/a.ts"));
+    await load(prFileDiff("src/a.ts"));
+    await load(prFileDiff("src/b.ts"));
+    await load(prFileDiff("src/a.ts"));
 
     expect(getDiffFileContents).toHaveBeenCalledTimes(2);
   });
@@ -450,13 +450,13 @@ describe("createPullRequestDiffFileContentsLoader", () => {
     );
     const load = createPullRequestDiffFileContentsLoader(getDiffFileContents, PR_SOURCE);
 
-    const stale = load(prFileDiff("b/src/a.ts"));
-    const establishing = load(prFileDiff("b/src/b.ts"));
+    const stale = load(prFileDiff("src/a.ts"));
+    const establishing = load(prFileDiff("src/b.ts"));
     release.get("src/b.ts")?.();
     await establishing;
     // The world moved on before the replacement read: it serves the new comparison.
     echoByPath.set("src/a.ts", { baseSha: "base-1", headSha: "head-2" });
-    const replacement = load(prFileDiff("b/src/a.ts"));
+    const replacement = load(prFileDiff("src/a.ts"));
     expect(getDiffFileContents).toHaveBeenCalledTimes(3);
     release.get("src/a.ts")?.();
     await expect(stale).resolves.toMatchObject({
@@ -466,7 +466,7 @@ describe("createPullRequestDiffFileContentsLoader", () => {
       newFile: { contents: "after@head-2\n" },
     });
     // The replacement settled; the stale landing stored nothing.
-    await expect(load(prFileDiff("b/src/a.ts"))).resolves.toMatchObject({
+    await expect(load(prFileDiff("src/a.ts"))).resolves.toMatchObject({
       newFile: { contents: "after@head-2\n" },
     });
     expect(getDiffFileContents).toHaveBeenCalledTimes(3);
@@ -490,7 +490,7 @@ describe("createPullRequestDiffFileContentsLoader", () => {
     expect(first.newFile?.cacheKey).toBe(`${PR_SOURCE.cacheKey}:new:src/file.ts:base-1@head-1`);
     expect(first.oldFile?.cacheKey).toBe(`${PR_SOURCE.cacheKey}:old:src/file.ts:base-1@head-1`);
     revision = { baseSha: "base-1", headSha: "head-2" };
-    const second = await load(prFileDiff("b/src/other.ts"));
+    const second = await load(prFileDiff("src/other.ts"));
     expect(second.newFile?.cacheKey).toBe(`${PR_SOURCE.cacheKey}:new:src/other.ts:base-1@head-2`);
 
     // No echo (older server): exactly the historical shape, so existing highlights keep
@@ -519,11 +519,11 @@ describe("createPullRequestDiffFileContentsLoader", () => {
     );
     const load = createPullRequestDiffFileContentsLoader(getDiffFileContents, PR_SOURCE);
 
-    await load(prFileDiff("b/src/big-a.ts"));
-    await load(prFileDiff("b/src/big-b.ts"));
+    await load(prFileDiff("src/big-a.ts"));
+    await load(prFileDiff("src/big-b.ts"));
     expect(getDiffFileContents).toHaveBeenCalledTimes(2);
     // Two entries are far below the entry cap, so a miss here proves the size arm evicted.
-    await load(prFileDiff("b/src/big-a.ts"));
+    await load(prFileDiff("src/big-a.ts"));
     expect(getDiffFileContents).toHaveBeenCalledTimes(3);
   });
 });
