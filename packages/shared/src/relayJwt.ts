@@ -52,28 +52,36 @@ function normalizePem(value: string): string {
 // JWT sign/verify (link, connect, status, publish, DPoP). Keys rotate rarely,
 // so cache the imported keys by normalized PEM with a small FIFO bound.
 const MAX_CACHED_KEYS = 50;
-const privateKeyCache = new Map<string, Awaited<ReturnType<typeof importPKCS8>>>();
-const publicKeyCache = new Map<string, Awaited<ReturnType<typeof importSPKI>>>();
+const privateKeyCache = new Map<string, Promise<Awaited<ReturnType<typeof importPKCS8>>>>();
+const publicKeyCache = new Map<string, Promise<Awaited<ReturnType<typeof importSPKI>>>>();
 
 function cachedKeyImport<T>(
-  cache: Map<string, T>,
+  cache: Map<string, Promise<T>>,
   normalizedPem: string,
   importKey: (pem: string) => Promise<T>,
 ): Promise<T> {
   const existing = cache.get(normalizedPem);
   if (existing !== undefined) {
-    return Promise.resolve(existing);
+    return existing;
   }
-  return importKey(normalizedPem).then((key) => {
-    if (cache.size >= MAX_CACHED_KEYS) {
-      const oldest = cache.keys().next();
-      if (!oldest.done) {
-        cache.delete(oldest.value);
+  let pending: Promise<T>;
+  pending = importKey(normalizedPem).then(
+    (key) => key,
+    (error: unknown) => {
+      if (cache.get(normalizedPem) === pending) {
+        cache.delete(normalizedPem);
       }
+      throw error;
+    },
+  );
+  if (cache.size >= MAX_CACHED_KEYS) {
+    const oldest = cache.keys().next();
+    if (!oldest.done) {
+      cache.delete(oldest.value);
     }
-    cache.set(normalizedPem, key);
-    return key;
-  });
+  }
+  cache.set(normalizedPem, pending);
+  return pending;
 }
 
 export function signRelayJwt(input: {
