@@ -2347,6 +2347,23 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     reportDefect: false,
   });
   const pastedPullRequestInFlightRef = useRef(new Set<string>());
+  // A failed lookup must not deadlock the send gate: drop the pending chips for
+  // that number, which also strips the pasted reference from the prompt so the
+  // composer no longer sees it as unresolved.
+  const dropFailedPastedPullRequestReferences = useCallback(
+    (number: number) => {
+      const latest = useComposerDraftStore.getState().getComposerDraft(composerDraftTarget);
+      if (!latest) return;
+      for (const pending of unresolvedPastedPullRequestReferences(
+        latest.prompt,
+        latest.reviewComments,
+      )) {
+        if (pending.number !== number || !pending.comment) continue;
+        removeComposerDraftReviewComment(composerDraftTarget, pending.comment.id);
+      }
+    },
+    [composerDraftTarget, removeComposerDraftReviewComment],
+  );
   useEffect(() => {
     if (pullRequestProjectId === null || pullRequestRepository === null) return;
     const unresolved = unresolvedPastedPullRequestReferences(prompt, composerReviewComments);
@@ -2383,7 +2400,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         .then((result) => {
           pastedPullRequestInFlightRef.current.delete(inFlightKey);
           if (composerDraftTargetKeyRef.current !== requestTarget) return;
-          if (result._tag !== "Success") return;
+          if (result._tag !== "Success") {
+            dropFailedPastedPullRequestReferences(number);
+            return;
+          }
           const latest = useComposerDraftStore.getState().getComposerDraft(composerDraftTarget);
           if (!latest) return;
           for (const pending of unresolvedPastedPullRequestReferences(
@@ -2400,6 +2420,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         })
         .catch(() => {
           pastedPullRequestInFlightRef.current.delete(inFlightKey);
+          if (composerDraftTargetKeyRef.current !== requestTarget) return;
+          dropFailedPastedPullRequestReferences(number);
         });
     }
   }, [
@@ -2411,6 +2433,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     composerDraftTarget,
     addComposerDraftReviewComment,
     readPastedPullRequestDetail,
+    dropFailedPastedPullRequestReferences,
   ]);
 
   const composerMenuItems = useMemo<ComposerCommandItem[]>(() => {
