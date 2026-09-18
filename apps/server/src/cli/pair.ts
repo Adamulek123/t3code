@@ -259,7 +259,8 @@ const probeEnvironmentDescriptor = (
     // classified without reading the body at all, and JSON bodies are read
     // through the bounded stream above — never buffered-then-checked.
     const contentType = response.headers["content-type"] ?? "";
-    if (!contentType.toLowerCase().includes("json")) {
+    const mediaType = contentType.split(";", 1)[0]?.trim().toLowerCase();
+    if (mediaType !== "application/json" && !mediaType?.endsWith("+json")) {
       return { _tag: "not-a-t3-server" } as const;
     }
     const descriptor = yield* HttpClientResponse.filterStatusOk(response).pipe(

@@ -9,7 +9,9 @@ import * as NetService from "@t3tools/shared/Net";
 import { HostProcessEnvironment } from "@t3tools/shared/hostProcess";
 import { assert, describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Schedule from "effect/Schedule";
 import * as TestConsole from "effect/testing/TestConsole";
 import { Command } from "effect/unstable/cli";
 
@@ -431,15 +433,17 @@ describe("t3 pair", () => {
             // must give up via the body timeout rather than hang on the open
             // stream.
             response.write(`{"environmentId":`);
-            const timer = setInterval(() => {
-              if (response.destroyed) {
-                clearInterval(timer);
-                return;
-              }
-              response.write(" ");
-            }, 200);
-            timer.unref();
-            response.on("close", () => clearInterval(timer));
+            const drip = Effect.runFork(
+              Effect.repeat(
+                Effect.sync(() => {
+                  if (!response.destroyed) {
+                    response.write(" ");
+                  }
+                }),
+                Schedule.spaced("200 millis"),
+              ),
+            );
+            response.on("close", () => Effect.runFork(Fiber.interrupt(drip)));
             return;
           }
           response.writeHead(404);
