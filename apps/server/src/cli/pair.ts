@@ -150,6 +150,11 @@ export class DevServerNotProxiableError extends Schema.TaggedError<DevServerNotP
 
 const isDevServerNotProxiableError = Schema.is(DevServerNotProxiableError);
 
+// Compiled once: the probe decodes every candidate response through it.
+const decodeProbeDescriptor = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(ExecutionEnvironmentDescriptor),
+);
+
 /**
  * The local endpoint Tailscale Serve should proxy to. Dev servers are
  * single-origin, so the web dev server's port is the one to publish; the
@@ -266,9 +271,9 @@ const probeEnvironmentDescriptor = (
     const descriptor = yield* HttpClientResponse.filterStatusOk(response).pipe(
       Effect.flatMap(readBoundedProbeBody),
       Effect.flatMap((body) =>
-        Schema.decodeUnknownEffect(Schema.fromJsonString(ExecutionEnvironmentDescriptor))(
-          body,
-        ).pipe(Effect.mapError(() => ({ _tag: "not-a-t3-server" }) as const)),
+        decodeProbeDescriptor(body).pipe(
+          Effect.mapError(() => ({ _tag: "not-a-t3-server" }) as const),
+        ),
       ),
       Effect.mapError(() => ({ _tag: "not-a-t3-server" }) as const),
     );
