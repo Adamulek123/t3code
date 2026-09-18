@@ -3885,8 +3885,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         });
         return;
       }
+      // Only gate when a lookup can actually resolve the chip; without a
+      // project and repository the pasted reference stays unresolved forever
+      // and must not block sending.
       if (
         activePendingProgress === null &&
+        pullRequestProjectId !== null &&
+        pullRequestRepository !== null &&
         unresolvedPastedPullRequestReferences(
           promptRef.current,
           useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)?.reviewComments ??
@@ -3928,6 +3933,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       noProviderAvailable,
       onSend,
       promptRef,
+      pullRequestProjectId,
+      pullRequestRepository,
       shouldBlurMobileComposerOnSubmit,
     ],
   );
