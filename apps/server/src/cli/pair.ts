@@ -31,6 +31,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as References from "effect/References";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import { Command, Flag, GlobalFlag } from "effect/unstable/cli";
 import {
   FetchHttpClient,
@@ -207,7 +208,32 @@ type EnvironmentProbeResult =
   | { readonly _tag: "unreachable" }
   | { readonly _tag: "not-a-t3-server" };
 
-const probeEnvironmentDescriptor = (
+const readBoundedProbeBody = (ok: HttpClientResponse.HttpClientResponse) =>
+  ok.stream.pipe(
+    Stream.runFoldEffect(
+      () => ({ bytes: 0, chunks: [] as Array<Uint8Array> }),
+      (acc, chunk) => {
+        if (acc.bytes + chunk.byteLength > MAX_PROBE_BODY_BYTES) {
+          return Effect.fail({ _tag: "not-a-t3-server" } as const);
+        }
+        acc.bytes += chunk.byteLength;
+        acc.chunks.push(chunk);
+        return Effect.succeed(acc);
+      },
+    ),
+    Effect.map(({ bytes, chunks }) => {
+      const merged = new Uint8Array(bytes);
+      let offset = 0;
+      for (const chunk of chunks) {
+        merged.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      return new TextDecoder().decode(merged);
+    }),
+    Effect.timeout(PAIR_PROBE_TIMEOUT),
+  );
+
+export const probeEnvironmentDescriptor = (
   baseUrl: string,
 ): Effect.Effect<EnvironmentProbeResult, never, HttpClient.HttpClient> =>
   Effect.gen(function* () {
@@ -222,27 +248,27 @@ const probeEnvironmentDescriptor = (
     // backend that is gone — a stale mapping, not a live occupant. Treating
     // it as unreachable lets `t3 pair --tailscale` repair its own mapping
     // after the server's port changed. Drain the body so the pooled
-    // connection is reusable for the re-configured mapping.
+    // connection is reusable for the re-configured mapping; the drain itself
+    // is time-bounded and best-effort.
     if (response.status === 502 || response.status === 503 || response.status === 504) {
-      yield* Effect.ignore(response.text);
+      yield* Effect.ignore(readBoundedProbeBody(response));
       return { _tag: "unreachable" } as const;
     }
     // Anything else that answered HTTP but not with a valid descriptor is
-    // some other service. Refuse to buffer + decode a stranger's body blind:
-    // the descriptor is a few hundred bytes of JSON, so non-JSON content or
-    // anything over the cap is classified without a Schema decode.
+    // some other service. Refuse to decode a stranger's body blind: the
+    // descriptor is a few hundred bytes of JSON, so non-JSON content is
+    // classified without reading the body at all, and JSON bodies are read
+    // through the bounded stream above — never buffered-then-checked.
     const contentType = response.headers["content-type"] ?? "";
-    if (!contentType.includes("json")) {
+    if (!contentType.toLowerCase().includes("json")) {
       return { _tag: "not-a-t3-server" } as const;
     }
     const descriptor = yield* HttpClientResponse.filterStatusOk(response).pipe(
-      Effect.flatMap((ok) => ok.text),
+      Effect.flatMap(readBoundedProbeBody),
       Effect.flatMap((body) =>
-        body.length > MAX_PROBE_BODY_BYTES
-          ? Effect.fail({ _tag: "not-a-t3-server" } as const)
-          : Schema.decodeUnknownEffect(Schema.fromJsonString(ExecutionEnvironmentDescriptor))(
-              body,
-            ).pipe(Effect.mapError(() => ({ _tag: "not-a-t3-server" }) as const)),
+        Schema.decodeUnknownEffect(Schema.fromJsonString(ExecutionEnvironmentDescriptor))(
+          body,
+        ).pipe(Effect.mapError(() => ({ _tag: "not-a-t3-server" }) as const)),
       ),
       Effect.mapError(() => ({ _tag: "not-a-t3-server" }) as const),
     );
