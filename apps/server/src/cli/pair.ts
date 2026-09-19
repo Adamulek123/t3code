@@ -270,8 +270,14 @@ const probeEnvironmentDescriptor = (
       yield* Effect.ignore(readBoundedProbeBody(response));
       return { _tag: "not-a-t3-server" } as const;
     }
-    const descriptor = yield* HttpClientResponse.filterStatusOk(response).pipe(
-      Effect.flatMap(readBoundedProbeBody),
+    // A non-2xx answer is still a stranger, but its body must be drained
+    // boundedly for the same reason: an unconsumed stream pins the pooled
+    // connection across repeated probes.
+    if (response.status < 200 || response.status >= 300) {
+      yield* Effect.ignore(readBoundedProbeBody(response));
+      return { _tag: "not-a-t3-server" } as const;
+    }
+    const descriptor = yield* readBoundedProbeBody(response).pipe(
       Effect.flatMap((body) =>
         decodeProbeDescriptor(body).pipe(
           Effect.mapError(() => ({ _tag: "not-a-t3-server" }) as const),
