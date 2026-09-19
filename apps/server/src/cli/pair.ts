@@ -262,11 +262,13 @@ const probeEnvironmentDescriptor = (
     // Anything else that answered HTTP but not with a valid descriptor is
     // some other service. Refuse to decode a stranger's body blind: the
     // descriptor is a few hundred bytes of JSON, so non-JSON content is
-    // classified without reading the body at all, and JSON bodies are read
-    // through the bounded stream above — never buffered-then-checked.
+    // classified without decoding, but the body is still drained boundedly
+    // so the pooled connection is reusable — a stranger that holds its body
+    // open must not pin pool slots across repeated probes.
     const contentType = response.headers["content-type"] ?? "";
     const mediaType = contentType.split(";", 1)[0]?.trim().toLowerCase();
     if (mediaType !== "application/json" && !mediaType?.endsWith("+json")) {
+      yield* Effect.ignore(readBoundedProbeBody(response));
       return { _tag: "not-a-t3-server" } as const;
     }
     const descriptor = yield* HttpClientResponse.filterStatusOk(response).pipe(
