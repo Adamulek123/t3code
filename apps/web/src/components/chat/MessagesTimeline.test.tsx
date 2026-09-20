@@ -304,6 +304,52 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain('aria-label="Next turn"');
   });
 
+  it("renders expanded tool groups flat in page flow without a nested scroller", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    vi.stubGlobal("requestAnimationFrame", () => 0);
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    const labels = ["Alpha sync", "Beta sync", "Gamma sync"];
+    const entries = labels.map((label, index) => ({
+      id: `entry-work-${index}`,
+      kind: "work" as const,
+      createdAt: MESSAGE_CREATED_AT,
+      entry: {
+        id: `work-${index}`,
+        createdAt: MESSAGE_CREATED_AT,
+        toolCallId: `call-${index}`,
+        label,
+        tone: "tool" as const,
+        toolLifecycleStatus: "completed" as const,
+      },
+    }));
+    let renderer: ReactTestRenderer | undefined;
+    try {
+      await act(() => {
+        renderer = create(<MessagesTimeline {...buildProps()} timelineEntries={entries} />);
+      });
+      // Open the collapsed group toggle (individual rows without expandable
+      // output render as plain divs, so only the group toggle matches).
+      const toggles = renderer!.root
+        .findAllByType("button")
+        .filter((button) => button.props["aria-expanded"] === false);
+      expect(toggles).toHaveLength(1);
+      await act(() => toggles[0]!.props.onClick());
+      const group = renderer!.root.findByProps({ "aria-label": "Tool calls" });
+      expect(group.type).toBe("section");
+      const markup = JSON.stringify(renderer!.toJSON());
+      for (const label of labels) expect(markup).toContain(label);
+      expect(
+        renderer!.root.findAll(
+          (node) =>
+            typeof node.type === "string" && node.props?.["data-tool-group-scroll"] !== undefined,
+        ),
+      ).toHaveLength(0);
+      expect(markup).not.toContain("scrollbar-gutter-stable");
+    } finally {
+      await act(() => renderer?.unmount());
+    }
+  });
+
   // Expanding history uses this suite's existing test renderer, deprecated in
   // React 19. Migrate these interaction tests together when a DOM test setup is added.
   it.each([{}, { text: "Text-only answer", file: "Answer with a file" }])(
