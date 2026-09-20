@@ -27,6 +27,7 @@ import {
   liveWorkEntryLabel,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
+  resolveExpandedWorkGroupAppendTarget,
   shouldPreserveAssistantLineBreaks,
   type MessagesTimelineRow,
   type MessagesTimelineRowsProjection,
@@ -41,6 +42,32 @@ import {
   type TimelineEntriesProjection,
 } from "../../session-logic";
 import { isImageAttachment, type ChatMessage, type TurnDiffSummary } from "../../types";
+
+describe("expanded tool group rows", () => {
+  const entry = (id: string) => ({
+    kind: "work-entry" as const,
+    id,
+    createdAt: "2026-09-20T12:00:00.000Z",
+    groupId: "group-1",
+    disclosureAnchorKey: "group-1:details",
+    entry: { id, createdAt: "2026-09-20T12:00:00.000Z", label: id, tone: "tool" as const },
+  });
+
+  it("follows a group when new rows append without rewriting its prefix", () => {
+    expect(
+      resolveExpandedWorkGroupAppendTarget([entry("one")], [entry("one"), entry("two")]),
+    ).toEqual({
+      groupId: "group-1",
+      previousEndId: "one",
+      nextEndId: "two",
+    });
+  });
+
+  it("does not follow replacements, prepends, or removed groups", () => {
+    expect(resolveExpandedWorkGroupAppendTarget([entry("one")], [entry("two")])).toBeUndefined();
+    expect(resolveExpandedWorkGroupAppendTarget([entry("one")], [])).toBeUndefined();
+  });
+});
 
 describe("streaming row projection", () => {
   function fixture(text = "") {
@@ -3303,12 +3330,13 @@ describe("deriveMessagesTimelineRows", () => {
     });
     expect(expandedRows.map((row) => row.id)).toEqual([
       "work-toggle:work-entry-1",
-      "work-group:work-entry-1:details",
+      "work-group:work-entry-1:details:work-1",
+      "work-group:work-entry-1:details:work-2",
+      "work-group:work-entry-1:details:work-3",
     ]);
-    expect(expandedRows.find((row) => row.kind === "work")).toMatchObject({
-      isExpandedToolGroup: true,
-      groupedEntries: timelineEntries.map(({ entry }) => entry),
-    });
+    expect(expandedRows.filter((row) => row.kind === "work-entry").map((row) => row.entry)).toEqual(
+      timelineEntries.map(({ entry }) => entry),
+    );
     expect(expandedRows.find((row) => row.kind === "work-toggle")).toMatchObject({
       expanded: true,
     });
@@ -3366,11 +3394,14 @@ describe("deriveMessagesTimelineRows", () => {
         expanded.flatMap((row) => (row.kind === "work-toggle" ? [row.groupId] : [])),
       ),
     });
-    expect(
-      expandedGroups.flatMap((row) =>
-        row.kind === "work" && row.isExpandedToolGroup ? [row.groupedEntries] : [],
-      ),
-    ).toEqual([tools.slice(0, 2), tools.slice(2)]);
+    const expandedEntriesByGroup = new Map<string, WorkLogEntry[]>();
+    for (const row of expandedGroups) {
+      if (row.kind !== "work-entry") continue;
+      const entries = expandedEntriesByGroup.get(row.groupId) ?? [];
+      entries.push(row.entry);
+      expandedEntriesByGroup.set(row.groupId, entries);
+    }
+    expect([...expandedEntriesByGroup.values()]).toEqual([tools.slice(0, 2), tools.slice(2)]);
     const active = deriveMessagesTimelineRows({
       ...input,
       latestTurn: { ...input.latestTurn, state: "running", completedAt: null },
@@ -3471,7 +3502,7 @@ describe("deriveMessagesTimelineRows", () => {
   });
 
   it.each([true, false])(
-    "keeps a large expanded tool run inside one timeline item, live=%s",
+    "keeps a large expanded tool run in outer timeline rows, live=%s",
     (isWorking) => {
       const turnId = TurnId.make("turn-many-tools");
       const createdAt = "2026-09-01T12:00:00Z";
@@ -3504,12 +3535,15 @@ describe("deriveMessagesTimelineRows", () => {
         ...input,
         expandedWorkGroupIds: new Set([groupId]),
       });
-      const groupRows = expandedRows.filter((row) => row.kind === "work");
-      expect(groupRows).toHaveLength(1);
-      expect(groupRows[0]?.groupedEntries.map(({ id }) => id)).toEqual(
+      const groupRows = expandedRows.filter(
+        (row): row is Extract<MessagesTimelineRow, { kind: "work-entry" }> =>
+          row.kind === "work-entry" && row.groupId === groupId,
+      );
+      expect(groupRows).toHaveLength(1_000);
+      expect(groupRows.map((row) => row.entry.id)).toEqual(
         timelineEntries.map(({ entry }) => entry.id),
       );
-      expect(groupRows[0]?.id).toBe(`${groupId}:details`);
+      expect(groupRows[0]?.id).toBe(`${groupId}:details:tool-0`);
       expect(deriveMessagesTimelineRows(input).some((row) => row.kind === "work")).toBe(false);
     },
   );

@@ -190,6 +190,7 @@ import {
   resolveTimelineMinimapIndexFromPointer,
   resolveTimelineMinimapInteractiveWidth,
   resolveTimelineMinimapTopPercent,
+  resolveExpandedWorkGroupAppendTarget,
   shouldPreserveAssistantLineBreaks,
   toolGroupAction,
   workEntryDisplayLabel,
@@ -585,7 +586,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       current.has(turnId) ? current : new Set([...current, turnId]),
     );
   }, []);
-  // Nested tool state shares the bounded thread-position cache.
+  // Expanded tool-entry disclosures share the thread-position cache.
   const workGroupViewState = useMemo<WorkGroupViewState>(
     () =>
       rememberedPosition?.disclosures?.workGroupState ?? {
@@ -807,6 +808,56 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   ]);
   const rows = useStableRows(rawRows, listIdentityKey);
   const minimapItems = useMemo(() => deriveTimelineMinimapItems(rows), [rows]);
+  const previousRowsRef = useRef(rows);
+  // Preserve the old group-local follow without creating a second scrollbox:
+  // only an expanded group whose last row is at the outer viewport edge follows
+  // an appended entry. Reading any other part of the timeline never jumps.
+  useLayoutEffect(() => {
+    const previousRows = previousRowsRef.current;
+    previousRowsRef.current = rows;
+    if (previousRows === rows) return;
+    const appendTarget = resolveExpandedWorkGroupAppendTarget(previousRows, rows);
+    if (!appendTarget) return;
+
+    let secondFrame: number | null = null;
+    const followIfAtGroupEnd = () => {
+      const list = listRef.current;
+      const state = list?.getState();
+      if (!list || !state) return;
+      const previousIndex = state.indexByKey(appendTarget.previousEndId);
+      const nextIndex = state.indexByKey(appendTarget.nextEndId);
+      if (previousIndex === undefined || nextIndex === undefined) return;
+      const previousTop = state.positionAtIndex(previousIndex);
+      const previousHeight = state.sizeAtIndex(previousIndex);
+      const nextTop = state.positionAtIndex(nextIndex);
+      const nextHeight = state.sizeAtIndex(nextIndex);
+      const scroll = state.scroll;
+      const viewportLength = state.scrollLength;
+      if (
+        previousTop === undefined ||
+        previousHeight === undefined ||
+        nextTop === undefined ||
+        nextHeight === undefined ||
+        scroll === undefined ||
+        viewportLength === undefined
+      ) {
+        return;
+      }
+      const previousBottom = previousTop + previousHeight;
+      const viewportBottom = scroll + viewportLength;
+      if (Math.abs(previousBottom - viewportBottom) > 2) return;
+      const appendedHeight = nextTop + nextHeight - previousBottom;
+      if (appendedHeight <= 0) return;
+      void list.scrollToOffset({ offset: scroll + appendedHeight, animated: false });
+    };
+    const firstFrame = requestAnimationFrame(() => {
+      secondFrame = requestAnimationFrame(followIfAtGroupEnd);
+    });
+    return () => {
+      cancelAnimationFrame(firstFrame);
+      if (secondFrame !== null) cancelAnimationFrame(secondFrame);
+    };
+  }, [listRef, rows]);
   const restoreRowIndex =
     restoringThreadPosition && rememberedPosition?.atEnd === false
       ? rows.findIndex((row) => row.id === rememberedPosition.rowId)
@@ -1670,18 +1721,20 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
             ? "pb-0"
             : row.kind === "turn-fold" || row.kind === "working"
               ? "pb-1.5"
-              : (row.kind === "message" &&
-                    row.message.role === "assistant" &&
-                    !row.showAssistantMeta) ||
-                  (row.kind === "message" && row.message.role === "reasoning") ||
-                  row.kind === "work" ||
-                  row.kind === "work-live" ||
-                  row.kind === "work-toggle" ||
-                  row.kind === "activity-group" ||
-                  row.kind === "thinking" ||
-                  row.kind === "worktree-setup"
-                ? "pb-2"
-                : "pb-4",
+              : row.kind === "work-entry"
+                ? "pb-1"
+                : (row.kind === "message" &&
+                      row.message.role === "assistant" &&
+                      !row.showAssistantMeta) ||
+                    (row.kind === "message" && row.message.role === "reasoning") ||
+                    row.kind === "work" ||
+                    row.kind === "work-live" ||
+                    row.kind === "work-toggle" ||
+                    row.kind === "activity-group" ||
+                    row.kind === "thinking" ||
+                    row.kind === "worktree-setup"
+                  ? "pb-2"
+                  : "pb-4",
         (row.kind === "message" && row.message.role === "assistant") ||
           row.kind === "assistant-meta"
           ? "group/assistant"
@@ -1705,6 +1758,7 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
       {row.kind === "work-live" ? <LiveWorkEntryTimelineRow row={row} /> : null}
       {row.kind === "activity-group" ? <ActivityGroupTimelineRow row={row} /> : null}
       {row.kind === "work-toggle" ? <WorkGroupToggleTimelineRow row={row} /> : null}
+      {row.kind === "work-entry" ? <ExpandedWorkEntryTimelineRow row={row} /> : null}
       {row.kind === "turn-fold" ? <TurnFoldTimelineRow row={row} /> : null}
       {row.kind === "context-compaction" ? <ContextCompactionTimelineRow row={row} /> : null}
       {row.kind === "message" && row.message.role === "user" ? <UserTimelineRow row={row} /> : null}
@@ -2913,7 +2967,7 @@ function WorkingTimer({ createdAt }: { createdAt: string }) {
 // re-render only the affected row, not the entire list.
 // ---------------------------------------------------------------------------
 
-/** Renders standalone activity or one bounded, virtualized expanded tool group. */
+/** Renders standalone activity; expanded entries are separate outer-list rows. */
 const WorkGroupSection = memo(function WorkGroupSection({
   anchorKey,
   disclosureAnchorKey = anchorKey,
@@ -2927,7 +2981,7 @@ const WorkGroupSection = memo(function WorkGroupSection({
   isExpandedToolGroup: boolean;
   displayLabel?: string | undefined;
 }) {
-  const { workspaceRoot, routeThreadKey, onToggleWorkEntry } = use(TimelineRowCtx);
+  const { workspaceRoot, onToggleWorkEntry } = use(TimelineRowCtx);
   const onToggleStandaloneEntry = useCallback(
     (collapsed: boolean) => onToggleWorkEntry(disclosureAnchorKey, collapsed),
     [disclosureAnchorKey, onToggleWorkEntry],
@@ -2938,17 +2992,6 @@ const WorkGroupSection = memo(function WorkGroupSection({
   );
 
   if (nonEmptyEntries.length === 0) return null;
-  if (isExpandedToolGroup) {
-    return (
-      <ExpandedWorkGroupEntries
-        key={`${routeThreadKey}:${anchorKey}`}
-        disclosureAnchorKey={disclosureAnchorKey}
-        entries={nonEmptyEntries}
-        workspaceRoot={workspaceRoot}
-      />
-    );
-  }
-
   return (
     <section className="-mx-1 space-y-0.5 px-1 py-0.5" aria-label="Activity">
       <div className="space-y-px">
@@ -2967,43 +3010,29 @@ const WorkGroupSection = memo(function WorkGroupSection({
   );
 });
 
-/**
- * Expanded tool groups render flat in page flow. A previous revision used a
- * nested virtualized list capped at 18rem; the inner scrollbar hid calls and
- * recycled/clipped the top rows, so groups now grow with the timeline and the
- * outer list owns all scrolling.
- */
-function ExpandedWorkGroupEntries({
-  disclosureAnchorKey,
-  entries,
-  workspaceRoot,
+/** One expanded entry is an outer LegendList row, preserving virtualization. */
+function ExpandedWorkEntryTimelineRow({
+  row,
 }: {
-  disclosureAnchorKey: string;
-  entries: TimelineWorkEntry[];
-  workspaceRoot: string | undefined;
+  row: Extract<MessagesTimelineRow, { kind: "work-entry" }>;
 }) {
-  const { workGroupViewState: viewState, onToggleWorkEntry } = use(TimelineRowCtx);
+  const { workspaceRoot, workGroupViewState: viewState, onToggleWorkEntry } = use(TimelineRowCtx);
   const groupView = useMemo(
     () => ({
       state: viewState,
-      onToggleEntry: (collapsed: boolean) => onToggleWorkEntry(disclosureAnchorKey, collapsed),
+      onToggleEntry: (collapsed: boolean) => onToggleWorkEntry(row.disclosureAnchorKey, collapsed),
     }),
-    [disclosureAnchorKey, onToggleWorkEntry, viewState],
+    [onToggleWorkEntry, row.disclosureAnchorKey, viewState],
   );
 
   return (
     <WorkGroupViewCtx value={groupView}>
-      <section className="-mx-1 space-y-0.5 px-1 py-0.5" aria-label="Tool calls">
-        <div className="space-y-px">
-          {entries.map((workEntry) => (
-            <SimpleWorkEntryRow
-              key={workEntry.id}
-              workEntry={workEntry}
-              workspaceRoot={workspaceRoot}
-              isExpandedToolGroupEntry
-            />
-          ))}
-        </div>
+      <section className="-mx-1 space-y-0.5 px-1 py-0.5" aria-label="Tool call">
+        <SimpleWorkEntryRow
+          workEntry={row.entry}
+          workspaceRoot={workspaceRoot}
+          isExpandedToolGroupEntry
+        />
       </section>
     </WorkGroupViewCtx>
   );

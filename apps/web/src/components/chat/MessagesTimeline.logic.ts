@@ -317,6 +317,14 @@ export type MessagesTimelineRow =
       displayLabel?: string;
     }
   | {
+      kind: "work-entry";
+      id: string;
+      createdAt: string;
+      groupId: string;
+      disclosureAnchorKey: string;
+      entry: WorkLogEntry;
+    }
+  | {
       kind: "work-live";
       id: string;
       createdAt: string;
@@ -446,18 +454,65 @@ function workGroupId(timelineEntryId: string, entry: WorkLogEntry): string {
   return `work-group:${workGroupIdentity(timelineEntryId, entry)}`;
 }
 
-function expandedWorkGroupRow(
+function expandedWorkGroupRows(
   groupId: string,
   createdAt: string,
   groupedEntries: WorkLogEntry[],
-): Extract<MessagesTimelineRow, { kind: "work" }> {
-  return {
-    kind: "work",
-    id: `${groupId}:details`,
-    createdAt,
-    groupedEntries,
-    isExpandedToolGroup: true,
-  };
+): Extract<MessagesTimelineRow, { kind: "work-entry" }>[] {
+  const disclosureAnchorKey = `${groupId}:details`;
+  return groupedEntries.map((entry) => ({
+    kind: "work-entry" as const,
+    id: `${disclosureAnchorKey}:${entry.id}`,
+    createdAt: entry.createdAt ?? createdAt,
+    groupId,
+    disclosureAnchorKey,
+    entry,
+  }));
+}
+
+export interface ExpandedWorkGroupAppendTarget {
+  readonly groupId: string;
+  readonly previousEndId: string;
+  readonly nextEndId: string;
+}
+
+/** Find a group whose expanded rows only gained entries at its tail. */
+export function resolveExpandedWorkGroupAppendTarget(
+  previousRows: ReadonlyArray<MessagesTimelineRow>,
+  nextRows: ReadonlyArray<MessagesTimelineRow>,
+): ExpandedWorkGroupAppendTarget | undefined {
+  const previousByGroup = new Map<string, string[]>();
+  for (const row of previousRows) {
+    if (row.kind !== "work-entry") continue;
+    const entries = previousByGroup.get(row.groupId) ?? [];
+    entries.push(row.id);
+    previousByGroup.set(row.groupId, entries);
+  }
+
+  const nextByGroup = new Map<string, string[]>();
+  for (const row of nextRows) {
+    if (row.kind !== "work-entry") continue;
+    const entries = nextByGroup.get(row.groupId) ?? [];
+    entries.push(row.id);
+    nextByGroup.set(row.groupId, entries);
+  }
+
+  for (const [groupId, previousEntries] of previousByGroup) {
+    const nextEntries = nextByGroup.get(groupId);
+    if (
+      !nextEntries ||
+      nextEntries.length <= previousEntries.length ||
+      !previousEntries.every((id, index) => nextEntries[index] === id)
+    ) {
+      continue;
+    }
+    const previousEndId = previousEntries.at(-1);
+    const nextEndId = nextEntries.at(-1);
+    if (previousEndId && nextEndId) {
+      return { groupId, previousEndId, nextEndId };
+    }
+  }
+  return undefined;
 }
 
 export function resolveAssistantMessageCopyState({
@@ -824,6 +879,13 @@ function attachTrailingToolGroupsToAssistant(
         lastTrailingWorkIndex = index;
         continue;
       }
+      if (candidate.kind === "work-entry") {
+        if (candidate.entry.turnId === turnId) {
+          hasTrailingToolGroup = true;
+          lastTrailingWorkIndex = index;
+        }
+        continue;
+      }
       if (
         candidate.kind === "work" &&
         candidate.groupedEntries.some((entry) => entry.turnId === turnId)
@@ -834,9 +896,7 @@ function attachTrailingToolGroupsToAssistant(
         ) {
           hasTrailingToolGroup = true;
         }
-        if (hasTrailingToolGroup) {
-          lastTrailingWorkIndex = index;
-        }
+        if (hasTrailingToolGroup) lastTrailingWorkIndex = index;
       }
     }
 
@@ -1067,7 +1127,7 @@ export function deriveMessagesTimelineRows(input: {
     hasActivityRow ||= activeWorkRow.active;
     if (!activeWorkRow.expanded || activeWorkRow.entry.agentSpawn) return;
     nextRows.push(
-      expandedWorkGroupRow(
+      ...expandedWorkGroupRows(
         activeWorkRow.groupId,
         activeWorkRow.createdAt,
         activeWorkRow.groupedEntries,
@@ -1233,7 +1293,7 @@ export function deriveMessagesTimelineRows(input: {
           hasActivityRow = true;
           if (expanded) {
             nextRows.push(
-              expandedWorkGroupRow(groupId, timelineEntry.createdAt, visibleGroupedEntries),
+              ...expandedWorkGroupRows(groupId, timelineEntry.createdAt, visibleGroupedEntries),
             );
           }
         } else if (
@@ -1305,7 +1365,7 @@ export function deriveMessagesTimelineRows(input: {
           });
           if (expanded) {
             nextRows.push(
-              expandedWorkGroupRow(groupId, timelineEntry.createdAt, visibleGroupedEntries),
+              ...expandedWorkGroupRows(groupId, timelineEntry.createdAt, visibleGroupedEntries),
             );
           }
         }
@@ -1599,6 +1659,16 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
         a.isExpandedToolGroup === bw.isExpandedToolGroup &&
         a.displayLabel === bw.displayLabel &&
         Equal.equals(a.groupedEntries, bw.groupedEntries)
+      );
+    }
+
+    case "work-entry": {
+      const be = b as typeof a;
+      return (
+        a.createdAt === be.createdAt &&
+        a.groupId === be.groupId &&
+        a.disclosureAnchorKey === be.disclosureAnchorKey &&
+        Equal.equals(a.entry, be.entry)
       );
     }
 

@@ -334,8 +334,9 @@ describe("MessagesTimeline", () => {
         .filter((button) => button.props["aria-expanded"] === false);
       expect(toggles).toHaveLength(1);
       await act(() => toggles[0]!.props.onClick());
-      const group = renderer!.root.findByProps({ "aria-label": "Tool calls" });
-      expect(group.type).toBe("section");
+      const groups = renderer!.root.findAllByProps({ "aria-label": "Tool call" });
+      expect(groups).toHaveLength(labels.length);
+      expect(groups.every((group) => group.type === "section")).toBe(true);
       const markup = JSON.stringify(renderer!.toJSON());
       for (const label of labels) expect(markup).toContain(label);
       expect(
