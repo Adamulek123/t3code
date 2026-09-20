@@ -2,6 +2,7 @@ import * as NodeCrypto from "node:crypto";
 
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Duration from "effect/Duration";
 import { vi } from "vite-plus/test";
 
 import { RelayJwtError, signRelayJwt, verifyRelayJwt } from "./relayJwt.ts";
@@ -20,7 +21,7 @@ vi.mock("jose", async (importOriginal) => {
       // the in-flight promise instead of winning a cold-cache race by timing.
       return actual
         .importPKCS8(...args)
-        .then((key) => new Promise((resolve) => setTimeout(() => resolve(key), 25)));
+        .then((key) => Effect.runPromise(Effect.sleep(Duration.millis(25)).pipe(Effect.as(key))));
     },
   };
 });
