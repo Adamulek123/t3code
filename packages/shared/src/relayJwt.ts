@@ -48,7 +48,9 @@ function normalizePem(value: string): string {
   return value.replace(/\\n/gu, "\n").trim();
 }
 
-// PEM parsing + key import cost ~0.3–1ms per call and runs on every relay
+// PEM parsing + key import cost ~0.06ms (PKCS8 sign path) / ~0.02ms (SPKI
+// verify path) per call on reference hardware (AMD Ryzen 5 5600, Node 24,
+// jose 6.2.2; warm lookups are sub-microsecond) and runs on every relay
 // JWT sign/verify (link, connect, status, publish, DPoP). Keys rotate rarely,
 // so cache the imported keys by normalized PEM with a small FIFO bound.
 const MAX_CACHED_KEYS = 50;
