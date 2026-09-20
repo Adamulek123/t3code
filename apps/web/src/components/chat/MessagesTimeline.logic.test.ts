@@ -49,7 +49,7 @@ describe("expanded tool group rows", () => {
     id,
     createdAt: "2026-09-20T12:00:00.000Z",
     groupId: "group-1",
-    disclosureAnchorKey: "group-1:details",
+    disclosureAnchorKey: `group-1:details:${id}`,
     entry: { id, createdAt: "2026-09-20T12:00:00.000Z", label: id, tone: "tool" as const },
   });
 
@@ -779,7 +779,6 @@ describe("work entry labels", () => {
       const directRow = rows.find((row) => row.kind === "work");
       expect(directRow).toMatchObject({
         groupedEntries: [expect.objectContaining({ id: "tool-1" })],
-        isExpandedToolGroup: false,
         displayLabel: label,
       });
     },
@@ -2770,7 +2769,6 @@ describe("deriveMessagesTimelineRows", () => {
     expect(rows.map((row) => row.kind)).toEqual(["working", "work", "message", "work-live"]);
     expect(rows.find((row) => row.kind === "work")).toMatchObject({
       groupedEntries: [{ id: "completed-command", command: "rg toolCall" }],
-      isExpandedToolGroup: false,
       displayLabel: "rg toolCall",
     });
   });
@@ -2821,7 +2819,6 @@ describe("deriveMessagesTimelineRows", () => {
 
     expect(rows.find((row) => row.kind === "work")).toMatchObject({
       groupedEntries: [{ id: "command-completed", toolCallId: "call-1" }],
-      isExpandedToolGroup: false,
       displayLabel: "rg toolCall",
     });
     expect(rows.some((row) => row.kind === "work-toggle")).toBe(false);
@@ -3337,6 +3334,18 @@ describe("deriveMessagesTimelineRows", () => {
     expect(expandedRows.filter((row) => row.kind === "work-entry").map((row) => row.entry)).toEqual(
       timelineEntries.map(({ entry }) => entry),
     );
+    const expandedEntries = expandedRows.filter(
+      (row): row is Extract<MessagesTimelineRow, { kind: "work-entry" }> =>
+        row.kind === "work-entry",
+    );
+    expect(expandedEntries.map((row) => row.disclosureAnchorKey)).toEqual(
+      expandedEntries.map((row) => row.id),
+    );
+    expect(expandedEntries.map((row) => [row.isFirst, row.isLast])).toEqual([
+      [true, false],
+      [false, false],
+      [false, true],
+    ]);
     expect(expandedRows.find((row) => row.kind === "work-toggle")).toMatchObject({
       expanded: true,
     });
@@ -3414,9 +3423,7 @@ describe("deriveMessagesTimelineRows", () => {
         (row) =>
           (row.kind === "work" || row.kind === "work-live") && row.groupedEntries.includes(answer),
       );
-      expect(answerRows).toMatchObject([
-        { kind: "work", groupedEntries: [answer], isExpandedToolGroup: false },
-      ]);
+      expect(answerRows).toMatchObject([{ kind: "work", groupedEntries: [answer] }]);
     }
     expect(active.find((row) => row.kind === "work-live")).toMatchObject({
       groupedEntries: tools.slice(2),

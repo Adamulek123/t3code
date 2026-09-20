@@ -337,6 +337,15 @@ describe("MessagesTimeline", () => {
       const groups = renderer!.root.findAllByProps({ "aria-label": "Tool call" });
       expect(groups).toHaveLength(labels.length);
       expect(groups.every((group) => group.type === "section")).toBe(true);
+      expect(groups.map((group) => group.props["data-disclosure-anchor"])).toEqual([
+        "work-group:tool:no-turn:call-0:details:work-0",
+        "work-group:tool:no-turn:call-0:details:work-1",
+        "work-group:tool:no-turn:call-0:details:work-2",
+      ]);
+      expect(groups[0]?.props.className).toContain("pt-0.5");
+      expect(groups[0]?.props.className).toContain("pb-px");
+      expect(groups.at(-1)?.props.className).toContain("pb-0.5");
+      expect(groups.every((group) => !group.props.className.includes("py-0.5"))).toBe(true);
       const markup = JSON.stringify(renderer!.toJSON());
       for (const label of labels) expect(markup).toContain(label);
       expect(

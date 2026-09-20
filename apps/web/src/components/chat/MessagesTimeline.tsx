@@ -1706,7 +1706,6 @@ type TimelineWorkEntry = Extract<MessagesTimelineRow, { kind: "work" }>["grouped
 type TimelineRow = MessagesTimelineRow;
 
 const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: TimelineRow }) {
-  const isExpandedToolGroup = row.kind === "work" && row.isExpandedToolGroup;
   const isExpandedToolGroupHeader =
     (row.kind === "work-toggle" && row.expanded) || (row.kind === "work-live" && row.expanded);
 
@@ -1715,26 +1714,24 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
       className={cn(
         // Commentary (non-terminal assistant) rows carry no metadata row, so
         // they sit closer to the work that follows them.
-        isExpandedToolGroup
-          ? "pb-1"
-          : isExpandedToolGroupHeader
-            ? "pb-0"
-            : row.kind === "turn-fold" || row.kind === "working"
-              ? "pb-1.5"
-              : row.kind === "work-entry"
-                ? "pb-1"
-                : (row.kind === "message" &&
-                      row.message.role === "assistant" &&
-                      !row.showAssistantMeta) ||
-                    (row.kind === "message" && row.message.role === "reasoning") ||
-                    row.kind === "work" ||
-                    row.kind === "work-live" ||
-                    row.kind === "work-toggle" ||
-                    row.kind === "activity-group" ||
-                    row.kind === "thinking" ||
-                    row.kind === "worktree-setup"
-                  ? "pb-2"
-                  : "pb-4",
+        isExpandedToolGroupHeader
+          ? "pb-0"
+          : row.kind === "turn-fold" || row.kind === "working"
+            ? "pb-1.5"
+            : row.kind === "work-entry"
+              ? "pb-0"
+              : (row.kind === "message" &&
+                    row.message.role === "assistant" &&
+                    !row.showAssistantMeta) ||
+                  (row.kind === "message" && row.message.role === "reasoning") ||
+                  row.kind === "work" ||
+                  row.kind === "work-live" ||
+                  row.kind === "work-toggle" ||
+                  row.kind === "activity-group" ||
+                  row.kind === "thinking" ||
+                  row.kind === "worktree-setup"
+                ? "pb-2"
+                : "pb-4",
         (row.kind === "message" && row.message.role === "assistant") ||
           row.kind === "assistant-meta"
           ? "group/assistant"
@@ -1751,7 +1748,6 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
         <WorkGroupSection
           anchorKey={row.id}
           groupedEntries={row.groupedEntries}
-          isExpandedToolGroup={row.isExpandedToolGroup}
           displayLabel={row.displayLabel}
         />
       ) : null}
@@ -2972,13 +2968,13 @@ const WorkGroupSection = memo(function WorkGroupSection({
   anchorKey,
   disclosureAnchorKey = anchorKey,
   groupedEntries,
-  isExpandedToolGroup,
+  isExpandedToolGroup = false,
   displayLabel,
 }: {
   anchorKey: string;
   disclosureAnchorKey?: string;
   groupedEntries: Extract<MessagesTimelineRow, { kind: "work" }>["groupedEntries"];
-  isExpandedToolGroup: boolean;
+  isExpandedToolGroup?: boolean;
   displayLabel?: string | undefined;
 }) {
   const { workspaceRoot, onToggleWorkEntry } = use(TimelineRowCtx);
@@ -3020,14 +3016,18 @@ function ExpandedWorkEntryTimelineRow({
   const groupView = useMemo(
     () => ({
       state: viewState,
-      onToggleEntry: (collapsed: boolean) => onToggleWorkEntry(row.disclosureAnchorKey, collapsed),
+      onToggleEntry: (collapsed: boolean) => onToggleWorkEntry(row.id, collapsed),
     }),
-    [onToggleWorkEntry, row.disclosureAnchorKey, viewState],
+    [onToggleWorkEntry, row.id, viewState],
   );
 
   return (
     <WorkGroupViewCtx value={groupView}>
-      <section className="-mx-1 space-y-0.5 px-1 py-0.5" aria-label="Tool call">
+      <section
+        className={cn("-mx-1 px-1", row.isFirst && "pt-0.5", row.isLast ? "pb-0.5" : "pb-px")}
+        aria-label="Tool call"
+        data-disclosure-anchor={row.id}
+      >
         <SimpleWorkEntryRow
           workEntry={row.entry}
           workspaceRoot={workspaceRoot}

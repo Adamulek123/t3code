@@ -313,7 +313,6 @@ export type MessagesTimelineRow =
       id: string;
       createdAt: string;
       groupedEntries: WorkLogEntry[];
-      isExpandedToolGroup: boolean;
       displayLabel?: string;
     }
   | {
@@ -322,6 +321,8 @@ export type MessagesTimelineRow =
       createdAt: string;
       groupId: string;
       disclosureAnchorKey: string;
+      isFirst?: boolean;
+      isLast?: boolean;
       entry: WorkLogEntry;
     }
   | {
@@ -459,15 +460,21 @@ function expandedWorkGroupRows(
   createdAt: string,
   groupedEntries: WorkLogEntry[],
 ): Extract<MessagesTimelineRow, { kind: "work-entry" }>[] {
-  const disclosureAnchorKey = `${groupId}:details`;
-  return groupedEntries.map((entry) => ({
-    kind: "work-entry" as const,
-    id: `${disclosureAnchorKey}:${entry.id}`,
-    createdAt: entry.createdAt ?? createdAt,
-    groupId,
-    disclosureAnchorKey,
-    entry,
-  }));
+  const detailsPrefix = `${groupId}:details`;
+  const lastIndex = groupedEntries.length - 1;
+  return groupedEntries.map((entry, index) => {
+    const id = `${detailsPrefix}:${entry.id}`;
+    return {
+      kind: "work-entry" as const,
+      id,
+      createdAt: entry.createdAt ?? createdAt,
+      groupId,
+      disclosureAnchorKey: id,
+      isFirst: index === 0,
+      isLast: index === lastIndex,
+      entry,
+    };
+  });
 }
 
 export interface ExpandedWorkGroupAppendTarget {
@@ -890,10 +897,7 @@ function attachTrailingToolGroupsToAssistant(
         candidate.kind === "work" &&
         candidate.groupedEntries.some((entry) => entry.turnId === turnId)
       ) {
-        if (
-          !candidate.isExpandedToolGroup &&
-          candidate.groupedEntries.some(workLogEntryIsToolLike)
-        ) {
+        if (candidate.groupedEntries.some(workLogEntryIsToolLike)) {
           hasTrailingToolGroup = true;
         }
         if (hasTrailingToolGroup) lastTrailingWorkIndex = index;
@@ -1244,7 +1248,6 @@ export function deriveMessagesTimelineRows(input: {
           id: timelineEntry.id,
           createdAt: timelineEntry.createdAt,
           groupedEntries: [timelineEntry.entry],
-          isExpandedToolGroup: false,
         });
         continue;
       }
@@ -1306,7 +1309,6 @@ export function deriveMessagesTimelineRows(input: {
             id: timelineEntry.id,
             createdAt: timelineEntry.createdAt,
             groupedEntries: visibleGroupedEntries,
-            isExpandedToolGroup: false,
             displayLabel:
               toolGroupAction(singleEntry) === "edit"
                 ? summarizeToolGroup(visibleGroupedEntries)
@@ -1656,9 +1658,7 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
     case "work": {
       const bw = b as typeof a;
       return (
-        a.isExpandedToolGroup === bw.isExpandedToolGroup &&
-        a.displayLabel === bw.displayLabel &&
-        Equal.equals(a.groupedEntries, bw.groupedEntries)
+        a.displayLabel === bw.displayLabel && Equal.equals(a.groupedEntries, bw.groupedEntries)
       );
     }
 
@@ -1668,6 +1668,8 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
         a.createdAt === be.createdAt &&
         a.groupId === be.groupId &&
         a.disclosureAnchorKey === be.disclosureAnchorKey &&
+        a.isFirst === be.isFirst &&
+        a.isLast === be.isLast &&
         Equal.equals(a.entry, be.entry)
       );
     }
