@@ -49,7 +49,6 @@ describe("expanded tool group rows", () => {
     id,
     createdAt: "2026-09-20T12:00:00.000Z",
     groupId: "group-1",
-    disclosureAnchorKey: `group-1:details:${id}`,
     entry: { id, createdAt: "2026-09-20T12:00:00.000Z", label: id, tone: "tool" as const },
   });
 
@@ -3337,9 +3336,6 @@ describe("deriveMessagesTimelineRows", () => {
     const expandedEntries = expandedRows.filter(
       (row): row is Extract<MessagesTimelineRow, { kind: "work-entry" }> =>
         row.kind === "work-entry",
-    );
-    expect(expandedEntries.map((row) => row.disclosureAnchorKey)).toEqual(
-      expandedEntries.map((row) => row.id),
     );
     expect(expandedEntries.map((row) => [row.isFirst, row.isLast])).toEqual([
       [true, false],

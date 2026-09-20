@@ -320,7 +320,6 @@ export type MessagesTimelineRow =
       id: string;
       createdAt: string;
       groupId: string;
-      disclosureAnchorKey: string;
       isFirst?: boolean;
       isLast?: boolean;
       entry: WorkLogEntry;
@@ -469,7 +468,6 @@ function expandedWorkGroupRows(
       id,
       createdAt: entry.createdAt ?? createdAt,
       groupId,
-      disclosureAnchorKey: id,
       isFirst: index === 0,
       isLast: index === lastIndex,
       entry,
@@ -1667,7 +1665,6 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
       return (
         a.createdAt === be.createdAt &&
         a.groupId === be.groupId &&
-        a.disclosureAnchorKey === be.disclosureAnchorKey &&
         a.isFirst === be.isFirst &&
         a.isLast === be.isLast &&
         Equal.equals(a.entry, be.entry)

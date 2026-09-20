@@ -360,6 +360,93 @@ describe("MessagesTimeline", () => {
     }
   });
 
+  it.each([
+    { atGroupEnd: true, expectedOffset: 50 },
+    { atGroupEnd: false, expectedOffset: undefined },
+  ])(
+    "follows an expanded group append only when its last row is at the outer viewport edge: atEnd=$atGroupEnd",
+    async ({ atGroupEnd, expectedOffset }) => {
+      const frames = new Map<number, FrameRequestCallback>();
+      let nextFrame = 0;
+      vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+        frames.set(++nextFrame, callback);
+        return nextFrame;
+      });
+      vi.stubGlobal("cancelAnimationFrame", (frame: number) => frames.delete(frame));
+      vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+      const flushFrames = async () => {
+        await act(() => {
+          const callbacks = [...frames.values()];
+          frames.clear();
+          callbacks.forEach((callback) => callback(0));
+        });
+      };
+
+      const scrollToOffset = vi.fn(async () => {});
+      const props = buildProps();
+      props.listRef.current = {
+        getState: () => ({
+          indexByKey: (key: string) =>
+            key.endsWith(":work-1") ? 2 : key.endsWith(":work-2") ? 3 : undefined,
+          positionAtIndex: (index: number) => index * 25,
+          sizeAtIndex: () => 25,
+          scroll: atGroupEnd ? 25 : 0,
+          scrollLength: 50,
+        }),
+        getScrollableNode: () => null,
+        scrollToOffset,
+      } as unknown as LegendListRef;
+      const entries = (count: number) =>
+        Array.from({ length: count }, (_, index) => ({
+          id: `entry-${index}`,
+          kind: "work" as const,
+          createdAt: MESSAGE_CREATED_AT,
+          entry: {
+            id: `work-${index}`,
+            createdAt: MESSAGE_CREATED_AT,
+            toolCallId: `call-follow-${index}`,
+            label: "Run command",
+            tone: "tool" as const,
+            itemType: "command_execution" as const,
+            command: "echo follow",
+            toolLifecycleStatus: "completed" as const,
+          },
+        }));
+
+      let renderer: ReactTestRenderer | undefined;
+      try {
+        await act(() => {
+          renderer = create(<MessagesTimeline {...props} timelineEntries={entries(2)} />);
+        });
+        const toggle = renderer!.root
+          .findAllByType("button")
+          .find((button) => button.props["aria-expanded"] === false);
+        expect(toggle).toBeDefined();
+        await act(() => toggle!.props.onClick());
+        await flushFrames();
+        await flushFrames();
+        expect(renderer!.root.findAllByProps({ "aria-label": "Tool call" })).toHaveLength(2);
+
+        const callsBeforeAppend = scrollToOffset.mock.calls.length;
+        await act(() => {
+          renderer!.update(<MessagesTimeline {...props} timelineEntries={entries(3)} />);
+        });
+        expect(renderer!.root.findAllByProps({ "aria-label": "Tool call" })).toHaveLength(3);
+        await flushFrames();
+        await flushFrames();
+
+        const appendCalls = scrollToOffset.mock.calls.slice(callsBeforeAppend);
+        if (expectedOffset === undefined) {
+          expect(appendCalls).toHaveLength(0);
+        } else {
+          expect(appendCalls).toEqual([[{ offset: expectedOffset, animated: false }]]);
+        }
+      } finally {
+        await act(() => renderer?.unmount());
+      }
+    },
+  );
+
   // Expanding history uses this suite's existing test renderer, deprecated in
   // React 19. Migrate these interaction tests together when a DOM test setup is added.
   it.each([{}, { text: "Text-only answer", file: "Answer with a file" }])(
