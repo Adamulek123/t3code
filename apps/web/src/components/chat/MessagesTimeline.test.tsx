@@ -447,6 +447,120 @@ describe("MessagesTimeline", () => {
     },
   );
 
+  it("follows the later expanded group when an earlier group also appends", async () => {
+    const frames = new Map<number, FrameRequestCallback>();
+    let nextFrame = 0;
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      frames.set(++nextFrame, callback);
+      return nextFrame;
+    });
+    vi.stubGlobal("cancelAnimationFrame", (frame: number) => frames.delete(frame));
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const flushFrames = async () => {
+      await act(() => {
+        const callbacks = [...frames.values()];
+        frames.clear();
+        callbacks.forEach((callback) => callback(0));
+      });
+    };
+
+    const scrollToOffset = vi.fn(async () => {});
+    const props = buildProps();
+    props.listRef.current = {
+      getState: () => ({
+        indexByKey: (key: string) =>
+          key.endsWith(":early-1")
+            ? 2
+            : key.endsWith(":early-2")
+              ? 3
+              : key.endsWith(":late-1")
+                ? 7
+                : key.endsWith(":late-2")
+                  ? 8
+                  : undefined,
+        positionAtIndex: (index: number) => index * 25,
+        sizeAtIndex: () => 25,
+        scroll: 150,
+        scrollLength: 50,
+      }),
+      getScrollableNode: () => null,
+      scrollToOffset,
+    } as unknown as LegendListRef;
+    const separator = {
+      id: "separator",
+      kind: "message" as const,
+      createdAt: MESSAGE_CREATED_AT,
+      message: {
+        id: MessageId.make("separator-message"),
+        role: "user" as const,
+        text: "Between groups",
+        turnId: null,
+        createdAt: MESSAGE_CREATED_AT,
+        updatedAt: MESSAGE_CREATED_AT,
+        streaming: false,
+      },
+    };
+    const workEntry = (group: "early" | "late", index: number) => ({
+      id: `${group}-entry-${index}`,
+      kind: "work" as const,
+      createdAt: MESSAGE_CREATED_AT,
+      entry: {
+        id: `${group}-${index}`,
+        createdAt: MESSAGE_CREATED_AT,
+        toolCallId: `call-${group}-${index}`,
+        label: "Run command",
+        tone: "tool" as const,
+        itemType: "command_execution" as const,
+        command: `echo ${group}`,
+        toolLifecycleStatus: "completed" as const,
+      },
+    });
+    const entries = (append: boolean) => [
+      workEntry("early", 0),
+      workEntry("early", 1),
+      ...(append ? [workEntry("early", 2)] : []),
+      separator,
+      workEntry("late", 0),
+      workEntry("late", 1),
+      ...(append ? [workEntry("late", 2)] : []),
+    ];
+
+    let renderer: ReactTestRenderer | undefined;
+    try {
+      await act(() => {
+        renderer = create(<MessagesTimeline {...props} timelineEntries={entries(false)} />);
+      });
+      expect(
+        renderer!.root
+          .findAllByType("button")
+          .filter((button) => button.props["aria-expanded"] === false),
+      ).toHaveLength(2);
+      for (let groupIndex = 0; groupIndex < 2; groupIndex += 1) {
+        const toggle = renderer!.root
+          .findAllByType("button")
+          .find((button) => button.props["aria-expanded"] === false);
+        expect(toggle).toBeDefined();
+        await act(() => toggle!.props.onClick());
+        await flushFrames();
+        await flushFrames();
+      }
+      expect(renderer!.root.findAllByProps({ "aria-label": "Tool call" })).toHaveLength(4);
+
+      await act(() => {
+        renderer!.update(<MessagesTimeline {...props} timelineEntries={entries(true)} />);
+      });
+      const callsBeforeAppend = scrollToOffset.mock.calls.length;
+      await flushFrames();
+      await flushFrames();
+
+      expect(scrollToOffset.mock.calls.slice(callsBeforeAppend)).toEqual([
+        [{ offset: 175, animated: false }],
+      ]);
+    } finally {
+      await act(() => renderer?.unmount());
+    }
+  });
+
   // Expanding history uses this suite's existing test renderer, deprecated in
   // React 19. Migrate these interaction tests together when a DOM test setup is added.
   it.each([{}, { text: "Text-only answer", file: "Answer with a file" }])(

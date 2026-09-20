@@ -44,27 +44,40 @@ import {
 import { isImageAttachment, type ChatMessage, type TurnDiffSummary } from "../../types";
 
 describe("expanded tool group rows", () => {
-  const entry = (id: string) => ({
+  const entry = (id: string, groupId = "group-1") => ({
     kind: "work-entry" as const,
     id,
     createdAt: "2026-09-20T12:00:00.000Z",
-    groupId: "group-1",
+    groupId,
     entry: { id, createdAt: "2026-09-20T12:00:00.000Z", label: id, tone: "tool" as const },
   });
 
   it("follows a group when new rows append without rewriting its prefix", () => {
     expect(
       resolveExpandedWorkGroupAppendTarget([entry("one")], [entry("one"), entry("two")]),
-    ).toEqual({
-      groupId: "group-1",
-      previousEndId: "one",
-      nextEndId: "two",
-    });
+    ).toEqual([{ groupId: "group-1", previousEndId: "one", nextEndId: "two" }]);
   });
 
   it("does not follow replacements, prepends, or removed groups", () => {
-    expect(resolveExpandedWorkGroupAppendTarget([entry("one")], [entry("two")])).toBeUndefined();
-    expect(resolveExpandedWorkGroupAppendTarget([entry("one")], [])).toBeUndefined();
+    expect(resolveExpandedWorkGroupAppendTarget([entry("one")], [entry("two")])).toEqual([]);
+    expect(resolveExpandedWorkGroupAppendTarget([entry("one")], [])).toEqual([]);
+  });
+
+  it("returns every group that appended at its tail", () => {
+    expect(
+      resolveExpandedWorkGroupAppendTarget(
+        [entry("early-one", "early"), entry("late-one", "late")],
+        [
+          entry("early-one", "early"),
+          entry("early-two", "early"),
+          entry("late-one", "late"),
+          entry("late-two", "late"),
+        ],
+      ),
+    ).toEqual([
+      { groupId: "early", previousEndId: "early-one", nextEndId: "early-two" },
+      { groupId: "late", previousEndId: "late-one", nextEndId: "late-two" },
+    ]);
   });
 });
 

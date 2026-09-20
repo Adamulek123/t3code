@@ -481,11 +481,11 @@ export interface ExpandedWorkGroupAppendTarget {
   readonly nextEndId: string;
 }
 
-/** Find a group whose expanded rows only gained entries at its tail. */
+/** Find expanded groups whose rows only gained entries at their tails. */
 export function resolveExpandedWorkGroupAppendTarget(
   previousRows: ReadonlyArray<MessagesTimelineRow>,
   nextRows: ReadonlyArray<MessagesTimelineRow>,
-): ExpandedWorkGroupAppendTarget | undefined {
+): ExpandedWorkGroupAppendTarget[] {
   const previousByGroup = new Map<string, string[]>();
   for (const row of previousRows) {
     if (row.kind !== "work-entry") continue;
@@ -502,6 +502,7 @@ export function resolveExpandedWorkGroupAppendTarget(
     nextByGroup.set(row.groupId, entries);
   }
 
+  const targets: ExpandedWorkGroupAppendTarget[] = [];
   for (const [groupId, previousEntries] of previousByGroup) {
     const nextEntries = nextByGroup.get(groupId);
     if (
@@ -514,10 +515,10 @@ export function resolveExpandedWorkGroupAppendTarget(
     const previousEndId = previousEntries.at(-1);
     const nextEndId = nextEntries.at(-1);
     if (previousEndId && nextEndId) {
-      return { groupId, previousEndId, nextEndId };
+      targets.push({ groupId, previousEndId, nextEndId });
     }
   }
-  return undefined;
+  return targets;
 }
 
 export function resolveAssistantMessageCopyState({

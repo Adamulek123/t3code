@@ -816,39 +816,41 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     const previousRows = previousRowsRef.current;
     previousRowsRef.current = rows;
     if (previousRows === rows) return;
-    const appendTarget = resolveExpandedWorkGroupAppendTarget(previousRows, rows);
-    if (!appendTarget) return;
+    const appendTargets = resolveExpandedWorkGroupAppendTarget(previousRows, rows);
+    if (appendTargets.length === 0) return;
 
     let secondFrame: number | null = null;
     const followIfAtGroupEnd = () => {
       const list = listRef.current;
       const state = list?.getState();
       if (!list || !state) return;
-      const previousIndex = state.indexByKey(appendTarget.previousEndId);
-      const nextIndex = state.indexByKey(appendTarget.nextEndId);
-      if (previousIndex === undefined || nextIndex === undefined) return;
-      const previousTop = state.positionAtIndex(previousIndex);
-      const previousHeight = state.sizeAtIndex(previousIndex);
-      const nextTop = state.positionAtIndex(nextIndex);
-      const nextHeight = state.sizeAtIndex(nextIndex);
       const scroll = state.scroll;
       const viewportLength = state.scrollLength;
-      if (
-        previousTop === undefined ||
-        previousHeight === undefined ||
-        nextTop === undefined ||
-        nextHeight === undefined ||
-        scroll === undefined ||
-        viewportLength === undefined
-      ) {
+      if (scroll === undefined || viewportLength === undefined) return;
+      const viewportBottom = scroll + viewportLength;
+      for (const appendTarget of appendTargets) {
+        const previousIndex = state.indexByKey(appendTarget.previousEndId);
+        const nextIndex = state.indexByKey(appendTarget.nextEndId);
+        if (previousIndex === undefined || nextIndex === undefined) continue;
+        const previousTop = state.positionAtIndex(previousIndex);
+        const previousHeight = state.sizeAtIndex(previousIndex);
+        const nextTop = state.positionAtIndex(nextIndex);
+        const nextHeight = state.sizeAtIndex(nextIndex);
+        if (
+          previousTop === undefined ||
+          previousHeight === undefined ||
+          nextTop === undefined ||
+          nextHeight === undefined
+        ) {
+          continue;
+        }
+        const previousBottom = previousTop + previousHeight;
+        if (Math.abs(previousBottom - viewportBottom) > 2) continue;
+        const appendedHeight = nextTop + nextHeight - previousBottom;
+        if (appendedHeight <= 0) continue;
+        void list.scrollToOffset({ offset: scroll + appendedHeight, animated: false });
         return;
       }
-      const previousBottom = previousTop + previousHeight;
-      const viewportBottom = scroll + viewportLength;
-      if (Math.abs(previousBottom - viewportBottom) > 2) return;
-      const appendedHeight = nextTop + nextHeight - previousBottom;
-      if (appendedHeight <= 0) return;
-      void list.scrollToOffset({ offset: scroll + appendedHeight, animated: false });
     };
     const firstFrame = requestAnimationFrame(() => {
       secondFrame = requestAnimationFrame(followIfAtGroupEnd);
