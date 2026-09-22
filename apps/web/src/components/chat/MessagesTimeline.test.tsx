@@ -391,7 +391,7 @@ describe("MessagesTimeline", () => {
       await act(() => toggle.props.onClick());
       expect(row.findByType("button").props["aria-expanded"]).toBe(true);
       expect(row.findByProps({ "data-reasoning-scroll": true }).props.className).toContain(
-        "max-h-[min(18rem,50dvh)]",
+        "max-h-96",
       );
       expect(JSON.stringify(renderer!.toJSON())).toContain("Investigating a long reasoning trace.");
     } finally {
@@ -1925,20 +1925,20 @@ describe("MessagesTimeline", () => {
 
     expect(markup.match(/data-timeline-row-kind="reasoning-run"/g)).toHaveLength(2);
     expect(markup).toContain("I will check the API.");
-    expect(markup).toContain("Full reasoning");
+    expect(markup).toContain("Thought");
     expect(markup).toContain('aria-expanded="false"');
     expect(markup).not.toContain("Private raw trace.");
   });
 
-  it("preserves raw reasoning blocks when opened", async () => {
+  it("renders raw reasoning blocks with their original spacing when opened", async () => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     vi.stubGlobal("requestAnimationFrame", () => 0);
     vi.stubGlobal("cancelAnimationFrame", () => {});
     const turnId = TurnId.make("turn-raw-blocks");
     const entries = [
       { id: "summary-entry", messageId: "reasoning:summary:item", text: "Checking the API." },
-      { id: "raw-first", messageId: "reasoning:raw:first", text: "  first block\n" },
-      { id: "raw-second", messageId: "reasoning:raw:second", text: "\nsecond block  " },
+      { id: "raw-first", messageId: "reasoning:raw:first", text: "**first block**" },
+      { id: "raw-second", messageId: "reasoning:raw:second", text: "## second block" },
     ].map(({ id, messageId, text }) => {
       const entry = buildAssistantTimelineEntry(text);
       return {
@@ -1969,9 +1969,10 @@ describe("MessagesTimeline", () => {
         .find((button) => button.props["aria-expanded"] === false);
       expect(toggle).toBeDefined();
       await act(() => toggle!.props.onClick());
-      expect(renderer!.root.findByProps({ "data-reasoning-scroll": true }).children).toEqual([
-        "  first block\n\n\nsecond block  ",
-      ]);
+      const details = renderer!.root.findByProps({ "data-reasoning-scroll": true });
+      expect(details.props.className).toContain("gap-3");
+      expect(details.findAllByType("strong")).toHaveLength(1);
+      expect(details.findAllByType("h2")).toHaveLength(1);
     } finally {
       await act(() => renderer?.unmount());
       vi.unstubAllGlobals();

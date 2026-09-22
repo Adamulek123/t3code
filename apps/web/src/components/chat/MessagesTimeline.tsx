@@ -2634,32 +2634,57 @@ function RawReasoningTimelineRow({
   const detailsId = useId();
   const messageId = row.messages[0]!.id;
   const expanded = ctx.expandedReasoningMessageIds.has(messageId);
-  const text = expanded ? row.messages.map((message) => message.text).join("\n") : null;
+  const label = `Thought${row.messages.length > 1 ? ` (×${row.messages.length})` : ""}`;
   return (
-    <div className="min-w-0 px-1">
+    <div className={cn("flex min-w-0 flex-col", expanded && "mb-1")}>
       <button
         type="button"
-        className="flex min-h-6 w-full items-center gap-1.5 rounded-md text-left text-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70"
+        className="flex cursor-pointer select-none items-center gap-1.5 rounded-md px-0.5 py-0.5 text-start transition-colors hover:bg-accent/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70"
         aria-expanded={expanded}
         aria-controls={detailsId}
         onClick={() => ctx.onToggleReasoning(messageId, !expanded, row.id)}
       >
-        <ChevronRightIcon
-          aria-hidden="true"
-          className={cn("size-3.5 shrink-0 transition-transform", expanded && "rotate-90")}
-        />
-        Full reasoning
+        <span className="flex size-6 shrink-0 items-center justify-center text-icon-muted">
+          <BrainIcon aria-hidden className="block size-4 shrink-0 stroke-[1.8] opacity-70" />
+        </span>
+        <span className="flex min-w-0 flex-1 items-center gap-1.5">
+          <span className="relative min-w-0 flex-1 truncate text-secondary-label text-sm leading-relaxed">
+            {label}
+          </span>
+          <span className="flex size-4 shrink-0 items-center justify-center" aria-hidden>
+            <ChevronRightIcon
+              className={cn(
+                "size-3 shrink-0 text-icon-muted opacity-70 transition-transform duration-200",
+                expanded && "rotate-90",
+              )}
+            />
+          </span>
+        </span>
       </button>
-      {text !== null ? (
+      {expanded ? (
         <div
           id={detailsId}
           role="region"
-          aria-label="Full reasoning"
+          aria-label={label}
           tabIndex={0}
           data-reasoning-scroll
-          className="scrollbar-gutter-stable max-h-[min(18rem,50dvh)] overflow-x-hidden overflow-y-auto rounded-md py-1 text-sm leading-relaxed text-foreground/[calc(80%+var(--appearance-contrast-boost)/5)] whitespace-pre-wrap [overflow-wrap:anywhere] [word-break:break-word] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70"
+          className="mt-1 ms-7 flex max-h-96 flex-col gap-3 overflow-x-hidden overflow-y-auto px-0.5 py-1 select-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70"
         >
-          {text}
+          {row.messages.map((message) => (
+            <ChatMarkdown
+              key={message.id}
+              className="text-foreground"
+              text={message.text}
+              cwd={ctx.markdownCwd}
+              threadRef={ctx.threadRef ?? undefined}
+              isStreaming={message.streaming}
+              lineBreaks
+              skills={ctx.skills}
+              headingLevelOffset={MESSAGE_HEADING_LEVEL}
+              onUseArtifactTemplate={ctx.onUseArtifactTemplate}
+              onImageExpand={ctx.onImageExpand}
+            />
+          ))}
         </div>
       ) : null}
     </div>

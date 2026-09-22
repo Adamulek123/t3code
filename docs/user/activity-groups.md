@@ -2,7 +2,7 @@
 
 On web and desktop, expand a completed turn in chat to see the agent's reasoning
 and tool calls in order. Short reasoning summaries read like the agent's other
-text. When a provider also exposes a full reasoning trace, open Full reasoning
+text. When a provider also exposes a full reasoning trace, open Thought
 to read it. Expand a tool summary to see its calls in a bounded list.
 
 Open a tool call to inspect its details. Those details stay open when you scroll
