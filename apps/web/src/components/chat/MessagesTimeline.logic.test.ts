@@ -1928,21 +1928,52 @@ describe("deriveMessagesTimelineRows", () => {
     expect(
       reasoningDisplayKind(
         { ...base, id: MessageId.make("reasoning:summary:item"), text: "x".repeat(5_000) },
-        { hasSummary: true, rawCharacters: 5_000, rawLines: 0 },
+        { hasSummary: true },
       ),
     ).toBe("summary");
     expect(
       reasoningDisplayKind(
         { ...base, id: MessageId.make("reasoning:raw:item"), text: "short" },
-        { hasSummary: true, rawCharacters: 5, rawLines: 0 },
+        { hasSummary: true },
       ),
     ).toBe("raw");
     expect(
       reasoningDisplayKind(
         { ...base, id: MessageId.make("reasoning:raw:item"), text: "short" },
-        { hasSummary: false, rawCharacters: 5, rawLines: 0 },
+        { hasSummary: false },
       ),
     ).toBe("summary");
+  });
+
+  it("keeps short raw-only thoughts inline when another thought in the turn is long", () => {
+    const first = reasoningEntry("reasoning:raw:first", "2026-01-01T00:00:01Z", "turn-1");
+    first.message.text = "Checking the test result.";
+    const progress = answerEntry("progress", "2026-01-01T00:00:02Z", "turn-1");
+    progress.message.text = "The test passed. Running typecheck.";
+    const second = reasoningEntry("reasoning:raw:second", "2026-01-01T00:00:03Z", "turn-1");
+    second.message.text = "Checking the typecheck result.";
+    const long = reasoningEntry("reasoning:raw:long", "2026-01-01T00:00:04Z", "turn-1");
+    long.message.text = "The full trace.\n".repeat(300);
+
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [first, progress, second, long],
+      runningTurnId: TurnId.make("turn-1"),
+      isWorking: true,
+      activeTurnStartedAt: "2026-01-01T00:00:00Z",
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
+    });
+
+    expect(
+      rows.filter((row) => row.kind === "reasoning-run").map((row) => [row.id, row.reasoningKind]),
+    ).toEqual([
+      [first.id, "summary"],
+      [second.id, "summary"],
+      [long.id, "raw"],
+    ]);
+    expect(
+      rows.some((row) => row.kind === "message" && row.message.id === progress.message.id),
+    ).toBe(true);
   });
 
   it("keeps provider summaries and raw traces in separate reasoning rows", () => {

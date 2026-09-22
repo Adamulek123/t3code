@@ -287,8 +287,6 @@ const LIVE_ACTIVITY_ROW_ID = "live-activity-row";
 
 interface ReasoningTurnStats {
   hasSummary: boolean;
-  rawCharacters: number;
-  rawLines: number;
 }
 
 function reasoningStatsByTurn(
@@ -299,14 +297,9 @@ function reasoningStatsByTurn(
     if (entry.kind !== "message" || entry.message.role !== "reasoning") continue;
     const message = entry.message;
     const key = message.turnId ?? message.id;
-    const turn = stats.get(key) ?? { hasSummary: false, rawCharacters: 0, rawLines: 0 };
+    const turn = stats.get(key) ?? { hasSummary: false };
     if (message.id.startsWith("reasoning:summary:")) {
       turn.hasSummary = true;
-    } else {
-      turn.rawCharacters += message.text.length;
-      if (turn.rawCharacters <= 4_000 && turn.rawLines <= 24) {
-        turn.rawLines += message.text.split("\n", 26).length - 1;
-      }
     }
     stats.set(key, turn);
   }
@@ -318,7 +311,9 @@ export function reasoningDisplayKind(
   turn: ReasoningTurnStats,
 ): "summary" | "raw" {
   if (message.id.startsWith("reasoning:summary:")) return "summary";
-  return turn.hasSummary || turn.rawCharacters > 4_000 || turn.rawLines > 24 ? "raw" : "summary";
+  return turn.hasSummary || message.text.length > 2_000 || message.text.split("\n", 26).length > 25
+    ? "raw"
+    : "summary";
 }
 
 export type MessagesTimelineRow =
@@ -1092,11 +1087,7 @@ export function deriveMessagesTimelineRows(input: {
   const displayKind = (message: ChatMessage) =>
     reasoningDisplayKind(
       message,
-      reasoningTurns.get(message.turnId ?? message.id) ?? {
-        hasSummary: false,
-        rawCharacters: message.text.length,
-        rawLines: message.text.split("\n", 26).length - 1,
-      },
+      reasoningTurns.get(message.turnId ?? message.id) ?? { hasSummary: false },
     );
 
   for (let index = 0; index < input.timelineEntries.length; index += 1) {
