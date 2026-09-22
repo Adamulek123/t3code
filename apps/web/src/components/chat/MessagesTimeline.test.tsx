@@ -360,6 +360,92 @@ describe("MessagesTimeline", () => {
     }
   });
 
+  it("wires the disclosure callback into expanded agent-spawn entries", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    vi.stubGlobal("requestAnimationFrame", () => 0);
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    const turnId = TurnId.make("turn-spawn");
+    const entries = [
+      {
+        id: "entry-user",
+        kind: "message" as const,
+        createdAt: MESSAGE_CREATED_AT,
+        message: {
+          id: MessageId.make("message-user"),
+          role: "user" as const,
+          text: "Fan out.",
+          turnId,
+          createdAt: MESSAGE_CREATED_AT,
+          updatedAt: MESSAGE_CREATED_AT,
+          streaming: false,
+        },
+      },
+      {
+        id: "entry-spawn",
+        kind: "work" as const,
+        createdAt: MESSAGE_CREATED_AT,
+        entry: {
+          id: "spawn-1",
+          createdAt: MESSAGE_CREATED_AT,
+          turnId,
+          label: "Ran 2 subagents",
+          tone: "tool" as const,
+          toolLifecycleStatus: "inProgress" as const,
+          agentSpawn: { workflowId: null, agentTaskIds: ["agent-a", "agent-b"] },
+        },
+      },
+      {
+        id: "entry-tool",
+        kind: "work" as const,
+        createdAt: MESSAGE_CREATED_AT,
+        entry: {
+          id: "tool-1",
+          createdAt: MESSAGE_CREATED_AT,
+          turnId,
+          toolCallId: "call-tool-1",
+          label: "Run command",
+          tone: "tool" as const,
+          itemType: "command_execution" as const,
+          command: "echo hi",
+          toolLifecycleStatus: "inProgress" as const,
+        },
+      },
+    ];
+    const props = {
+      ...buildProps(),
+      isWorking: true,
+      activeTurnStartedAt: MESSAGE_CREATED_AT,
+      runningTurnId: turnId,
+      latestTurn: {
+        turnId,
+        state: "running" as const,
+        startedAt: MESSAGE_CREATED_AT,
+        completedAt: null,
+      },
+    };
+    let renderer: ReactTestRenderer | undefined;
+    try {
+      await act(() => {
+        renderer = create(<MessagesTimeline {...props} timelineEntries={entries} />);
+      });
+      const expandToggle = renderer!.root
+        .findAllByType("button")
+        .find((button) => button.props["aria-expanded"] === false);
+      expect(expandToggle).toBeDefined();
+      await act(() => expandToggle!.props.onClick());
+
+      const expandedRows = renderer!.root.findAllByProps({
+        isExpandedToolGroupEntry: true,
+      });
+      expect(expandedRows.length).toBeGreaterThan(0);
+      for (const row of expandedRows) {
+        expect(row.props["onToggleEntry"]).toBeTypeOf("function");
+      }
+    } finally {
+      await act(() => renderer?.unmount());
+    }
+  });
+
   it.each([
     { atGroupEnd: true, expectedOffset: 50 },
     { atGroupEnd: false, expectedOffset: undefined },

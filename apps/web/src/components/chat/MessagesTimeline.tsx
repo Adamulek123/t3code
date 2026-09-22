@@ -3034,6 +3034,7 @@ function ExpandedWorkEntryTimelineRow({
           workEntry={row.entry}
           workspaceRoot={workspaceRoot}
           isExpandedToolGroupEntry
+          onToggleEntry={groupView.onToggleEntry}
         />
       </section>
     </WorkGroupViewCtx>
