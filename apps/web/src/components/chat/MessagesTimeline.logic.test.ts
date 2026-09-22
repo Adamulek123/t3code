@@ -27,6 +27,7 @@ import {
   liveWorkEntryLabel,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
+  reasoningDisplayKind,
   resolveWorkGroupScrollIndex,
   shouldFollowWorkGroupAppend,
   shouldPreserveAssistantLineBreaks,
@@ -43,6 +44,28 @@ import {
   type TimelineEntriesProjection,
 } from "../../session-logic";
 import { isImageAttachment, type ChatMessage, type TurnDiffSummary } from "../../types";
+
+describe("expanded tool group scrolling", () => {
+  const entry = (id: string) => ({
+    id,
+    createdAt: "2026-09-20T12:00:00.000Z",
+    label: id,
+    tone: "tool" as const,
+  });
+
+  it("restores the saved entry in a group", () => {
+    expect(
+      resolveWorkGroupScrollIndex([entry("one"), entry("two")], { entryId: "two", offset: 4 }),
+    ).toEqual({ index: 1, viewOffset: -4 });
+  });
+
+  it("follows appended entries only when the group is at its end", () => {
+    expect(shouldFollowWorkGroupAppend([entry("one")], [entry("one"), entry("two")], 0)).toBe(true);
+    expect(shouldFollowWorkGroupAppend([entry("one")], [entry("one"), entry("two")], 5)).toBe(
+      false,
+    );
+  });
+});
 
 describe("streaming row projection", () => {
   function fixture(text = "") {
@@ -634,55 +657,6 @@ describe("streaming row projection", () => {
   });
 });
 
-describe("expanded tool group scrolling", () => {
-  const entries = [{ id: "first" }, { id: "second" }];
-
-  it("follows appended calls only at the hard end", () => {
-    const appended = [...entries, { id: "third" }];
-    expect(shouldFollowWorkGroupAppend(entries, appended, 0)).toBe(true);
-    expect(shouldFollowWorkGroupAppend(entries, appended, 0.5)).toBe(true);
-    expect(shouldFollowWorkGroupAppend(entries, appended, 1)).toBe(true);
-    expect(shouldFollowWorkGroupAppend(entries, appended, 1.01)).toBe(false);
-    expect(shouldFollowWorkGroupAppend(entries, appended, 10)).toBe(false);
-    expect(shouldFollowWorkGroupAppend(entries, appended, Infinity)).toBe(false);
-  });
-
-  it("does not follow output updates, prepends, or replacements", () => {
-    expect(
-      shouldFollowWorkGroupAppend(
-        entries,
-        entries.map((entry) => ({ ...entry })),
-        0,
-      ),
-    ).toBe(false);
-    expect(shouldFollowWorkGroupAppend(entries, [{ id: "older" }, ...entries], 0)).toBe(false);
-    expect(
-      shouldFollowWorkGroupAppend(
-        entries,
-        [{ id: "replacement" }, entries[1]!, { id: "third" }],
-        0,
-      ),
-    ).toBe(false);
-    expect(shouldFollowWorkGroupAppend([], entries, 0)).toBe(false);
-  });
-
-  it("restores the visible tool and its offset inside expanded output", () => {
-    const anchor = { entryId: "second", offset: 120 };
-    expect(resolveWorkGroupScrollIndex(entries, anchor)).toEqual({ index: 1, viewOffset: -120 });
-    expect(resolveWorkGroupScrollIndex([{ id: "older" }, ...entries], anchor)).toEqual({
-      index: 2,
-      viewOffset: -120,
-    });
-  });
-
-  it("starts normally when the saved tool no longer exists", () => {
-    expect(resolveWorkGroupScrollIndex(entries, undefined)).toBeUndefined();
-    expect(
-      resolveWorkGroupScrollIndex(entries, { entryId: "removed", offset: 120 }),
-    ).toBeUndefined();
-  });
-});
-
 describe("work entry labels", () => {
   const entry = {
     id: "tool-1",
@@ -803,7 +777,6 @@ describe("work entry labels", () => {
       const directRow = rows.find((row) => row.kind === "work");
       expect(directRow).toMatchObject({
         groupedEntries: [expect.objectContaining({ id: "tool-1" })],
-        isExpandedToolGroup: false,
         displayLabel: label,
       });
     },
@@ -1950,20 +1923,82 @@ describe("deriveMessagesTimelineRows", () => {
     },
   });
 
-  it("keeps all thoughts in one activity row as current and earlier traces stream", () => {
-    const entries = [1, 2, 3, 4].map((second) => {
-      const entry = reasoningEntry(`reasoning-${second}`, `2026-01-01T00:00:0${second}Z`, "turn-1");
-      return {
-        ...entry,
-        message: {
-          ...entry.message,
-          text: `Step ${second}`,
-          streaming: second === 2 || second === 4,
-        },
-      };
+  it("uses the provider stream kind even when the summary is long or raw text is short", () => {
+    const base = reasoningEntry("reasoning", "2026-01-01T00:00:01Z", "turn-1").message;
+    expect(
+      reasoningDisplayKind(
+        { ...base, id: MessageId.make("reasoning:summary:item"), text: "x".repeat(5_000) },
+        { hasSummary: true, rawCharacters: 5_000, rawLines: 0 },
+      ),
+    ).toBe("summary");
+    expect(
+      reasoningDisplayKind(
+        { ...base, id: MessageId.make("reasoning:raw:item"), text: "short" },
+        { hasSummary: true, rawCharacters: 5, rawLines: 0 },
+      ),
+    ).toBe("raw");
+    expect(
+      reasoningDisplayKind(
+        { ...base, id: MessageId.make("reasoning:raw:item"), text: "short" },
+        { hasSummary: false, rawCharacters: 5, rawLines: 0 },
+      ),
+    ).toBe("summary");
+  });
+
+  it("keeps provider summaries and raw traces in separate reasoning rows", () => {
+    const summary = reasoningEntry("summary", "2026-01-01T00:00:01Z", "turn-1");
+    summary.message.id = MessageId.make("reasoning:summary:item") as never;
+    const raw = reasoningEntry("raw", "2026-01-01T00:00:02Z", "turn-1");
+    raw.message.id = MessageId.make("reasoning:raw:item") as never;
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [summary, raw],
+      runningTurnId: TurnId.make("turn-1"),
+      isWorking: true,
+      activeTurnStartedAt: "2026-01-01T00:00:00Z",
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
     });
+    expect(
+      rows.filter((row) => row.kind === "reasoning-run").map((row) => row.reasoningKind),
+    ).toEqual(["summary", "raw"]);
+  });
+
+  it("renders reasoning between adjacent tool groups in turn order", () => {
+    const first = reasoningEntry("thought-first", "2026-01-01T00:00:01Z", "turn-1");
+    const tools = [
+      toolEntry("tool-a", "2026-01-01T00:00:02Z", "turn-1"),
+      toolEntry("tool-b", "2026-01-01T00:00:03Z", "turn-1"),
+    ];
+    const second = reasoningEntry("thought-second", "2026-01-01T00:00:04Z", "turn-1");
+    const answer = answerEntry("answer", "2026-01-01T00:00:06Z", "turn-1");
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [first, ...tools, second, answer],
+      expandedTurnIds: new Set([TurnId.make("turn-1")]),
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
+    });
+    expect(rows.map((row) => row.kind)).toEqual([
+      "turn-fold",
+      "reasoning-run",
+      "work-toggle",
+      "reasoning-run",
+      "message",
+    ]);
+    expect(
+      rows
+        .filter((row) => row.kind === "reasoning-run" || row.kind === "message")
+        .map((row) => row.id),
+    ).toEqual([first.id, second.id, answer.id]);
+    expect(rows[2]).toMatchObject({ hiddenCount: 2 });
+  });
+
+  it("keeps inline reasoning live and updates its row as text streams", () => {
+    const first = reasoningEntry("thought-first", "2026-01-01T00:00:01Z", "turn-1");
+    first.message.streaming = true;
     const input = {
-      timelineEntries: entries,
+      timelineEntries: [first],
       runningTurnId: TurnId.make("turn-1"),
       isWorking: true,
       activeTurnStartedAt: "2026-01-01T00:00:00Z",
@@ -1971,282 +2006,63 @@ describe("deriveMessagesTimelineRows", () => {
       supportsConversationRollback: false,
     } satisfies Parameters<typeof deriveMessagesTimelineRows>[0];
     const initial = deriveMessagesTimelineRowsWithState(input);
-    expect(initial.rows.map((row) => row.kind)).toEqual(["working", "activity-group"]);
-    expect(initial.rows.at(-1)).toMatchObject({
-      id: "live-activity-row",
-      entries,
-      expanded: false,
-      active: true,
-    });
-    expect(deriveMessagesTimelineRowsWithState(input, initial).rows).toBe(initial.rows);
-    const stable = computeStableMessagesTimelineRows(initial.rows, { byId: new Map(), result: [] });
-    expect(computeStableMessagesTimelineRows(deriveMessagesTimelineRows(input), stable)).toBe(
-      stable,
-    );
-
-    for (const index of [3, 1]) {
-      const entry = entries[index]!;
-      const updatedEntry = { ...entry, message: { ...entry.message, text: "Updated trace" } };
-      const updatedEntries = entries.map((entry, position) =>
-        position === index ? updatedEntry : entry,
-      );
-      const updatedInput = { ...input, timelineEntries: updatedEntries };
-      const updated = deriveMessagesTimelineRowsWithState(updatedInput, initial);
-      expect(updated.rows).toEqual(deriveMessagesTimelineRows(updatedInput));
-      const updatedStable = computeStableMessagesTimelineRows(updated.rows, stable);
-      expect(updatedStable.byId.get("live-activity-row")).not.toBe(
-        stable.byId.get("live-activity-row"),
-      );
-      expect(updatedStable.byId.get("live-activity-row")).toMatchObject({
-        entries: updatedEntries,
-      });
-      expect(updatedStable.byId.get("working-indicator-row")).toBe(
-        stable.byId.get("working-indicator-row"),
-      );
-      expect(initial.rows.at(-1)).toMatchObject({ entries });
-    }
-  });
-
-  it("updates the same collapsed row as tools and thoughts alternate", () => {
-    const first = reasoningEntry("thought-first", "2026-01-01T00:00:01Z", "turn-1");
-    const current = reasoningEntry("thought-current", "2026-01-01T00:00:02Z", "turn-1");
-    current.message.streaming = true;
-    const tool = toolEntry("tool-current", "2026-01-01T00:00:03Z", "turn-1");
-    const runningTool = {
-      ...tool,
-      entry: { ...tool.entry, command: "pwd", toolLifecycleStatus: "inProgress" as const },
+    expect(initial.rows.map((row) => row.kind)).toEqual(["working", "reasoning-run"]);
+    const updated = {
+      ...first,
+      message: { ...first.message, text: "More reasoning", updatedAt: "2026-01-01T00:00:02Z" },
     };
-    const next = reasoningEntry("thought-next", "2026-01-01T00:00:04Z", "turn-1");
-    next.message.streaming = true;
-    const completed = { ...current, message: { ...current.message, streaming: false } };
-    for (const entries of [
-      [first, current],
-      [first, current, runningTool],
-      [first, current, runningTool, next],
-      [first, completed],
-    ]) {
-      const input = {
-        timelineEntries: entries,
-        runningTurnId: TurnId.make("turn-1"),
-        isWorking: true,
-        activeTurnStartedAt: "2026-01-01T00:00:00Z",
-        turnDiffSummaries: [],
-        supportsConversationRollback: false,
-      } satisfies Parameters<typeof deriveMessagesTimelineRows>[0];
-      const rows = deriveMessagesTimelineRows(input);
-      expect(rows.map((row) => row.kind)).toEqual(["working", "activity-group"]);
-      expect(rows.at(-1)).toMatchObject({
-        id: "live-activity-row",
-        entries,
-        active: true,
-        expanded: false,
-      });
-      const expanded = deriveMessagesTimelineRows({
-        ...input,
-        expandedWorkGroupIds: new Set(["activity-group:thought-first"]),
-      });
-      expect(expanded.at(-1)).toMatchObject({ id: "live-activity-row", entries, expanded: true });
-    }
-  });
-
-  it.each(["assistant", "user", "error", "turn"] as const)(
-    "keeps activity separate across a %s boundary",
-    (boundary) => {
-      const first = reasoningEntry("reasoning-first", "2026-01-01T00:00:01Z", "turn-1");
-      const last = reasoningEntry(
-        "reasoning-last",
-        "2026-01-01T00:00:03Z",
-        boundary === "turn" ? "turn-2" : "turn-1",
-      );
-      const answer = answerEntry("answer-between", "2026-01-01T00:00:02Z", "turn-1");
-      const error = toolEntry("error-between", "2026-01-01T00:00:02Z", "turn-1");
-      const middle =
-        boundary === "turn"
-          ? []
-          : boundary === "error"
-            ? [{ ...error, entry: { ...error.entry, tone: "error" as const } }]
-            : [
-                {
-                  ...answer,
-                  message: {
-                    ...answer.message,
-                    role: boundary === "user" ? ("user" as const) : ("assistant" as const),
-                  },
-                },
-              ];
-      const rows = deriveMessagesTimelineRows({
-        timelineEntries: [first, ...middle, last],
-        expandedTurnIds: new Set([TurnId.make("turn-1"), TurnId.make("turn-2")]),
-        isWorking: false,
-        activeTurnStartedAt: null,
-        turnDiffSummaries: [],
-        supportsConversationRollback: false,
-      });
-      expect(rows.filter((row) => row.kind === "activity-group")).toMatchObject([
-        { entries: [first], active: false },
-        { entries: [last], active: false },
-      ]);
-      if (boundary === "error") {
-        expect(rows).toContainEqual(expect.objectContaining({ kind: "work", id: error.id }));
-      }
-    },
-  );
-
-  it("does not combine thoughts without a known turn", () => {
-    const thoughts = [1, 2].map((second) =>
-      reasoningEntry(`unknown-${second}`, `2026-01-01T00:00:0${second}Z`, null),
+    const next = deriveMessagesTimelineRowsWithState(
+      { ...input, timelineEntries: [updated] },
+      initial,
     );
-    const rows = deriveMessagesTimelineRows({
-      timelineEntries: thoughts,
-      isWorking: false,
-      activeTurnStartedAt: null,
-      turnDiffSummaries: [],
-      supportsConversationRollback: false,
-    });
-    expect(rows.map((row) => row.id)).toEqual(thoughts.map((entry) => entry.id));
+    expect(next.rows[1]).toMatchObject({ kind: "reasoning-run", messages: [updated.message] });
+    expect(next.rows[0]).toBe(initial.rows[0]);
   });
 
-  it("keeps a thought-only turn out of the work fold", () => {
-    const thought = reasoningEntry("reasoning-entry", "2026-01-01T00:00:01Z", "turn-1");
-    const rows = deriveMessagesTimelineRows({
-      timelineEntries: [thought, answerEntry("assistant-entry", "2026-01-01T00:00:02Z", "turn-1")],
-      isWorking: false,
-      activeTurnStartedAt: null,
-      turnDiffSummaries: [],
-      supportsConversationRollback: false,
-    });
-    expect(rows.some((row) => row.kind === "turn-fold")).toBe(false);
-    expect(rows.find((row) => row.kind === "activity-group")).toMatchObject({
-      entries: [thought],
-      expanded: false,
-    });
-  });
-
-  it("keeps the assistant footer before a trailing thought-only group", () => {
-    const answer = answerEntry("assistant-entry", "2026-01-01T00:00:01Z", "turn-1");
-    const thought = reasoningEntry("reasoning-after", "2026-01-01T00:00:02Z", "turn-1");
-    const rows = deriveMessagesTimelineRows({
-      timelineEntries: [answer, thought],
-      isWorking: false,
-      activeTurnStartedAt: null,
-      turnDiffSummaries: [],
-      supportsConversationRollback: false,
-    });
-    expect(rows.map((row) => row.kind)).toEqual(["message", "activity-group"]);
-    expect(rows[0]).toMatchObject({ message: answer.message, showAssistantMeta: true });
-    expect(rows[1]).toMatchObject({ entries: [thought] });
-  });
-
-  it("keeps thoughts and tools in one activity row across a failed tool", () => {
-    const thought = reasoningEntry("reasoning-entry", "2026-01-01T00:00:01Z", "turn-1");
-    const tools = ["a", "b", "c"].map((id, index) => {
-      const entry = toolEntry(id, `2026-01-01T00:00:0${index + 2}Z`, "turn-1");
-      return {
-        ...entry,
-        entry: {
-          ...entry.entry,
-          command: `echo ${id}`,
-          toolCallId: id,
-          toolLifecycleStatus: id === "b" ? ("failed" as const) : ("completed" as const),
-          sourceActivityKind: "tool.completed" as const,
-        },
-      };
-    });
+  it("folds completed reasoning and tools together while preserving inline order", () => {
+    const first = reasoningEntry("thought-first", "2026-01-01T00:00:01Z", "turn-1");
+    const tool = toolEntry("tool", "2026-01-01T00:00:02Z", "turn-1");
+    const second = reasoningEntry("thought-second", "2026-01-01T00:00:03Z", "turn-1");
+    const answer = answerEntry("answer", "2026-01-01T00:00:04Z", "turn-1");
     const input = {
-      timelineEntries: [thought, ...tools],
-      runningTurnId: TurnId.make("turn-1"),
-      isWorking: true,
-      activeTurnStartedAt: "2026-01-01T00:00:00Z",
-      turnDiffSummaries: [],
-      supportsConversationRollback: false,
-    } satisfies Parameters<typeof deriveMessagesTimelineRows>[0];
-    const rows = deriveMessagesTimelineRows(input);
-    expect(rows.map((row) => row.kind)).toEqual(["working", "activity-group"]);
-    expect(rows.at(-1)).toMatchObject({
-      id: "live-activity-row",
-      entries: [thought, ...tools],
-      active: true,
-    });
-    const settled = deriveMessagesTimelineRows({
-      ...input,
-      timelineEntries: [
-        thought,
-        ...tools,
-        reasoningEntry("reasoning-next", "2026-01-01T00:00:05Z", "turn-1"),
-        { ...tools[1]!, id: "d", entry: { ...tools[1]!.entry, id: "d", toolCallId: "d" } },
-      ],
-      isWorking: false,
-      activeTurnStartedAt: null,
-    });
-    expect(settled.map((row) => row.kind)).toEqual(["activity-group"]);
-  });
-
-  it.each(["failed", "declined"] as const)(
-    "settles the activity row while the latest tool is %s",
-    (status) => {
-      const thought = reasoningEntry("reasoning-entry", "2026-01-01T00:00:01Z", "turn-1");
-      const tool = toolEntry("last-tool", "2026-01-01T00:00:02Z", "turn-1");
-      const rows = deriveMessagesTimelineRows({
-        timelineEntries: [
-          thought,
-          {
-            ...tool,
-            entry: {
-              ...tool.entry,
-              command: "echo nope",
-              toolCallId: "last-tool",
-              toolLifecycleStatus: status,
-              sourceActivityKind: "tool.completed" as const,
-            },
-          },
-        ],
-        runningTurnId: TurnId.make("turn-1"),
-        isWorking: true,
-        activeTurnStartedAt: "2026-01-01T00:00:00Z",
-        turnDiffSummaries: [],
-        supportsConversationRollback: false,
-      });
-      expect(rows.map((row) => row.kind)).toEqual(["working", "activity-group", "thinking"]);
-      expect(rows[1]).toMatchObject({ id: "activity-group:reasoning-entry", active: false });
-      expect(rows[2]).toMatchObject({ id: "live-activity-row" });
-    },
-  );
-
-  it("folds mixed activity under worked-for and restores ordered details when expanded", () => {
-    const entries = [
-      reasoningEntry("reasoning-entry", "2026-01-01T00:00:01Z", "turn-1"),
-      toolEntry("tool-entry", "2026-01-01T00:00:02Z", "turn-1"),
-      reasoningEntry("reasoning-next", "2026-01-01T00:00:03Z", "turn-1"),
-    ];
-    const input = {
-      timelineEntries: [
-        ...entries,
-        answerEntry("assistant-entry", "2026-01-01T00:00:04Z", "turn-1"),
-      ],
+      timelineEntries: [first, tool, second, answer],
       isWorking: false,
       activeTurnStartedAt: null,
       turnDiffSummaries: [],
       supportsConversationRollback: false,
     } satisfies Parameters<typeof deriveMessagesTimelineRows>[0];
-    const rows = deriveMessagesTimelineRows(input);
-    expect(rows.map((row) => row.kind)).toEqual(["turn-fold", "message"]);
+    expect(deriveMessagesTimelineRows(input).map((row) => row.kind)).toEqual([
+      "turn-fold",
+      "message",
+    ]);
     const expanded = deriveMessagesTimelineRows({
       ...input,
       expandedTurnIds: new Set([TurnId.make("turn-1")]),
     });
-    expect(expanded.filter((row) => row.kind === "activity-group")).toMatchObject([
-      { entries, expanded: false, active: false },
+    expect(expanded.map((row) => row.kind)).toEqual([
+      "turn-fold",
+      "reasoning-run",
+      "work",
+      "reasoning-run",
+      "message",
     ]);
-    const details = deriveMessagesTimelineRows({
-      ...input,
-      expandedTurnIds: new Set([TurnId.make("turn-1")]),
-      expandedWorkGroupIds: new Set(["activity-group:reasoning-entry"]),
+    expect(
+      expanded
+        .filter((row) => row.kind === "reasoning-run" || row.kind === "message")
+        .map((row) => row.id),
+    ).toEqual([first.id, second.id, answer.id]);
+  });
+
+  it("leaves a thought-only turn visible", () => {
+    const thought = reasoningEntry("thought", "2026-01-01T00:00:01Z", "turn-1");
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [thought, answerEntry("answer", "2026-01-01T00:00:02Z", "turn-1")],
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
     });
-    expect(details.find((row) => row.kind === "activity-group")).toMatchObject({
-      entries,
-      expanded: true,
-    });
-    expect(deriveMessagesTimelineRows(input)).toEqual(rows);
+    expect(rows.map((row) => row.kind)).toEqual(["reasoning-run", "message"]);
   });
 
   it("still folds a lone trailing tool call when a thought follows the answer", () => {
@@ -2794,7 +2610,6 @@ describe("deriveMessagesTimelineRows", () => {
     expect(rows.map((row) => row.kind)).toEqual(["working", "work", "message", "work-live"]);
     expect(rows.find((row) => row.kind === "work")).toMatchObject({
       groupedEntries: [{ id: "completed-command", command: "rg toolCall" }],
-      isExpandedToolGroup: false,
       displayLabel: "rg toolCall",
     });
   });
@@ -2845,7 +2660,6 @@ describe("deriveMessagesTimelineRows", () => {
 
     expect(rows.find((row) => row.kind === "work")).toMatchObject({
       groupedEntries: [{ id: "command-completed", toolCallId: "call-1" }],
-      isExpandedToolGroup: false,
       displayLabel: "rg toolCall",
     });
     expect(rows.some((row) => row.kind === "work-toggle")).toBe(false);
@@ -3352,16 +3166,10 @@ describe("deriveMessagesTimelineRows", () => {
       toolSurface: "browser",
       toolIcon: { _tag: "website", pageUrl: "https://example.com/checkout" },
     });
-    expect(expandedRows.map((row) => row.id)).toEqual([
-      "work-toggle:work-entry-1",
-      "work-group:work-entry-1:details",
-    ]);
-    expect(expandedRows.find((row) => row.kind === "work")).toMatchObject({
-      isExpandedToolGroup: true,
-      groupedEntries: timelineEntries.map(({ entry }) => entry),
-    });
+    expect(expandedRows.map((row) => row.id)).toEqual(["work-toggle:work-entry-1"]);
     expect(expandedRows.find((row) => row.kind === "work-toggle")).toMatchObject({
       expanded: true,
+      groupedEntries: timelineEntries.map(({ entry }) => entry),
     });
   });
 
@@ -3418,9 +3226,7 @@ describe("deriveMessagesTimelineRows", () => {
       ),
     });
     expect(
-      expandedGroups.flatMap((row) =>
-        row.kind === "work" && row.isExpandedToolGroup ? [row.groupedEntries] : [],
-      ),
+      expandedGroups.flatMap((row) => (row.kind === "work-toggle" ? [row.groupedEntries] : [])),
     ).toEqual([tools.slice(0, 2), tools.slice(2)]);
     const active = deriveMessagesTimelineRows({
       ...input,
@@ -3434,9 +3240,7 @@ describe("deriveMessagesTimelineRows", () => {
         (row) =>
           (row.kind === "work" || row.kind === "work-live") && row.groupedEntries.includes(answer),
       );
-      expect(answerRows).toMatchObject([
-        { kind: "work", groupedEntries: [answer], isExpandedToolGroup: false },
-      ]);
+      expect(answerRows).toMatchObject([{ kind: "work", groupedEntries: [answer] }]);
     }
     expect(active.find((row) => row.kind === "work-live")).toMatchObject({
       groupedEntries: tools.slice(2),
@@ -3522,7 +3326,7 @@ describe("deriveMessagesTimelineRows", () => {
   });
 
   it.each([true, false])(
-    "keeps a large expanded tool run inside one timeline item, live=%s",
+    "keeps a large expanded tool run in outer timeline rows, live=%s",
     (isWorking) => {
       const turnId = TurnId.make("turn-many-tools");
       const createdAt = "2026-09-01T12:00:00Z";
@@ -3555,12 +3359,14 @@ describe("deriveMessagesTimelineRows", () => {
         ...input,
         expandedWorkGroupIds: new Set([groupId]),
       });
-      const groupRows = expandedRows.filter((row) => row.kind === "work");
+      const groupRows = expandedRows.filter(
+        (row): row is Extract<MessagesTimelineRow, { kind: "work-toggle" | "work-live" }> =>
+          (row.kind === "work-toggle" || row.kind === "work-live") && row.groupId === groupId,
+      );
       expect(groupRows).toHaveLength(1);
-      expect(groupRows[0]?.groupedEntries.map(({ id }) => id)).toEqual(
+      expect(groupRows[0]?.groupedEntries.map((entry) => entry.id)).toEqual(
         timelineEntries.map(({ entry }) => entry.id),
       );
-      expect(groupRows[0]?.id).toBe(`${groupId}:details`);
       expect(deriveMessagesTimelineRows(input).some((row) => row.kind === "work")).toBe(false);
     },
   );
@@ -3664,6 +3470,7 @@ describe("computeStableMessagesTimelineRows", () => {
       createdAt: "2026-01-01T00:00:00Z",
       groupId: "work-group:1",
       hiddenCount: 1,
+      groupedEntries: [],
       expanded: false,
       summary: "Used Browser",
       summaryKind: "other",

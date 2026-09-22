@@ -304,6 +304,192 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain('aria-label="Next turn"');
   });
 
+  it("renders expanded tool groups in a bounded tool-call list", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    vi.stubGlobal("requestAnimationFrame", () => 0);
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    const labels = ["Alpha sync", "Beta sync", "Gamma sync"];
+    const entries = labels.map((label, index) => ({
+      id: `entry-work-${index}`,
+      kind: "work" as const,
+      createdAt: MESSAGE_CREATED_AT,
+      entry: {
+        id: `work-${index}`,
+        createdAt: MESSAGE_CREATED_AT,
+        toolCallId: `call-${index}`,
+        label,
+        tone: "tool" as const,
+        toolLifecycleStatus: "completed" as const,
+      },
+    }));
+    let renderer: ReactTestRenderer | undefined;
+    try {
+      await act(() => {
+        renderer = create(<MessagesTimeline {...buildProps()} timelineEntries={entries} />);
+      });
+      const toggle = renderer!.root
+        .findAllByType("button")
+        .find((button) => button.props["aria-expanded"] === false);
+      expect(toggle).toBeDefined();
+      await act(() => toggle!.props.onClick());
+      const scrollLists = renderer!.root.findAll(
+        (node) =>
+          typeof node.type === "string" &&
+          typeof node.props["data-class-name"] === "string" &&
+          node.props["data-class-name"].includes("max-h-[min(18rem,50dvh)]"),
+      );
+      expect(scrollLists).toHaveLength(1);
+      const markup = JSON.stringify(renderer!.toJSON());
+      for (const label of labels) expect(markup).toContain(label);
+    } finally {
+      await act(() => renderer?.unmount());
+    }
+  });
+
+  it("opens a long legacy reasoning trace on demand", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    vi.stubGlobal("requestAnimationFrame", () => 0);
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    const turnId = TurnId.make("reasoning-turn");
+    const thought = {
+      id: "thought-entry",
+      kind: "message" as const,
+      createdAt: MESSAGE_CREATED_AT,
+      message: {
+        id: MessageId.make("thought"),
+        role: "reasoning" as const,
+        text: "Investigating a long reasoning trace.\n\n".repeat(100),
+        turnId,
+        createdAt: MESSAGE_CREATED_AT,
+        updatedAt: MESSAGE_CREATED_AT,
+        streaming: false,
+      },
+    };
+    const answer = buildAssistantTimelineEntry("Final answer");
+    let renderer: ReactTestRenderer | undefined;
+    try {
+      await act(() => {
+        renderer = create(
+          <MessagesTimeline
+            {...buildProps()}
+            isWorking
+            runningTurnId={turnId}
+            activeTurnStartedAt={MESSAGE_CREATED_AT}
+            timelineEntries={[thought, { ...answer, message: { ...answer.message, turnId } }]}
+          />,
+        );
+      });
+      const row = renderer!.root.findByProps({
+        "data-timeline-row-kind": "reasoning-run",
+        "data-message-role": "reasoning",
+      });
+      const toggle = row.findByType("button");
+      expect(toggle.props["aria-expanded"]).toBe(false);
+      expect(JSON.stringify(renderer!.toJSON())).not.toContain(
+        "Investigating a long reasoning trace.",
+      );
+      await act(() => toggle.props.onClick());
+      expect(row.findByType("button").props["aria-expanded"]).toBe(true);
+      expect(row.findByProps({ "data-reasoning-scroll": true }).props.className).toContain(
+        "max-h-[min(18rem,50dvh)]",
+      );
+      expect(JSON.stringify(renderer!.toJSON())).toContain("Investigating a long reasoning trace.");
+    } finally {
+      await act(() => renderer?.unmount());
+    }
+  });
+
+  it("renders expanded agent-spawn entries within the tool-call list", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    vi.stubGlobal("requestAnimationFrame", () => 0);
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    const turnId = TurnId.make("turn-spawn");
+    const entries = [
+      {
+        id: "entry-user",
+        kind: "message" as const,
+        createdAt: MESSAGE_CREATED_AT,
+        message: {
+          id: MessageId.make("message-user"),
+          role: "user" as const,
+          text: "Fan out.",
+          turnId,
+          createdAt: MESSAGE_CREATED_AT,
+          updatedAt: MESSAGE_CREATED_AT,
+          streaming: false,
+        },
+      },
+      {
+        id: "entry-spawn",
+        kind: "work" as const,
+        createdAt: MESSAGE_CREATED_AT,
+        entry: {
+          id: "spawn-1",
+          createdAt: MESSAGE_CREATED_AT,
+          turnId,
+          label: "Ran 2 subagents",
+          tone: "tool" as const,
+          toolLifecycleStatus: "inProgress" as const,
+          agentSpawn: { workflowId: null, agentTaskIds: ["agent-a", "agent-b"] },
+        },
+      },
+      {
+        id: "entry-tool",
+        kind: "work" as const,
+        createdAt: MESSAGE_CREATED_AT,
+        entry: {
+          id: "tool-1",
+          createdAt: MESSAGE_CREATED_AT,
+          turnId,
+          toolCallId: "call-tool-1",
+          label: "Run command",
+          tone: "tool" as const,
+          itemType: "command_execution" as const,
+          command: "echo hi",
+          toolLifecycleStatus: "inProgress" as const,
+        },
+      },
+    ];
+    const props = {
+      ...buildProps(),
+      isWorking: true,
+      activeTurnStartedAt: MESSAGE_CREATED_AT,
+      runningTurnId: turnId,
+      latestTurn: {
+        turnId,
+        state: "running" as const,
+        startedAt: MESSAGE_CREATED_AT,
+        completedAt: null,
+      },
+    };
+    let renderer: ReactTestRenderer | undefined;
+    try {
+      await act(() => {
+        renderer = create(<MessagesTimeline {...props} timelineEntries={entries} />);
+      });
+      const expandToggle = renderer!.root
+        .findAllByType("button")
+        .find((button) => button.props["aria-expanded"] === false);
+      expect(expandToggle).toBeDefined();
+      await act(() => expandToggle!.props.onClick());
+
+      const expandedRows = renderer!.root.findAllByProps({
+        isExpandedToolGroupEntry: true,
+      });
+      expect(expandedRows.length).toBeGreaterThan(0);
+      expect(
+        renderer!.root.findAll(
+          (node) =>
+            typeof node.type === "string" &&
+            typeof node.props["data-class-name"] === "string" &&
+            node.props["data-class-name"].includes("max-h-[min(18rem,50dvh)]"),
+        ),
+      ).toHaveLength(1);
+    } finally {
+      await act(() => renderer?.unmount());
+    }
+  });
+
   // Expanding history uses this suite's existing test renderer, deprecated in
   // React 19. Migrate these interaction tests together when a DOM test setup is added.
   it.each([{}, { text: "Text-only answer", file: "Answer with a file" }])(
@@ -1656,97 +1842,141 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain("tool call failed");
   });
 
-  it.each(
-    (
-      [
-        [
-          "**Viewing image first** with *care*, ~~old~~ `code` and [context](https://example.com)",
-          "Viewing image first with care, old code and context",
-          1,
-        ],
-        ["first paragraph\n\nsecond paragraph", "first paragraph second paragraph", 0],
-        ["- first\n- second", "first second", 0],
-        ["first  \nsecond", "first second", 0],
-        ["![image description](image.png)", "image description", 0],
-        ["![](image.png)", "Thought", 0],
-        ["---", "Thought", 0],
-      ] as const
-    ).flatMap(([markdown, expected, strongCount]) =>
-      [false, true].map((streaming) => ({
-        markdown,
-        expected,
-        strongCount,
-        streaming,
-      })),
-    ),
-  )(
-    "shows a plain thought preview for $markdown, streaming=$streaming",
-    async ({ markdown, expected, strongCount, streaming }) => {
-      vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-      vi.stubGlobal("requestAnimationFrame", () => 0);
-      vi.stubGlobal("cancelAnimationFrame", () => {});
-      const turnId = TurnId.make("turn-thought");
-      const thought = buildAssistantTimelineEntry(markdown);
-      let renderer: ReactTestRenderer | undefined;
-      try {
-        await act(() => {
-          renderer = create(
-            <MessagesTimeline
-              {...buildProps()}
-              isWorking
-              runningTurnId={turnId}
-              timelineEntries={[
-                {
-                  id: "work-entry",
-                  kind: "work",
-                  createdAt: MESSAGE_CREATED_AT,
-                  entry: {
-                    id: "work",
-                    createdAt: MESSAGE_CREATED_AT,
-                    turnId,
-                    label: "Read image",
-                    tone: "tool",
-                    itemType: "command_execution",
-                    command: "cat image.png",
-                    toolLifecycleStatus: "completed",
-                  },
-                },
-                {
-                  ...thought,
-                  message: { ...thought.message, role: "reasoning", turnId, streaming },
-                },
-              ]}
-            />,
-          );
-        });
-        await act(() => renderer!.root.findByProps({ "aria-expanded": false }).props.onClick());
-        const text = renderer!.root.findByProps({
-          className: "relative min-w-0 flex-1 truncate text-secondary-label",
-        });
-        const preview = text.parent!;
-        expect(
-          text
-            .findAll(() => true)
-            .flatMap((node) => node.children)
-            .filter((child) => typeof child === "string")
-            .join(""),
-        ).toBe(
-          (streaming && expected === "Thought" ? "Thinking" : expected).repeat(streaming ? 2 : 1),
+  it("renders reasoning markdown with the same typography as assistant text", () => {
+    const turnId = TurnId.make("turn-thought");
+    const thought = buildAssistantTimelineEntry("**Viewing image first** with `code`.");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        isWorking
+        runningTurnId={turnId}
+        timelineEntries={[
+          { ...thought, message: { ...thought.message, role: "reasoning", turnId } },
+        ]}
+      />,
+    );
+    expect(markup).toContain("Viewing image first");
+    expect(markup).toContain("<strong>");
+    expect(markup).toContain("<code data-inline-code");
+    expect(markup).not.toContain('data-timeline-row-kind="reasoning-trace"');
+  });
+
+  it("renders adjacent thinking chunks as one compact paragraph", () => {
+    const turnId = TurnId.make("turn-thought-chunks");
+    const chunks = ["Launching subagents.", "Selecting direct calls.", "Sequencing the work."];
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        isWorking
+        runningTurnId={turnId}
+        timelineEntries={chunks.map((text, index) => ({
+          id: `thought-entry-${index}`,
+          kind: "message" as const,
+          createdAt: MESSAGE_CREATED_AT,
+          message: {
+            id: MessageId.make(`reasoning:raw:thought-${index}`),
+            role: "reasoning" as const,
+            text,
+            turnId,
+            createdAt: MESSAGE_CREATED_AT,
+            updatedAt: MESSAGE_CREATED_AT,
+            streaming: false,
+          },
+        }))}
+      />,
+    );
+    expect(markup.match(/data-timeline-row-kind="reasoning-run"/g)).toHaveLength(1);
+    expect(markup).toContain("Launching subagents. Selecting direct calls. Sequencing the work.");
+  });
+
+  it("shows a provider summary beside a collapsed raw trace", () => {
+    const turnId = TurnId.make("turn-mixed-reasoning");
+    const summary = buildAssistantTimelineEntry("I will check the API.");
+    const raw = buildAssistantTimelineEntry("Private raw trace.");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        isWorking
+        runningTurnId={turnId}
+        timelineEntries={[
+          {
+            ...summary,
+            id: "summary-entry",
+            message: {
+              ...summary.message,
+              id: MessageId.make("reasoning:summary:test"),
+              role: "reasoning",
+              turnId,
+            },
+          },
+          {
+            ...raw,
+            id: "raw-entry",
+            message: {
+              ...raw.message,
+              id: MessageId.make("reasoning:raw:test"),
+              role: "reasoning",
+              turnId,
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup.match(/data-timeline-row-kind="reasoning-run"/g)).toHaveLength(2);
+    expect(markup).toContain("I will check the API.");
+    expect(markup).toContain("Full reasoning");
+    expect(markup).toContain('aria-expanded="false"');
+    expect(markup).not.toContain("Private raw trace.");
+  });
+
+  it("preserves raw reasoning blocks when opened", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    vi.stubGlobal("requestAnimationFrame", () => 0);
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    const turnId = TurnId.make("turn-raw-blocks");
+    const entries = [
+      { id: "summary-entry", messageId: "reasoning:summary:item", text: "Checking the API." },
+      { id: "raw-first", messageId: "reasoning:raw:first", text: "  first block\n" },
+      { id: "raw-second", messageId: "reasoning:raw:second", text: "\nsecond block  " },
+    ].map(({ id, messageId, text }) => {
+      const entry = buildAssistantTimelineEntry(text);
+      return {
+        ...entry,
+        id,
+        message: {
+          ...entry.message,
+          id: MessageId.make(messageId),
+          role: "reasoning" as const,
+          turnId,
+        },
+      };
+    });
+    let renderer: ReactTestRenderer | undefined;
+    try {
+      await act(() => {
+        renderer = create(
+          <MessagesTimeline
+            {...buildProps()}
+            isWorking
+            runningTurnId={turnId}
+            timelineEntries={entries}
+          />,
         );
-        expect(
-          preview.findAll((node) =>
-            ["strong", "em", "del", "code", "a"].includes(String(node.type)),
-          ),
-        ).toHaveLength(0);
-        await act(() => preview.props.onClick());
-        expect(renderer!.root.findAllByType("strong")).toHaveLength(strongCount);
-        await act(() => preview.props.onClick());
-        expect(renderer!.root.findAllByType("strong")).toHaveLength(0);
-      } finally {
-        await act(() => renderer?.unmount());
-      }
-    },
-  );
+      });
+      const toggle = renderer!.root
+        .findAllByType("button")
+        .find((button) => button.props["aria-expanded"] === false);
+      expect(toggle).toBeDefined();
+      await act(() => toggle!.props.onClick());
+      expect(renderer!.root.findByProps({ "data-reasoning-scroll": true }).children).toEqual([
+        "  first block\n\n\nsecond block  ",
+      ]);
+    } finally {
+      await act(() => renderer?.unmount());
+      vi.unstubAllGlobals();
+    }
+  });
 
   it("renders initial thinking as the shared live activity row", () => {
     const turnId = TurnId.make("turn-live");

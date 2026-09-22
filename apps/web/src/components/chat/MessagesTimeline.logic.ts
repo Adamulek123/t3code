@@ -110,35 +110,6 @@ export function workEntryIsVisibleInGroup(
   );
 }
 
-export interface WorkGroupScrollAnchor {
-  readonly entryId: string;
-  readonly offset: number;
-}
-
-/** Restore a visible tool, including a position partway through its expanded output. */
-export function resolveWorkGroupScrollIndex(
-  entries: ReadonlyArray<{ readonly id: string }>,
-  anchor: WorkGroupScrollAnchor | undefined,
-): { index: number; viewOffset: number } | undefined {
-  if (!anchor) return undefined;
-  const index = entries.findIndex((entry) => entry.id === anchor.entryId);
-  return index < 0 ? undefined : { index, viewOffset: -anchor.offset };
-}
-
-/** Only newly appended calls may follow the end, never status or output updates. */
-export function shouldFollowWorkGroupAppend(
-  previous: ReadonlyArray<{ readonly id: string }>,
-  entries: ReadonlyArray<{ readonly id: string }>,
-  distanceFromEnd: number,
-): boolean {
-  return (
-    previous.length > 0 &&
-    entries.length > previous.length &&
-    distanceFromEnd <= 1 &&
-    previous.every((entry, index) => entry.id === entries[index]?.id)
-  );
-}
-
 export interface TimelineEndState {
   readonly isAtEnd?: boolean;
   readonly contentLength?: number;
@@ -314,35 +285,55 @@ export type TimelineLatestTurn = Pick<
 
 const LIVE_ACTIVITY_ROW_ID = "live-activity-row";
 
-type ActivityEntry = Extract<TimelineEntry, { kind: "message" | "work" }>;
+interface ReasoningTurnStats {
+  hasSummary: boolean;
+  rawCharacters: number;
+  rawLines: number;
+}
 
-function isActivityEntry(entry: TimelineEntry): entry is ActivityEntry {
-  return entry.kind === "message"
-    ? entry.message.role === "reasoning"
-    : entry.kind === "work" &&
-        entry.entry.agentSpawn === undefined &&
-        entry.entry.questionAnswer === undefined &&
-        entry.entry.sourceActivityKind !== "context-compaction" &&
-        entry.entry.tone !== "error";
+function reasoningStatsByTurn(
+  entries: ReadonlyArray<TimelineEntry>,
+): Map<string, ReasoningTurnStats> {
+  const stats = new Map<string, ReasoningTurnStats>();
+  for (const entry of entries) {
+    if (entry.kind !== "message" || entry.message.role !== "reasoning") continue;
+    const message = entry.message;
+    const key = message.turnId ?? message.id;
+    const turn = stats.get(key) ?? { hasSummary: false, rawCharacters: 0, rawLines: 0 };
+    if (message.id.startsWith("reasoning:summary:")) {
+      turn.hasSummary = true;
+    } else {
+      turn.rawCharacters += message.text.length;
+      if (turn.rawCharacters <= 4_000 && turn.rawLines <= 24) {
+        turn.rawLines += message.text.split("\n", 26).length - 1;
+      }
+    }
+    stats.set(key, turn);
+  }
+  return stats;
+}
+
+export function reasoningDisplayKind(
+  message: ChatMessage,
+  turn: ReasoningTurnStats,
+): "summary" | "raw" {
+  if (message.id.startsWith("reasoning:summary:")) return "summary";
+  return turn.hasSummary || turn.rawCharacters > 4_000 || turn.rawLines > 24 ? "raw" : "summary";
 }
 
 export type MessagesTimelineRow =
   | {
-      kind: "activity-group";
+      kind: "reasoning-run";
       id: string;
       createdAt: string;
-      turnId: TurnId;
-      groupId: string;
-      entries: ActivityEntry[];
-      expanded: boolean;
-      active: boolean;
+      reasoningKind: "summary" | "raw";
+      messages: ChatMessage[];
     }
   | {
       kind: "work";
       id: string;
       createdAt: string;
       groupedEntries: WorkLogEntry[];
-      isExpandedToolGroup: boolean;
       displayLabel?: string;
     }
   | {
@@ -362,6 +353,7 @@ export type MessagesTimelineRow =
       turnId?: TurnId | null;
       groupId: string;
       hiddenCount: number;
+      groupedEntries: WorkLogEntry[];
       expanded: boolean;
       summary: string;
       summaryKind: ToolGroupSummaryKind;
@@ -475,18 +467,31 @@ function workGroupId(timelineEntryId: string, entry: WorkLogEntry): string {
   return `work-group:${workGroupIdentity(timelineEntryId, entry)}`;
 }
 
-function expandedWorkGroupRow(
-  groupId: string,
-  createdAt: string,
-  groupedEntries: WorkLogEntry[],
-): Extract<MessagesTimelineRow, { kind: "work" }> {
-  return {
-    kind: "work",
-    id: `${groupId}:details`,
-    createdAt,
-    groupedEntries,
-    isExpandedToolGroup: true,
-  };
+export interface WorkGroupScrollAnchor {
+  readonly entryId: string;
+  readonly offset: number;
+}
+
+export function resolveWorkGroupScrollIndex(
+  entries: ReadonlyArray<{ readonly id: string }>,
+  anchor: WorkGroupScrollAnchor | undefined,
+): { index: number; viewOffset: number } | undefined {
+  if (!anchor) return undefined;
+  const index = entries.findIndex((entry) => entry.id === anchor.entryId);
+  return index < 0 ? undefined : { index, viewOffset: -anchor.offset };
+}
+
+export function shouldFollowWorkGroupAppend(
+  previous: ReadonlyArray<{ readonly id: string }>,
+  entries: ReadonlyArray<{ readonly id: string }>,
+  distanceFromEnd: number,
+): boolean {
+  return (
+    previous.length > 0 &&
+    entries.length > previous.length &&
+    distanceFromEnd <= 1 &&
+    previous.every((entry, index) => entry.id === entries[index]?.id)
+  );
 }
 
 export function resolveAssistantMessageCopyState({
@@ -650,10 +655,8 @@ function deriveTurnFolds(input: {
       pendingUserBoundary = entry.message.createdAt;
       continue;
     }
-    // Thinking is work, so it folds with the rest of it. A provider that
-    // interleaves a block with every tool call would otherwise leave dozens of
-    // "Thought" rows standing beside the "Worked for ..." summary.
-    // Nothing folds while the turn is live, which is when traces are watched.
+    // Reasoning reads inline between tools while the turn is live. Once it
+    // settles, fold that text with the rest of the turn's work.
     const turnId =
       entry.kind === "message" &&
       (entry.message.role === "assistant" || entry.message.role === "reasoning")
@@ -747,9 +750,8 @@ function deriveTurnFolds(input: {
       continue;
     }
     // A lone compaction row stays visible on its own; it only folds away as
-    // part of a turn that already folds other work. Thinking is the same: a
-    // question answered by thought alone keeps its "Thought" row
-    // rather than collapsing behind a "Worked for ..." that hides nothing else.
+    // part of a turn that already folds other work. Reasoning alone also stays
+    // visible rather than sitting behind a fold with no other work.
     const hidesFoldableWork = group.entries.some(
       (entry) =>
         hiddenEntryIds.has(entry.id) &&
@@ -837,18 +839,13 @@ function attachTrailingToolGroupsToAssistant(
       }
       // A thinking block can follow the answer (the next one starts before its
       // tool call); it is not another message in the conversation.
-      if (candidate.kind === "message" && candidate.message.role === "reasoning") {
+      if (candidate.kind === "reasoning-run") {
         continue;
       }
       if (candidate.kind === "message") {
         break;
       }
-      if (
-        (candidate.kind === "work-toggle" ||
-          (candidate.kind === "activity-group" &&
-            candidate.entries.some((entry) => entry.kind === "work"))) &&
-        candidate.turnId === turnId
-      ) {
+      if (candidate.kind === "work-toggle" && candidate.turnId === turnId) {
         hasTrailingToolGroup = true;
         lastTrailingWorkIndex = index;
         continue;
@@ -857,15 +854,10 @@ function attachTrailingToolGroupsToAssistant(
         candidate.kind === "work" &&
         candidate.groupedEntries.some((entry) => entry.turnId === turnId)
       ) {
-        if (
-          !candidate.isExpandedToolGroup &&
-          candidate.groupedEntries.some(workLogEntryIsToolLike)
-        ) {
+        if (candidate.groupedEntries.some(workLogEntryIsToolLike)) {
           hasTrailingToolGroup = true;
         }
-        if (hasTrailingToolGroup) {
-          lastTrailingWorkIndex = index;
-        }
+        if (hasTrailingToolGroup) lastTrailingWorkIndex = index;
       }
     }
 
@@ -1094,17 +1086,19 @@ export function deriveMessagesTimelineRows(input: {
     if (activeWorkRow === null) return;
     nextRows.push(activeWorkRow);
     hasActivityRow ||= activeWorkRow.active;
-    if (!activeWorkRow.expanded || activeWorkRow.entry.agentSpawn) return;
-    nextRows.push(
-      expandedWorkGroupRow(
-        activeWorkRow.groupId,
-        activeWorkRow.createdAt,
-        activeWorkRow.groupedEntries,
-      ),
-    );
   };
 
-  let scannedActivityThrough = -1;
+  const reasoningTurns = reasoningStatsByTurn(input.timelineEntries);
+  const displayKind = (message: ChatMessage) =>
+    reasoningDisplayKind(
+      message,
+      reasoningTurns.get(message.turnId ?? message.id) ?? {
+        hasSummary: false,
+        rawCharacters: message.text.length,
+        rawLines: message.text.split("\n", 26).length - 1,
+      },
+    );
+
   for (let index = 0; index < input.timelineEntries.length; index += 1) {
     const timelineEntry = input.timelineEntries[index];
     if (!timelineEntry) {
@@ -1133,50 +1127,6 @@ export function deriveMessagesTimelineRows(input: {
 
     if (collapsedEntryIds.has(timelineEntry.id)) {
       continue;
-    }
-
-    const activityTurnId = timelineEntryTurnId(timelineEntry);
-    if (index > scannedActivityThrough && activityTurnId && isActivityEntry(timelineEntry)) {
-      const entries = [timelineEntry];
-      let cursor = index + 1;
-      while (cursor < input.timelineEntries.length) {
-        const next = input.timelineEntries[cursor]!;
-        if (
-          !isActivityEntry(next) ||
-          timelineEntryTurnId(next) !== activityTurnId ||
-          collapsedEntryIds.has(next.id) ||
-          foldsByAnchorEntryId.has(next.id)
-        )
-          break;
-        entries.push(next);
-        cursor += 1;
-      }
-      scannedActivityThrough = cursor - 1;
-      if (entries.some((entry) => entry.kind === "message")) {
-        const active =
-          input.isWorking &&
-          activityTurnId === unsettledTurnId &&
-          cursor === input.timelineEntries.length &&
-          !latestToolFailed &&
-          (latestVisibleToolEntry === undefined || latestToolKeepsActivityLive);
-        const groupId =
-          timelineEntry.kind === "work"
-            ? workGroupId(timelineEntry.id, timelineEntry.entry)
-            : `activity-group:${timelineEntry.id}`;
-        nextRows.push({
-          kind: "activity-group",
-          id: active ? LIVE_ACTIVITY_ROW_ID : groupId,
-          createdAt: timelineEntry.createdAt,
-          turnId: activityTurnId,
-          groupId,
-          entries,
-          expanded: input.expandedWorkGroupIds?.has(groupId) ?? false,
-          active,
-        });
-        hasActivityRow ||= active;
-        index = cursor - 1;
-        continue;
-      }
     }
 
     if (activeWorkEntryIds.has(timelineEntry.id)) {
@@ -1213,7 +1163,6 @@ export function deriveMessagesTimelineRows(input: {
           id: timelineEntry.id,
           createdAt: timelineEntry.createdAt,
           groupedEntries: [timelineEntry.entry],
-          isExpandedToolGroup: false,
         });
         continue;
       }
@@ -1260,11 +1209,6 @@ export function deriveMessagesTimelineRows(input: {
             active: true,
           });
           hasActivityRow = true;
-          if (expanded) {
-            nextRows.push(
-              expandedWorkGroupRow(groupId, timelineEntry.createdAt, visibleGroupedEntries),
-            );
-          }
         } else if (
           visibleGroupedEntries.length === 1 &&
           workLogEntryIsToolLike(visibleGroupedEntries[0]!)
@@ -1275,7 +1219,6 @@ export function deriveMessagesTimelineRows(input: {
             id: timelineEntry.id,
             createdAt: timelineEntry.createdAt,
             groupedEntries: visibleGroupedEntries,
-            isExpandedToolGroup: false,
             displayLabel:
               toolGroupAction(singleEntry) === "edit"
                 ? summarizeToolGroup(visibleGroupedEntries)
@@ -1318,6 +1261,7 @@ export function deriveMessagesTimelineRows(input: {
             turnId: timelineEntry.entry.turnId ?? null,
             groupId,
             hiddenCount: visibleGroupedEntries.length,
+            groupedEntries: visibleGroupedEntries,
             expanded,
             summary: usesSingleToolCallLabel
               ? singleToolCallLabel(singleEntry)
@@ -1332,11 +1276,6 @@ export function deriveMessagesTimelineRows(input: {
               latestToolEntry !== undefined &&
               workEntryDisplayIndicatesToolFailure(latestToolEntry),
           });
-          if (expanded) {
-            nextRows.push(
-              expandedWorkGroupRow(groupId, timelineEntry.createdAt, visibleGroupedEntries),
-            );
-          }
         }
       }
       index = cursor - 1;
@@ -1350,6 +1289,37 @@ export function deriveMessagesTimelineRows(input: {
         createdAt: timelineEntry.createdAt,
         proposedPlan: timelineEntry.proposedPlan,
       });
+      continue;
+    }
+
+    if (timelineEntry.message.role === "reasoning") {
+      const reasoningKind = displayKind(timelineEntry.message);
+      const messages = [timelineEntry.message];
+      let cursor = index + 1;
+      while (cursor < input.timelineEntries.length) {
+        const next = input.timelineEntries[cursor];
+        if (
+          next?.kind !== "message" ||
+          next.message.role !== "reasoning" ||
+          next.message.turnId !== timelineEntry.message.turnId ||
+          displayKind(next.message) !== reasoningKind ||
+          collapsedEntryIds.has(next.id) ||
+          foldsByAnchorEntryId.has(next.id)
+        ) {
+          break;
+        }
+        messages.push(next.message);
+        cursor += 1;
+      }
+      nextRows.push({
+        kind: "reasoning-run",
+        id: timelineEntry.id,
+        createdAt: timelineEntry.createdAt,
+        reasoningKind,
+        messages,
+      });
+      hasActivityRow ||= entryBelongsToActiveTurn(timelineEntry, index);
+      index = cursor - 1;
       continue;
     }
 
@@ -1505,6 +1475,8 @@ function replaceStreamingMessageRows(
     return null;
   }
   const replacements = new Map<ChatMessage, ChatMessage>();
+  let previousReasoningTurns: Map<string, ReasoningTurnStats> | null = null;
+  let nextReasoningTurns: Map<string, ReasoningTurnStats> | null = null;
   for (const [index, entry] of timelineEntries.entries()) {
     const previousEntry = previousEntries[index]!;
     if (entry === previousEntry) continue;
@@ -1518,20 +1490,31 @@ function replaceStreamingMessageRows(
     }
     if (entry.message === previousEntry.message) continue;
     if (!isStreamingMessageTextUpdate(previousEntry.message, entry.message)) return null;
+    if (entry.message.role === "reasoning") {
+      previousReasoningTurns ??= reasoningStatsByTurn(previousEntries);
+      nextReasoningTurns ??= reasoningStatsByTurn(timelineEntries);
+      const previousTurn = previousReasoningTurns.get(
+        previousEntry.message.turnId ?? previousEntry.message.id,
+      );
+      const nextTurn = nextReasoningTurns.get(entry.message.turnId ?? entry.message.id);
+      if (
+        previousTurn &&
+        nextTurn &&
+        reasoningDisplayKind(previousEntry.message, previousTurn) !==
+          reasoningDisplayKind(entry.message, nextTurn)
+      ) {
+        return null;
+      }
+    }
     replacements.set(previousEntry.message, entry.message);
   }
   if (replacements.size === 0) return previous.rows;
   return previous.rows.map((row) => {
-    if (row.kind === "activity-group") {
-      if (!row.entries.some((entry) => entry.kind === "message" && replacements.has(entry.message)))
-        return row;
+    if (row.kind === "reasoning-run") {
+      if (!row.messages.some((message) => replacements.has(message))) return row;
       return {
         ...row,
-        entries: row.entries.map((entry) => {
-          if (entry.kind !== "message") return entry;
-          const message = replacements.get(entry.message);
-          return message ? { ...entry, message } : entry;
-        }),
+        messages: row.messages.map((message) => replacements.get(message) ?? message),
       };
     }
     if (row.kind !== "message" && row.kind !== "assistant-meta") return row;
@@ -1578,14 +1561,12 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
   if (a.kind !== b.kind || a.id !== b.id) return false;
 
   switch (a.kind) {
-    case "activity-group": {
-      const group = b as typeof a;
+    case "reasoning-run": {
+      const run = b as typeof a;
       return (
-        a.active === group.active &&
-        a.expanded === group.expanded &&
-        a.groupId === group.groupId &&
-        a.entries.length === group.entries.length &&
-        a.entries.every((entry, index) => entry === group.entries[index])
+        a.reasoningKind === run.reasoningKind &&
+        a.messages.length === run.messages.length &&
+        a.messages.every((message, index) => message === run.messages[index])
       );
     }
     case "working":
@@ -1625,9 +1606,7 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
     case "work": {
       const bw = b as typeof a;
       return (
-        a.isExpandedToolGroup === bw.isExpandedToolGroup &&
-        a.displayLabel === bw.displayLabel &&
-        Equal.equals(a.groupedEntries, bw.groupedEntries)
+        a.displayLabel === bw.displayLabel && Equal.equals(a.groupedEntries, bw.groupedEntries)
       );
     }
 
@@ -1650,6 +1629,7 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
         a.turnId === bw.turnId &&
         a.groupId === bw.groupId &&
         a.hiddenCount === bw.hiddenCount &&
+        Equal.equals(a.groupedEntries, bw.groupedEntries) &&
         a.expanded === bw.expanded &&
         a.summary === bw.summary &&
         a.summaryKind === bw.summaryKind &&
