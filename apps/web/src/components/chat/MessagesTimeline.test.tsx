@@ -360,6 +360,87 @@ describe("MessagesTimeline", () => {
     }
   });
 
+  it("virtualizes mixed activity details and preserves opened tools across remounts", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    vi.stubGlobal("requestAnimationFrame", () => 0);
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    const turnId = TurnId.make("mixed-turn");
+    const thought = {
+      id: "thought-entry",
+      kind: "message" as const,
+      createdAt: MESSAGE_CREATED_AT,
+      message: {
+        id: MessageId.make("thought"),
+        role: "reasoning" as const,
+        text: "Investigating",
+        turnId,
+        createdAt: MESSAGE_CREATED_AT,
+        updatedAt: MESSAGE_CREATED_AT,
+        streaming: false,
+      },
+    };
+    const tools = Array.from({ length: 200 }, (_, index) => ({
+      id: `tool-entry-${index}`,
+      kind: "work" as const,
+      createdAt: MESSAGE_CREATED_AT,
+      entry: {
+        id: `tool-${index}`,
+        turnId,
+        createdAt: MESSAGE_CREATED_AT,
+        toolCallId: `call-${index}`,
+        label: `Command ${index}`,
+        tone: "tool" as const,
+        toolLifecycleStatus: "completed" as const,
+        command: `echo ${index}`,
+        detail: `Output ${index}`,
+      },
+    }));
+    let renderer: ReactTestRenderer | undefined;
+    try {
+      await act(() => {
+        renderer = create(
+          <MessagesTimeline
+            {...buildProps()}
+            isWorking
+            runningTurnId={turnId}
+            activeTurnStartedAt={MESSAGE_CREATED_AT}
+            timelineEntries={[thought, ...tools]}
+          />,
+        );
+      });
+      const groupButton = () =>
+        renderer!.root
+          .findByProps({ "data-timeline-row-kind": "activity-group" })
+          .findByType("button");
+      await act(() => groupButton().props.onClick());
+      const rows = () => renderer!.root.findAllByProps({ "data-timeline-row-kind": "work-entry" });
+      expect(rows()).toHaveLength(200);
+      expect(
+        renderer!.root.findAllByProps({ "data-timeline-row-kind": "reasoning-trace" }),
+      ).toHaveLength(1);
+      expect(
+        renderer!.root
+          .findByProps({ "data-timeline-row-kind": "activity-group" })
+          .findAllByProps({ "aria-label": "Tool call" }),
+      ).toHaveLength(0);
+      const toolButton = () =>
+        rows()[0]!
+          .findAllByProps({ role: "button" })
+          .find((button) => typeof button.props["aria-expanded"] === "boolean")!;
+      expect(toolButton().props["aria-expanded"]).toBe(false);
+      await act(() => toolButton().props.onClick());
+      expect(toolButton().props["aria-expanded"]).toBe(true);
+      await act(() => groupButton().props.onClick());
+      expect(rows()).toHaveLength(0);
+      await act(() => groupButton().props.onClick());
+      expect(toolButton().props["aria-expanded"]).toBe(true);
+      await act(() => toolButton().props.onClick());
+      expect(toolButton().props["aria-expanded"]).toBe(false);
+    } finally {
+      await act(() => renderer?.unmount());
+    }
+  });
+
   it("wires the disclosure callback into expanded agent-spawn entries", async () => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     vi.stubGlobal("requestAnimationFrame", () => 0);

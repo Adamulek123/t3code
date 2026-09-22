@@ -309,6 +309,15 @@ export type MessagesTimelineRow =
       active: boolean;
     }
   | {
+      kind: "reasoning-trace";
+      id: string;
+      createdAt: string;
+      groupId: string;
+      messages: ChatMessage[];
+      live: boolean;
+      showHeader: boolean;
+    }
+  | {
       kind: "work";
       id: string;
       createdAt: string;
@@ -488,7 +497,7 @@ export function resolveExpandedWorkGroupAppendTarget(
 ): ExpandedWorkGroupAppendTarget[] {
   const previousByGroup = new Map<string, string[]>();
   for (const row of previousRows) {
-    if (row.kind !== "work-entry") continue;
+    if (row.kind !== "work-entry" && row.kind !== "reasoning-trace") continue;
     const entries = previousByGroup.get(row.groupId) ?? [];
     entries.push(row.id);
     previousByGroup.set(row.groupId, entries);
@@ -496,7 +505,7 @@ export function resolveExpandedWorkGroupAppendTarget(
 
   const nextByGroup = new Map<string, string[]>();
   for (const row of nextRows) {
-    if (row.kind !== "work-entry") continue;
+    if (row.kind !== "work-entry" && row.kind !== "reasoning-trace") continue;
     const entries = nextByGroup.get(row.groupId) ?? [];
     entries.push(row.id);
     nextByGroup.set(row.groupId, entries);
@@ -885,6 +894,12 @@ function attachTrailingToolGroupsToAssistant(
         lastTrailingWorkIndex = index;
         continue;
       }
+      if (candidate.kind === "reasoning-trace") {
+        if (hasTrailingToolGroup && candidate.messages[0]?.turnId === turnId) {
+          lastTrailingWorkIndex = index;
+        }
+        continue;
+      }
       if (candidate.kind === "work-entry") {
         if (candidate.entry.turnId === turnId) {
           hasTrailingToolGroup = true;
@@ -1207,6 +1222,45 @@ export function deriveMessagesTimelineRows(input: {
           expanded: input.expandedWorkGroupIds?.has(groupId) ?? false,
           active,
         });
+        if (input.expandedWorkGroupIds?.has(groupId)) {
+          const showHeader = entries.some(
+            (entry) => entry.kind === "work" && workEntryIsVisibleInGroup(entry.entry, active),
+          );
+          for (let detailIndex = 0; detailIndex < entries.length; detailIndex += 1) {
+            const entry = entries[detailIndex]!;
+            if (entry.kind === "work") {
+              const workEntries = [entry.entry];
+              while (entries[detailIndex + 1]?.kind === "work") {
+                const next = entries[++detailIndex]!;
+                if (next.kind === "work") workEntries.push(next.entry);
+              }
+              nextRows.push(
+                ...expandedWorkGroupRows(
+                  groupId,
+                  entry.createdAt,
+                  omitSupersededLifecycleMarkers(workEntries, (work) => work).filter((work) =>
+                    workEntryIsVisibleInGroup(work, true),
+                  ),
+                ),
+              );
+            } else {
+              const messages = [entry.message];
+              while (entries[detailIndex + 1]?.kind === "message") {
+                const next = entries[++detailIndex]!;
+                if (next.kind === "message") messages.push(next.message);
+              }
+              nextRows.push({
+                kind: "reasoning-trace",
+                id: `${groupId}:details:${entry.id}`,
+                createdAt: entry.createdAt,
+                groupId,
+                messages,
+                live: active && detailIndex === entries.length - 1,
+                showHeader,
+              });
+            }
+          }
+        }
         hasActivityRow ||= active;
         index = cursor - 1;
         continue;
@@ -1566,6 +1620,13 @@ function replaceStreamingMessageRows(
         }),
       };
     }
+    if (row.kind === "reasoning-trace") {
+      if (!row.messages.some((message) => replacements.has(message))) return row;
+      return {
+        ...row,
+        messages: row.messages.map((message) => replacements.get(message) ?? message),
+      };
+    }
     if (row.kind !== "message" && row.kind !== "assistant-meta") return row;
     const message = replacements.get(row.message);
     return message ? { ...row, message } : row;
@@ -1618,6 +1679,17 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
         a.groupId === group.groupId &&
         a.entries.length === group.entries.length &&
         a.entries.every((entry, index) => entry === group.entries[index])
+      );
+    }
+    case "reasoning-trace": {
+      const trace = b as typeof a;
+      return (
+        a.createdAt === trace.createdAt &&
+        a.groupId === trace.groupId &&
+        a.live === trace.live &&
+        a.showHeader === trace.showHeader &&
+        a.messages.length === trace.messages.length &&
+        a.messages.every((message, index) => message === trace.messages[index])
       );
     }
     case "working":

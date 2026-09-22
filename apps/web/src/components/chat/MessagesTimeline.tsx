@@ -1709,7 +1709,9 @@ type TimelineRow = MessagesTimelineRow;
 
 const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: TimelineRow }) {
   const isExpandedToolGroupHeader =
-    (row.kind === "work-toggle" && row.expanded) || (row.kind === "work-live" && row.expanded);
+    (row.kind === "work-toggle" && row.expanded) ||
+    (row.kind === "work-live" && row.expanded) ||
+    (row.kind === "activity-group" && row.expanded);
 
   return (
     <div
@@ -1720,7 +1722,7 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
           ? "pb-0"
           : row.kind === "turn-fold" || row.kind === "working"
             ? "pb-1.5"
-            : row.kind === "work-entry"
+            : row.kind === "work-entry" || row.kind === "reasoning-trace"
               ? "pb-0"
               : (row.kind === "message" &&
                     row.message.role === "assistant" &&
@@ -1755,6 +1757,14 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
       ) : null}
       {row.kind === "work-live" ? <LiveWorkEntryTimelineRow row={row} /> : null}
       {row.kind === "activity-group" ? <ActivityGroupTimelineRow row={row} /> : null}
+      {row.kind === "reasoning-trace" ? (
+        <ReasoningTraceBlock
+          anchorKey={row.id}
+          messages={row.messages}
+          live={row.live}
+          showHeader={row.showHeader}
+        />
+      ) : null}
       {row.kind === "work-toggle" ? <WorkGroupToggleTimelineRow row={row} /> : null}
       {row.kind === "work-entry" ? <ExpandedWorkEntryTimelineRow row={row} /> : null}
       {row.kind === "turn-fold" ? <TurnFoldTimelineRow row={row} /> : null}
@@ -2671,43 +2681,6 @@ function ActivityGroupTimelineRow({
     : work.length > 0
       ? summarizeToolGroup(work)
       : `Thought${thoughtCount > 1 ? ` (×${thoughtCount})` : ""}`;
-  const details: ReactNode[] = [];
-  if (row.expanded) {
-    for (let index = 0; index < row.entries.length; index += 1) {
-      const entry = row.entries[index]!;
-      if (entry.kind === "work") {
-        const entries = [entry.entry];
-        while (row.entries[index + 1]?.kind === "work") {
-          const next = row.entries[++index]!;
-          if (next.kind === "work") entries.push(next.entry);
-        }
-        details.push(
-          <WorkGroupSection
-            key={entry.id}
-            anchorKey={entry.id}
-            disclosureAnchorKey={row.id}
-            groupedEntries={omitSupersededLifecycleMarkers(entries, (entry) => entry)}
-            isExpandedToolGroup
-          />,
-        );
-      } else {
-        const messages = [entry.message];
-        while (row.entries[index + 1]?.kind === "message") {
-          const next = row.entries[++index]!;
-          if (next.kind === "message") messages.push(next.message);
-        }
-        details.push(
-          <ReasoningTraceBlock
-            key={entry.id}
-            anchorKey={row.id}
-            messages={messages}
-            live={row.active && index === row.entries.length - 1}
-            showHeader={work.length > 0}
-          />,
-        );
-      }
-    }
-  }
   return (
     <div>
       <button
@@ -2726,7 +2699,6 @@ function ActivityGroupTimelineRow({
           shimmer={thinking}
         />
       </button>
-      {row.expanded ? <div className="mt-2">{details}</div> : null}
     </div>
   );
 }
@@ -2970,13 +2942,11 @@ const WorkGroupSection = memo(function WorkGroupSection({
   anchorKey,
   disclosureAnchorKey = anchorKey,
   groupedEntries,
-  isExpandedToolGroup = false,
   displayLabel,
 }: {
   anchorKey: string;
   disclosureAnchorKey?: string;
   groupedEntries: Extract<MessagesTimelineRow, { kind: "work" }>["groupedEntries"];
-  isExpandedToolGroup?: boolean;
   displayLabel?: string | undefined;
 }) {
   const { workspaceRoot, onToggleWorkEntry } = use(TimelineRowCtx);
@@ -2985,8 +2955,8 @@ const WorkGroupSection = memo(function WorkGroupSection({
     [disclosureAnchorKey, onToggleWorkEntry],
   );
   const nonEmptyEntries = useMemo(
-    () => groupedEntries.filter((entry) => workEntryIsVisibleInGroup(entry, isExpandedToolGroup)),
-    [groupedEntries, isExpandedToolGroup],
+    () => groupedEntries.filter((entry) => workEntryIsVisibleInGroup(entry)),
+    [groupedEntries],
   );
 
   if (nonEmptyEntries.length === 0) return null;
