@@ -372,7 +372,7 @@ describe("MessagesTimeline", () => {
       message: {
         id: MessageId.make("thought"),
         role: "reasoning" as const,
-        text: "Investigating",
+        text: "Investigating a long reasoning trace.\n\n".repeat(100),
         turnId,
         createdAt: MESSAGE_CREATED_AT,
         updatedAt: MESSAGE_CREATED_AT,
@@ -423,6 +423,15 @@ describe("MessagesTimeline", () => {
           .findByProps({ "data-timeline-row-kind": "activity-group" })
           .findAllByProps({ "aria-label": "Tool call" }),
       ).toHaveLength(0);
+      const reasoningRow = renderer!.root.findByProps({
+        "data-timeline-row-kind": "reasoning-trace",
+      });
+      await act(() => reasoningRow.findByType("button").props.onClick());
+      const reasoningBody = reasoningRow
+        .findAllByType("div")
+        .find((node) => node.props.className?.includes("select-text"));
+      expect(reasoningBody).toBeDefined();
+      expect(reasoningBody!.props.className).not.toMatch(/max-h-|overflow-auto|overflow-y-auto/);
       const toolButton = () =>
         rows()[0]!
           .findAllByProps({ role: "button" })
