@@ -1480,6 +1480,7 @@ const make = Effect.gen(function* () {
     finalDeltaCommandTag: string;
     fallbackText?: string;
     hasProjectedMessage?: boolean;
+    presentation?: "progress";
   }) =>
     Effect.gen(function* () {
       const bufferedText = yield* takeBufferedAssistantText(input.messageId);
@@ -1491,7 +1492,8 @@ const make = Effect.gen(function* () {
             : "";
       const hasRenderableText = hasRenderableAssistantText(text);
 
-      const isReasoning = messageStreamRoleOf(input.messageId) === "reasoning";
+      const isReasoning =
+        input.presentation === "progress" || messageStreamRoleOf(input.messageId) === "reasoning";
 
       if (hasRenderableText) {
         yield* orchestrationEngine.dispatch({
@@ -2232,6 +2234,7 @@ const make = Effect.gen(function* () {
                 `assistant:${event.itemId ?? event.turnId ?? event.eventId}`,
               ),
               fallbackText: event.payload.detail,
+              presentation: event.payload.presentation,
             }
           : undefined;
       const proposedPlanCompletion =
@@ -2260,10 +2263,10 @@ const make = Effect.gen(function* () {
         const activeAssistantMessageId = turnId
           ? yield* getActiveAssistantMessageIdForTurn(thread.id, turnId)
           : Option.none<MessageId>();
-        const assistantMessageId = Option.getOrElse(
-          activeAssistantMessageId,
-          () => assistantCompletion.messageId,
-        );
+        const assistantMessageId =
+          assistantCompletion.presentation === "progress"
+            ? assistantCompletion.messageId
+            : Option.getOrElse(activeAssistantMessageId, () => assistantCompletion.messageId);
         const [existingAssistantMessage, hasAssistantMessagesForTurn] = yield* Effect.all([
           getThreadMessageById(thread.id, assistantMessageId),
           turnId === undefined
@@ -2278,6 +2281,7 @@ const make = Effect.gen(function* () {
           !existingAssistantMessage || existingAssistantMessage.text.length === 0;
 
         const shouldSkipRedundantCompletion =
+          assistantCompletion.presentation !== "progress" &&
           Option.isNone(activeAssistantMessageId) &&
           turnId !== undefined &&
           hasAssistantMessagesForTurn &&
@@ -2293,10 +2297,16 @@ const make = Effect.gen(function* () {
             threadId: thread.id,
             messageId: assistantMessageId,
             ...(turnId ? { turnId } : {}),
-            createdAt: now,
+            createdAt:
+              assistantCompletion.presentation === "progress"
+                ? (existingAssistantMessage?.createdAt ?? now)
+                : now,
             commandTag: "assistant-complete",
             finalDeltaCommandTag: "assistant-delta-finalize",
             hasProjectedMessage: existingAssistantMessage !== undefined,
+            ...(assistantCompletion.presentation !== undefined
+              ? { presentation: assistantCompletion.presentation }
+              : {}),
             ...(assistantCompletion.fallbackText !== undefined && shouldApplyFallbackCompletionText
               ? { fallbackText: assistantCompletion.fallbackText }
               : {}),
@@ -2307,7 +2317,7 @@ const make = Effect.gen(function* () {
           }
         }
 
-        if (turnId) {
+        if (turnId && assistantCompletion.presentation !== "progress") {
           yield* clearAssistantSegmentStateForTurn(thread.id, turnId);
         }
       }

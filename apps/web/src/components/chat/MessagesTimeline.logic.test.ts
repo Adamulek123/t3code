@@ -1943,6 +1943,12 @@ describe("deriveMessagesTimelineRows", () => {
         { hasSummary: false },
       ),
     ).toBe("summary");
+    expect(
+      reasoningDisplayKind(
+        { ...base, id: MessageId.make("assistant:progress-part"), text: "Checking tools." },
+        { hasSummary: true },
+      ),
+    ).toBe("summary");
   });
 
   it("keeps short raw-only thoughts inline when another thought in the turn is long", () => {
@@ -1974,6 +1980,32 @@ describe("deriveMessagesTimelineRows", () => {
     expect(
       rows.some((row) => row.kind === "message" && row.message.id === progress.message.id),
     ).toBe(true);
+  });
+
+  it("shows reclassified OpenCode progress inline beside raw reasoning and a final answer", () => {
+    const raw = reasoningEntry("reasoning:raw:trace", "2026-01-01T00:00:01Z", "turn-1");
+    raw.message.text = "Detailed trace.\n".repeat(300);
+    const progress = reasoningEntry("progress", "2026-01-01T00:00:02Z", "turn-1");
+    progress.message.id = MessageId.make("assistant:progress-part") as never;
+    progress.message.text = "Checking the reviews.";
+    const answer = answerEntry("answer", "2026-01-01T00:00:03Z", "turn-1");
+
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [raw, progress, answer],
+      runningTurnId: TurnId.make("turn-1"),
+      isWorking: true,
+      activeTurnStartedAt: "2026-01-01T00:00:00Z",
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
+    });
+
+    expect(
+      rows.filter((row) => row.kind === "reasoning-run").map((row) => [row.id, row.reasoningKind]),
+    ).toEqual([
+      [raw.id, "raw"],
+      [progress.id, "summary"],
+    ]);
+    expect(rows.some((row) => row.kind === "message" && row.id === answer.id)).toBe(true);
   });
 
   it("keeps provider summaries and raw traces in separate reasoning rows", () => {
@@ -2130,6 +2162,40 @@ describe("deriveMessagesTimelineRows", () => {
     });
 
     expect(rows.some((row) => row.kind === "turn-fold")).toBe(true);
+  });
+
+  it("folds failed turn work when its visible answer was left streaming", () => {
+    const answer = answerEntry("assistant-entry", "2026-01-01T00:00:03Z", "turn-1");
+    const input = {
+      timelineEntries: [
+        reasoningEntry("thought", "2026-01-01T00:00:01Z", "turn-1"),
+        toolEntry("tool-entry", "2026-01-01T00:00:02Z", "turn-1"),
+        { ...answer, message: { ...answer.message, streaming: true } },
+      ],
+      latestTurn: {
+        turnId: TurnId.make("turn-1"),
+        state: "error" as const,
+        startedAt: "2026-01-01T00:00:00Z",
+        completedAt: "2026-01-01T00:00:04Z",
+      },
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
+    } satisfies Parameters<typeof deriveMessagesTimelineRows>[0];
+    const collapsed = deriveMessagesTimelineRows(input);
+    expect(collapsed.map((row) => row.kind)).toEqual(["turn-fold", "message"]);
+    expect(collapsed[1]?.id).toBe(answer.id);
+    const expanded = deriveMessagesTimelineRows({
+      ...input,
+      expandedTurnIds: new Set([TurnId.make("turn-1")]),
+    });
+    expect(expanded.map((row) => row.kind)).toEqual([
+      "turn-fold",
+      "reasoning-run",
+      "work",
+      "message",
+    ]);
   });
 
   it("derives a sane duration for a steer-superseded turn with one instant commentary message", () => {

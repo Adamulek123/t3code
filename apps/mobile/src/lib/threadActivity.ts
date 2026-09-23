@@ -151,6 +151,7 @@ type RawThreadFeedEntry =
 export type ThreadFeedEntry =
   | (Extract<RawThreadFeedEntry, { type: "message" }> & {
       readonly reasoningMessages?: OrchestrationThread["messages"];
+      readonly reasoningKind?: "summary" | "raw";
     })
   | {
       readonly type: "activity-group";
@@ -1691,17 +1692,8 @@ function deriveThreadFeedTurnFolds(
     if (turnId === unsettledTurnId) {
       continue;
     }
-    // A live turn is already excluded above, so only an answer still being
-    // written may hold a fold open. A thinking block stranded by a crashed
-    // provider keeps its streaming flag forever and must not.
-    if (
-      entries.some(
-        (entry) =>
-          entry.type === "message" && entry.message.streaming && entry.message.role !== "reasoning",
-      )
-    ) {
-      continue;
-    }
+    // The turn lifecycle decides whether work is live; an errored provider
+    // can leave even its visible answer marked as streaming.
 
     const firstAssistantMessageId = firstAssistantMessageIdByTurn.get(turnId);
     const terminalAssistantMessageId = terminalAssistantMessageIdByTurn.get(turnId);
@@ -1972,8 +1964,23 @@ function appendMixedActivityRun(
   }
   const toolSummary = toolRows.find((entry) => entry.type === "work-toggle");
   const thinking = live && (last.type === "message" || !toolSummary?.shimmer);
-  const thoughtCount = run.filter((entry) => entry.type === "message").length;
-  result.push({
+  const isInlineSummary = (entry: ThreadFeedEntry) =>
+    entry.type === "message" &&
+    entry.message.role === "reasoning" &&
+    entry.reasoningKind === "summary";
+  const thoughtCount = history.reduce(
+    (count, entry) =>
+      entry.type === "message" && !isInlineSummary(entry)
+        ? count + (entry.reasoningMessages?.length ?? 1)
+        : count,
+    0,
+  );
+  if (activities.length + thoughtCount === 0) {
+    result.push(...history);
+    activityRunsCache.set(first, { source: run, state, rows: result.slice(outputStart) });
+    return;
+  }
+  const toggle: ThreadFeedEntry = {
     type: "work-toggle",
     id: live ? LIVE_ACTIVITY_ROW_ID : `work-toggle:${groupId}`,
     createdAt: first.createdAt,
@@ -1995,8 +2002,17 @@ function appendMixedActivityRun(
     hasFailure: toolSummary?.hasFailure ?? false,
     live,
     shimmer: live,
-  });
-  if (expanded) result.push(...history);
+  };
+  let showedToggle = false;
+  for (const entry of history) {
+    if (!isInlineSummary(entry) && !showedToggle) {
+      result.push(toggle);
+      showedToggle = true;
+    }
+    if (expanded || isInlineSummary(entry)) {
+      result.push(entry);
+    }
+  }
   activityRunsCache.set(first, { source: run, state, rows: result.slice(outputStart) });
 }
 
@@ -2004,19 +2020,42 @@ function groupConsecutiveReasoningMessages(
   feed: ReadonlyArray<ThreadFeedEntry>,
 ): ThreadFeedEntry[] {
   const result: ThreadFeedEntry[] = [];
+  const turnsWithSummary = new Set(
+    feed.flatMap((entry) =>
+      entry.type === "message" &&
+      entry.message.role === "reasoning" &&
+      entry.message.turnId &&
+      (entry.message.id.startsWith("reasoning:summary:") ||
+        entry.message.id.startsWith("assistant:"))
+        ? [entry.message.turnId]
+        : [],
+    ),
+  );
+  const kindOf = (message: OrchestrationThread["messages"][number]) =>
+    message.id.startsWith("reasoning:raw:") ||
+    message.text.length > 2_000 ||
+    message.text.split("\n", 26).length > 25
+      ? "raw"
+      : message.id.startsWith("reasoning:summary:") || message.id.startsWith("assistant:")
+        ? "summary"
+        : message.turnId && turnsWithSummary.has(message.turnId)
+          ? "raw"
+          : "summary";
   for (let index = 0; index < feed.length; index += 1) {
     const entry = feed[index]!;
     if (entry.type !== "message" || entry.message.role !== "reasoning" || !entry.message.turnId) {
       result.push(entry);
       continue;
     }
+    const reasoningKind = kindOf(entry.message);
     const messages = [entry.message];
     while (index + 1 < feed.length) {
       const next = feed[index + 1]!;
       if (
         next.type !== "message" ||
         next.message.role !== "reasoning" ||
-        next.message.turnId !== entry.message.turnId
+        next.message.turnId !== entry.message.turnId ||
+        kindOf(next.message) !== reasoningKind
       ) {
         break;
       }
@@ -2024,18 +2063,19 @@ function groupConsecutiveReasoningMessages(
       index += 1;
     }
     if (messages.length === 1) {
-      result.push(entry);
+      result.push(entry.reasoningKind === reasoningKind ? entry : { ...entry, reasoningKind });
       continue;
     }
     let group = reasoningGroupsCache.get(entry);
     if (
       !group ||
       group.reasoningMessages?.length !== messages.length ||
+      group.reasoningKind !== reasoningKind ||
       !messages.every(
         (message, messageIndex) => group?.reasoningMessages?.[messageIndex] === message,
       )
     ) {
-      group = { ...entry, reasoningMessages: messages };
+      group = { ...entry, reasoningMessages: messages, reasoningKind };
       reasoningGroupsCache.set(entry, group);
     }
     result.push(group);

@@ -575,6 +575,50 @@ describe("applyThreadDetailEvent", () => {
       }
     });
 
+    it("updates a streamed assistant message to a progress summary", () => {
+      const messageId = MessageId.make("assistant:progress-part");
+      const thread = {
+        ...baseThread,
+        messages: [
+          {
+            id: messageId,
+            role: "assistant" as const,
+            text: "Checking the reviews.",
+            turnId: TurnId.make("turn-progress"),
+            streaming: false,
+            createdAt: baseThread.createdAt,
+            updatedAt: baseThread.updatedAt,
+          },
+        ],
+      };
+      const result = applyThreadDetailEvent(thread, {
+        ...baseEventFields,
+        sequence: 6,
+        occurredAt: baseThread.updatedAt,
+        aggregateKind: "thread",
+        aggregateId: baseThread.id,
+        type: "thread.message-sent",
+        payload: {
+          threadId: baseThread.id,
+          messageId,
+          role: "reasoning",
+          text: "",
+          turnId: TurnId.make("turn-progress"),
+          streaming: false,
+          createdAt: baseThread.createdAt,
+          updatedAt: baseThread.updatedAt,
+        },
+      });
+
+      expect(result.kind).toBe("updated");
+      if (result.kind !== "updated") return;
+      expect(result.thread.messages[0]).toMatchObject({
+        id: messageId,
+        role: "reasoning",
+        text: "Checking the reviews.",
+      });
+    });
+
     it("appends a new message", () => {
       const result = applyThreadDetailEvent(baseThread, {
         ...baseEventFields,

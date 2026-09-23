@@ -332,6 +332,7 @@ type OpenCodeTextPartState = Pick<OpenCodeTextPart, "id" | "messageID" | "type" 
   text: string | undefined;
   emittedText: string | undefined;
   completed: boolean;
+  progressClassified: boolean;
 };
 
 type OpenCodeStepUsage = Pick<Extract<Part, { readonly type: "step-finish" }>, "id" | "tokens">;
@@ -616,6 +617,7 @@ function retainOpenCodeTextPart(
     ...(part.time !== undefined ? { time: part.time } : {}),
     emittedText: previous?.emittedText,
     completed: previous?.completed ?? false,
+    progressClassified: previous?.progressClassified ?? false,
   };
   parts.set(part.id, state);
   context.textPartsByMessageId.set(part.messageID, parts);
@@ -1613,6 +1615,34 @@ export function makeOpenCodeAdapter(
       yield* Scope.close(context.sessionScope, Exit.void);
     });
 
+    const emitAssistantProgressCompletion = Effect.fn("emitAssistantProgressCompletion")(function* (
+      context: OpenCodeSessionContext,
+      part: OpenCodeTextPartState,
+      turnId: TurnId | undefined,
+      raw: unknown,
+    ) {
+      if (part.text === undefined || part.text.trim().length === 0) return;
+      part.progressClassified = true;
+      part.completed = true;
+      yield* emit({
+        ...(yield* buildEventBase({
+          threadId: context.session.threadId,
+          turnId,
+          itemId: part.id,
+          createdAt: part.time?.end !== undefined ? isoFromEpochMs(part.time.end) : undefined,
+          raw,
+        })),
+        type: "item.completed",
+        payload: {
+          itemType: "assistant_message",
+          status: "completed",
+          presentation: "progress",
+          title: "Assistant message",
+          detail: part.text,
+        },
+      });
+    });
+
     /** Emit content.delta and item.completed events for an assistant text part. */
     const emitAssistantTextDelta = Effect.fn("emitAssistantTextDelta")(function* (
       context: OpenCodeSessionContext,
@@ -1641,6 +1671,9 @@ export function makeOpenCodeAdapter(
             delta: deltaToEmit,
           },
         });
+        if (part.progressClassified) {
+          yield* emitAssistantProgressCompletion(context, part, turnId, raw);
+        }
       }
 
       if (part.type === "text" && part.time?.end !== undefined && !part.completed) {
@@ -2387,6 +2420,14 @@ export function makeOpenCodeAdapter(
               .get(event.properties.info.id)
               ?.values() ?? []) {
               yield* emitAssistantTextDelta(context, part, turnId, event);
+              if (
+                part.type === "text" &&
+                !part.progressClassified &&
+                (event.properties.info.finish === "tool-calls" ||
+                  event.properties.info.finish === "length")
+              ) {
+                yield* emitAssistantProgressCompletion(context, part, turnId, event);
+              }
             }
           }
           break;
@@ -2443,6 +2484,9 @@ export function makeOpenCodeAdapter(
               delta: deltaToEmit,
             },
           });
+          if (existingPart.progressClassified) {
+            yield* emitAssistantProgressCompletion(context, existingPart, turnId, event);
+          }
           break;
         }
 

@@ -1439,6 +1439,70 @@ describe("ProviderRuntimeIngestion", () => {
     expect(message?.streaming).toBe(false);
   });
 
+  it("reclassifies completed OpenCode progress text without changing the final answer", async () => {
+    const harness = await createHarness();
+    const threadId = asThreadId("thread-1");
+    const turnId = asTurnId("turn-progress");
+    const now = "2026-01-01T00:00:00.000Z";
+    const emitText = (item: string, text: string, event: string) =>
+      harness.emit({
+        type: "content.delta",
+        eventId: asEventId(event),
+        provider: ProviderDriverKind.make("opencode"),
+        createdAt: now,
+        threadId,
+        turnId,
+        itemId: asItemId(item),
+        payload: { streamKind: "assistant_text", delta: text },
+      });
+    const complete = (item: string, event: string, presentation?: "progress") =>
+      harness.emit({
+        type: "item.completed",
+        eventId: asEventId(event),
+        provider: ProviderDriverKind.make("opencode"),
+        createdAt: now,
+        threadId,
+        turnId,
+        itemId: asItemId(item),
+        payload: {
+          itemType: "assistant_message",
+          status: "completed",
+          ...(presentation ? { presentation } : {}),
+        },
+      });
+
+    emitText("progress-part", "Checking the reviews.", "evt-progress-text");
+    complete("progress-part", "evt-progress-complete");
+    emitText("answer-part", "The review ", "evt-answer-text-first");
+    complete("progress-part", "evt-progress-classified", "progress");
+    emitText("answer-part", "is complete.", "evt-answer-text-second");
+    complete("answer-part", "evt-answer-complete");
+
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) =>
+        entry.messages.some(
+          (message: ProviderRuntimeTestMessage) =>
+            message.id === "assistant:progress-part" && message.role === "reasoning",
+        ) &&
+        entry.messages.some(
+          (message: ProviderRuntimeTestMessage) =>
+            message.id === "assistant:answer-part" && message.role === "assistant",
+        ),
+    );
+    expect(
+      thread.messages
+        .filter((message: ProviderRuntimeTestMessage) =>
+          ["assistant:progress-part", "assistant:answer-part"].includes(message.id),
+        )
+        .map((message: ProviderRuntimeTestMessage) => [message.id, message.role, message.text])
+        .sort(),
+    ).toEqual([
+      ["assistant:answer-part", "assistant", "The review is complete."],
+      ["assistant:progress-part", "reasoning", "Checking the reviews."],
+    ]);
+  });
+
   it("streams reasoning deltas into a finalized reasoning message", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

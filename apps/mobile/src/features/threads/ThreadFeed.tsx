@@ -1486,6 +1486,22 @@ function renderFeedEntry(
     const { message } = entry;
     if (message.role === "reasoning") {
       const messages = entry.reasoningMessages ?? [message];
+      if (entry.reasoningKind === "summary") {
+        return (
+          <View className="min-w-0 px-1 py-0.5">
+            {messages.map((reasoningMessage) => (
+              <AssistantMarkdownContent
+                key={reasoningMessage.id}
+                markdown={reasoningMessage.text}
+                markdownStyles={markdownStyles.assistant}
+                linkHandlers={props.markdownLinkHandlers}
+                renderImage={props.renderMarkdownImage}
+                skills={props.skills}
+              />
+            ))}
+          </View>
+        );
+      }
       return (
         <ThreadReasoningRow
           rowSizing={props.workRowSizing}
@@ -2717,7 +2733,9 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       switch (entry.type) {
         case "message":
           // A collapsed reasoning row is the same chrome as a work toggle.
-          return entry.message.role === "reasoning" && !expandedReasoningMessageIds.has(entry.id)
+          return entry.message.role === "reasoning" &&
+            entry.reasoningKind !== "summary" &&
+            !expandedReasoningMessageIds.has(entry.id)
             ? WORK_GROUP_TOGGLE_HEIGHT
             : undefined;
         case "turn-fold":

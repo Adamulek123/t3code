@@ -6973,6 +6973,95 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
     }),
   );
 
+  it.effect(
+    "marks OpenCode continuation text as progress while keeping stopped text as output",
+    () =>
+      Effect.gen(function* () {
+        const adapter = yield* OpenCodeAdapter;
+        const threadId = asThreadId("thread-opencode-progress-text");
+        const sessionID = "http://127.0.0.1:9999/session";
+        runtimeMock.state.subscribedEvents = (["tool-calls", "length", "stop"] as const).flatMap(
+          (finish, index) => {
+            const messageID = `msg-progress-${index}`;
+            return [
+              {
+                type: "message.updated",
+                properties: { sessionID, info: { id: messageID, role: "assistant" } },
+              },
+              {
+                type: "message.part.updated",
+                properties: {
+                  sessionID,
+                  part: {
+                    id: `part-progress-${index}`,
+                    messageID,
+                    sessionID,
+                    type: "text",
+                    text: `Text ${index}`,
+                    time: { start: index + 1, end: index + 2 },
+                  },
+                },
+              },
+              {
+                type: "message.updated",
+                properties: { sessionID, info: { id: messageID, role: "assistant", finish } },
+              },
+              ...(index === 0
+                ? [
+                    {
+                      type: "message.part.updated",
+                      properties: {
+                        sessionID,
+                        part: {
+                          id: `part-progress-${index}`,
+                          messageID,
+                          sessionID,
+                          type: "text",
+                          text: "Text 0 updated",
+                          time: { start: 1, end: 2 },
+                        },
+                      },
+                    },
+                  ]
+                : []),
+            ];
+          },
+        );
+        const eventsFiber = yield* adapter.streamEvents.pipe(
+          Stream.filter(
+            (event) =>
+              event.threadId === threadId &&
+              (event.type === "content.delta" || event.type === "item.completed"),
+          ),
+          Stream.take(10),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+
+        yield* adapter.startSession({
+          provider: ProviderDriverKind.make("opencode"),
+          threadId,
+          runtimeMode: "full-access",
+        });
+
+        const events = Array.from(yield* Fiber.join(eventsFiber).pipe(Effect.timeout("1 second")));
+        const completions = events.filter((event) => event.type === "item.completed");
+        NodeAssert.deepEqual(
+          completions.map((event) =>
+            event.type === "item.completed" ? [event.itemId, event.payload.presentation] : [],
+          ),
+          [
+            ["part-progress-0", undefined],
+            ["part-progress-0", "progress"],
+            ["part-progress-0", "progress"],
+            ["part-progress-1", undefined],
+            ["part-progress-1", "progress"],
+            ["part-progress-2", undefined],
+          ],
+        );
+      }),
+  );
+
   it.effect("emits tool lifecycle events before late assistant metadata", () =>
     Effect.gen(function* () {
       const adapter = yield* OpenCodeAdapter;

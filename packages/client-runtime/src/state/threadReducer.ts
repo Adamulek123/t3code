@@ -396,6 +396,7 @@ export function applyThreadDetailEvent(
         found = true;
         return {
           ...entry,
+          role: message.role,
           text: message.streaming
             ? `${entry.text}${message.text}`
             : message.text.length > 0

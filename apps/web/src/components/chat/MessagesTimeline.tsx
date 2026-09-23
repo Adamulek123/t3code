@@ -2601,6 +2601,7 @@ function SummaryReasoningTimelineRow({
   row: Extract<TimelineRow, { kind: "reasoning-run" }>;
 }) {
   const ctx = use(TimelineRowCtx);
+  const [expanded, setExpanded] = useState(false);
   const text = row.messages
     .map((message) => message.text.trim())
     .filter(Boolean)
@@ -2608,19 +2609,32 @@ function SummaryReasoningTimelineRow({
   if (text.length === 0) {
     return null;
   }
+  const longSummary = text.length > 2_000 || text.split("\n", 26).length > 25;
   return (
     <div className="relative min-w-0 px-1 py-0.5">
-      <ChatMarkdown
-        text={text}
-        cwd={ctx.markdownCwd}
-        threadRef={ctx.threadRef ?? undefined}
-        isStreaming={row.messages.some((message) => message.streaming)}
-        lineBreaks={shouldPreserveAssistantLineBreaks(text)}
-        skills={ctx.skills}
-        headingLevelOffset={MESSAGE_HEADING_LEVEL}
-        onUseArtifactTemplate={ctx.onUseArtifactTemplate}
-        onImageExpand={ctx.onImageExpand}
-      />
+      <div className={cn(longSummary && !expanded && "max-h-48 overflow-hidden")}>
+        <ChatMarkdown
+          text={text}
+          cwd={ctx.markdownCwd}
+          threadRef={ctx.threadRef ?? undefined}
+          isStreaming={row.messages.some((message) => message.streaming)}
+          lineBreaks={shouldPreserveAssistantLineBreaks(text)}
+          skills={ctx.skills}
+          headingLevelOffset={MESSAGE_HEADING_LEVEL}
+          onUseArtifactTemplate={ctx.onUseArtifactTemplate}
+          onImageExpand={ctx.onImageExpand}
+        />
+      </div>
+      {longSummary ? (
+        <button
+          type="button"
+          className="mt-1 cursor-pointer text-secondary-label text-xs hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/70"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((current) => !current)}
+        >
+          {expanded ? "Show less" : "Show more"}
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -2634,6 +2648,7 @@ function RawReasoningTimelineRow({
   const detailsId = useId();
   const messageId = row.messages[0]!.id;
   const expanded = ctx.expandedReasoningMessageIds.has(messageId);
+  const streaming = row.messages.some((message) => message.streaming);
   const label = `Thought${row.messages.length > 1 ? ` (×${row.messages.length})` : ""}`;
   return (
     <div className={cn("flex min-w-0 flex-col", expanded && "mb-1")}>
@@ -2648,7 +2663,12 @@ function RawReasoningTimelineRow({
           <BrainIcon aria-hidden className="block size-4 shrink-0 stroke-[1.8] opacity-70" />
         </span>
         <span className="flex min-w-0 flex-1 items-center gap-1.5">
-          <span className="relative min-w-0 flex-1 truncate text-secondary-label text-sm leading-relaxed">
+          <span
+            className={cn(
+              "relative min-w-0 flex-1 truncate text-secondary-label text-sm leading-relaxed",
+              streaming && "live-tool-shine",
+            )}
+          >
             {label}
           </span>
           <span className="flex size-4 shrink-0 items-center justify-center" aria-hidden>

@@ -782,6 +782,7 @@ export function projectEvent(
               entry.id === message.id
                 ? {
                     ...entry,
+                    role: message.role,
                     text: message.streaming
                       ? `${entry.text}${message.text}`
                       : message.text.length > 0

@@ -310,7 +310,9 @@ export function reasoningDisplayKind(
   message: ChatMessage,
   turn: ReasoningTurnStats,
 ): "summary" | "raw" {
-  if (message.id.startsWith("reasoning:summary:")) return "summary";
+  if (message.id.startsWith("reasoning:summary:") || message.id.startsWith("assistant:")) {
+    return "summary";
+  }
   return turn.hasSummary || message.text.length > 2_000 || message.text.split("\n", 26).length > 25
     ? "raw"
     : "summary";
@@ -633,7 +635,6 @@ function deriveTurnFolds(input: {
   interface TurnGroup {
     entries: Array<TimelineEntry>;
     terminalEntry: Extract<TimelineEntry, { kind: "message" }> | null;
-    hasStreamingMessage: boolean;
     /**
      * The user message that kicked the turn off. Entry timestamps alone
      * undercount the duration (the first entry appears only once the
@@ -667,7 +668,6 @@ function deriveTurnFolds(input: {
       group = {
         entries: [],
         terminalEntry: null,
-        hasStreamingMessage: false,
         // Each user boundary starts at most one turn; a second turn after the
         // same user message (e.g. a steer-superseded continuation) falls back
         // to its own first entry.
@@ -681,12 +681,6 @@ function deriveTurnFolds(input: {
       if (input.terminalAssistantMessageIds.has(entry.message.id)) {
         group.terminalEntry = entry;
       }
-      // A live turn is already excluded above, so only an answer still being
-      // written may hold a fold open. A thinking block stranded by a crashed
-      // provider keeps its streaming flag forever and must not.
-      if (entry.message.streaming && entry.message.role !== "reasoning") {
-        group.hasStreamingMessage = true;
-      }
     }
   }
 
@@ -695,9 +689,8 @@ function deriveTurnFolds(input: {
     if (input.unfoldedTurnIds.has(turnId)) {
       continue;
     }
-    if (group.hasStreamingMessage) {
-      continue;
-    }
+    // The turn lifecycle above decides whether work is still live. A provider
+    // error can leave its final assistant message marked as streaming forever.
     const hiddenEntryIds = new Set<string>();
     const terminalEntryIndex = group.terminalEntry
       ? group.entries.findIndex((entry) => entry.id === group.terminalEntry?.id)

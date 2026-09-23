@@ -1834,6 +1834,21 @@ describe("buildThreadFeed", () => {
       label: "Worked for 17s",
       expanded: false,
     });
+    const failedFeed = buildThreadFeed({
+      ...thread,
+      messages: thread.messages.map((message) =>
+        message.id === MessageId.make("assistant-final")
+          ? { ...message, streaming: true }
+          : message,
+      ),
+    });
+    expect(
+      deriveThreadFeedPresentation(
+        failedFeed,
+        { ...thread.latestTurn!, state: "error" },
+        new Set(),
+      ).map((entry) => entry.id),
+    ).toEqual(["assistant-first", "turn-fold:turn-1", "assistant-final"]);
 
     const expanded = deriveThreadFeedPresentation(feed, thread.latestTurn, new Set([turnId]));
     expect(expanded.map((entry) => entry.id)).toEqual([
@@ -2318,7 +2333,7 @@ describe("buildThreadFeed", () => {
   it("groups ordered reasoning blocks, keeps the live slot, and restores the group after unfolding", () => {
     const turnId = TurnId.make("reasoning-group");
     const messages: OrchestrationThread["messages"] = [1, 2, 3, 4].map((second) => ({
-      id: MessageId.make(`reasoning-${second}`),
+      id: MessageId.make(`reasoning:raw:${second}`),
       role: "reasoning",
       text: `**Step ${second}**\n\nCheck ${second}.`,
       turnId,
@@ -2397,7 +2412,7 @@ describe("buildThreadFeed", () => {
     expect(toolRunning[0]).not.toMatchObject({ summary: "Thinking" });
     const nextThought = {
       ...messages[3]!,
-      id: MessageId.make("reasoning-after-tool"),
+      id: MessageId.make("reasoning:raw:after-tool"),
       createdAt: "2026-04-01T00:00:06.000Z",
       updatedAt: "2026-04-01T00:00:06.000Z",
     };
@@ -2425,7 +2440,7 @@ describe("buildThreadFeed", () => {
       reasoningAgainFeed,
       thread.latestTurn,
       new Set(),
-      new Set([`activity-run:${messages[0]!.id}`]),
+      new Set(messages.map((message) => `activity-run:${message.id}`)),
       "now",
     );
     expect(expandedLive.map((entry) => entry.type)).toEqual([
@@ -2578,7 +2593,7 @@ describe("buildThreadFeed", () => {
       if (boundary === "failed-tool") {
         // A failed call stays inside the run instead of splitting it.
         expect(rows.filter((entry) => entry.type === "work-toggle")).toMatchObject([
-          { hasFailure: true, hiddenCount: 3 },
+          { hasFailure: true, hiddenCount: 1 },
         ]);
       }
       expect(reasoningRows).toEqual(
@@ -2587,10 +2602,46 @@ describe("buildThreadFeed", () => {
           id: message.id,
           createdAt: message.createdAt,
           message,
+          ...(message.turnId ? { reasoningKind: "summary" } : {}),
         })),
       );
     },
   );
+
+  it("keeps short OpenCode progress inline and its raw trace separately expandable", () => {
+    const turnId = TurnId.make("reasoning-kinds");
+    const messages: OrchestrationThread["messages"] = [
+      ["reasoning:raw:first", "Private trace"],
+      ["assistant:progress", "Checking the review."],
+      ["reasoning:raw:second", "More private trace"],
+    ].map(([id, value], index) => ({
+      id: MessageId.make(id!),
+      role: "reasoning" as const,
+      text: value!,
+      turnId,
+      streaming: false,
+      createdAt: `2026-04-01T00:00:0${index + 1}.000Z`,
+      updatedAt: `2026-04-01T00:00:0${index + 1}.000Z`,
+    }));
+    const rows = deriveThreadFeedPresentation(
+      buildThreadFeed({ messages, activities: [] }),
+      null,
+      new Set([turnId]),
+      new Set([`activity-run:${messages[0]!.id}`]),
+    ).filter((row) => row.type === "message");
+    expect(rows.map((row) => row.type === "message" && row.reasoningKind)).toEqual([
+      "raw",
+      "summary",
+      "raw",
+    ]);
+    const collapsed = deriveThreadFeedPresentation(
+      buildThreadFeed({ messages, activities: [] }),
+      null,
+      new Set([turnId]),
+    );
+    expect(collapsed.map((row) => row.type)).toEqual(["work-toggle", "message"]);
+    expect(collapsed[1]).toMatchObject({ message: messages[1], reasoningKind: "summary" });
+  });
 
   it("shows one Thinking row while a turn works without live tool activity", () => {
     const turnId = TurnId.make("turn-thinking");
