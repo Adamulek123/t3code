@@ -2643,6 +2643,79 @@ describe("buildThreadFeed", () => {
     expect(collapsed[1]).toMatchObject({ message: messages[1], reasoningKind: "summary" });
   });
 
+  it("folds reasoning-only work after a final answer", () => {
+    const turnId = TurnId.make("reasoning-only");
+    const messages: OrchestrationThread["messages"] = [
+      {
+        id: MessageId.make("reasoning:raw:trace"),
+        role: "reasoning",
+        text: "Checking the branch",
+        turnId,
+        streaming: false,
+        createdAt: "2026-04-01T00:00:01.000Z",
+        updatedAt: "2026-04-01T00:00:01.000Z",
+      },
+      {
+        id: MessageId.make("assistant:final"),
+        role: "assistant",
+        text: "Audit complete",
+        turnId,
+        streaming: false,
+        createdAt: "2026-04-01T00:00:02.000Z",
+        updatedAt: "2026-04-01T00:00:02.000Z",
+      },
+    ];
+    const rows = deriveThreadFeedPresentation(
+      buildThreadFeed({ messages, activities: [] }),
+      {
+        turnId,
+        state: "completed",
+        startedAt: "2026-04-01T00:00:00.000Z",
+        completedAt: "2026-04-01T00:00:03.000Z",
+      },
+      new Set(),
+    );
+    expect(rows.map((row) => row.type)).toEqual(["turn-fold", "message"]);
+  });
+
+  it("folds earlier turnless reports from one completed response", () => {
+    const messages: OrchestrationThread["messages"] = [
+      {
+        id: MessageId.make("prompt"),
+        role: "user",
+        text: "Audit this branch",
+        turnId: null,
+        streaming: false,
+        createdAt: "2026-04-01T00:00:00.000Z",
+        updatedAt: "2026-04-01T00:00:00.000Z",
+      },
+      ...[1, 2, 3].map((index) => ({
+        id: MessageId.make(`report-${index}`),
+        role: "assistant" as const,
+        text: `Audit report ${index}`,
+        turnId: null,
+        streaming: false,
+        createdAt: `2026-04-01T00:00:0${index}.000Z`,
+        updatedAt: `2026-04-01T00:00:0${index}.000Z`,
+      })),
+    ];
+    const rows = deriveThreadFeedPresentation(
+      buildThreadFeed({ messages, activities: [] }),
+      null,
+      new Set(),
+    );
+    expect(rows.map((row) => row.type)).toEqual(["message", "turn-fold", "message"]);
+    expect(rows.at(-1)?.id).toBe("report-3");
+    const liveRows = deriveThreadFeedPresentation(
+      buildThreadFeed({ messages, activities: [] }),
+      null,
+      new Set(),
+      new Set(),
+      "2026-04-01T00:00:00.000Z",
+    );
+    expect(liveRows.filter((row) => row.type === "turn-fold")).toHaveLength(0);
+  });
+
   it("shows one Thinking row while a turn works without live tool activity", () => {
     const turnId = TurnId.make("turn-thinking");
     const latestTurn = {

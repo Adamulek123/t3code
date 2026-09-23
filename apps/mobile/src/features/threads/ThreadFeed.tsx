@@ -1488,18 +1488,20 @@ function renderFeedEntry(
       const messages = entry.reasoningMessages ?? [message];
       if (entry.reasoningKind === "summary") {
         return (
-          <View className="min-w-0 px-1 py-0.5">
-            {messages.map((reasoningMessage) => (
-              <AssistantMarkdownContent
-                key={reasoningMessage.id}
-                markdown={reasoningMessage.text}
-                markdownStyles={markdownStyles.assistant}
-                linkHandlers={props.markdownLinkHandlers}
-                renderImage={props.renderMarkdownImage}
-                skills={props.skills}
-              />
-            ))}
-          </View>
+          <MarkdownImageAvailableWidthContext value={props.markdownContentWidth}>
+            <View className="min-w-0 px-1 py-0.5">
+              {messages.map((reasoningMessage) => (
+                <AssistantMarkdownContent
+                  key={reasoningMessage.id}
+                  markdown={reasoningMessage.text}
+                  markdownStyles={markdownStyles.assistant}
+                  linkHandlers={props.markdownLinkHandlers}
+                  renderImage={props.renderMarkdownImage}
+                  skills={props.skills}
+                />
+              ))}
+            </View>
+          </MarkdownImageAvailableWidthContext>
         );
       }
       return (

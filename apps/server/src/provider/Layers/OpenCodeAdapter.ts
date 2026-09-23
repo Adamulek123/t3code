@@ -222,6 +222,8 @@ interface OpenCodePromptAdmission {
   idleDuringAdmission: { readonly turnId: TurnId; readonly raw: unknown } | undefined;
   idleObservedAfterMessage: boolean;
   messageObserved: boolean;
+  assistantResponseFinished: boolean;
+  responseReceipt: Deferred.Deferred<void>;
   busyObserved: boolean;
   idleStatusConfirmations: number;
   accepted: boolean;
@@ -356,6 +358,9 @@ interface OpenCodeSessionContext {
   readonly textPartsByMessageId: Map<string, Map<string, OpenCodeTextPartState>>;
   turnTokenUsage: OpenCodeTurnTokenUsageAccumulator | undefined;
   activeTurnId: TurnId | undefined;
+  activePromptMessageId: string | undefined;
+  lastCompletedPrompt: { messageId: string; turnId: TurnId } | undefined;
+  readonly lateAssistantMessageIds: Set<string>;
   activeAgent: string | undefined;
   activeVariant: string | undefined;
   cancellation: OpenCodeCancellation | undefined;
@@ -598,8 +603,14 @@ function normalizeQuestionRequest(request: QuestionRequest): ReadonlyArray<UserI
   }));
 }
 
-function resolveTextStreamKind(part: Pick<Part, "type">): "assistant_text" | "reasoning_text" {
-  return part.type === "reasoning" ? "reasoning_text" : "assistant_text";
+function resolveTextStreamKind(
+  part: Pick<OpenCodeTextPartState, "type" | "progressClassified">,
+): "assistant_text" | "assistant_progress_text" | "reasoning_text" {
+  return part.type === "reasoning"
+    ? "reasoning_text"
+    : part.progressClassified
+      ? "assistant_progress_text"
+      : "assistant_text";
 }
 
 function retainOpenCodeTextPart(
@@ -1135,6 +1146,10 @@ export function makeOpenCodeAdapter(
         context.pendingIdleReconciliation = undefined;
       }
       const tokenUsage = takeOpenCodeTurnTokenUsage(context, true);
+      if (context.activePromptMessageId) {
+        context.lastCompletedPrompt = { messageId: context.activePromptMessageId, turnId };
+      }
+      context.activePromptMessageId = undefined;
       context.activeTurnId = undefined;
       context.activeAgent = undefined;
       context.activeVariant = undefined;
@@ -1448,14 +1463,14 @@ export function makeOpenCodeAdapter(
           if (
             isIdle &&
             idle !== undefined &&
-            (promptAdmission.messageObserved || promptAdmission.busyObserved)
+            (promptAdmission.assistantResponseFinished || promptAdmission.busyObserved)
           ) {
             context.promptAdmission = undefined;
             context.awaitingBusyAfterInterruption = false;
             yield* scheduleIdleReconciliation(context, promptAdmission.turnId, idle.raw);
             return;
           }
-          if (isIdle && promptAdmission.messageObserved) {
+          if (isIdle && promptAdmission.assistantResponseFinished) {
             promptAdmission.idleStatusConfirmations += 1;
             if (promptAdmission.idleStatusConfirmations >= 2) {
               context.promptAdmission = undefined;
@@ -1476,7 +1491,7 @@ export function makeOpenCodeAdapter(
           }
           if (
             isIdle &&
-            promptAdmission.messageObserved &&
+            promptAdmission.assistantResponseFinished &&
             promptAdmission.recoveryRaw !== undefined
           ) {
             context.promptAdmission = undefined;
@@ -1491,6 +1506,26 @@ export function makeOpenCodeAdapter(
 
           const delayMs = Math.min(250 * 2 ** retryCount, 2_000);
           yield* Effect.sleep(`${delayMs} millis`);
+        }
+        // An idle status can precede OpenCode's first assistant response. Keep
+        // the turn owned until that response arrives; its terminal update
+        // restarts reconciliation without polling an idle session indefinitely.
+        if (promptAdmission.messageObserved && !promptAdmission.assistantResponseFinished) {
+          yield* Deferred.await(promptAdmission.responseReceipt);
+          if (
+            context.promptAdmission === promptAdmission &&
+            context.activeTurnId === promptAdmission.turnId &&
+            context.promptGeneration === promptAdmission.generation &&
+            !promptAdmission.cancelled
+          ) {
+            context.promptAdmission = undefined;
+            yield* scheduleIdleReconciliation(
+              context,
+              promptAdmission.turnId,
+              promptAdmission.recoveryRaw,
+            );
+          }
+          return;
         }
         yield* failPromptAdmissionRecovery(context, promptAdmission);
       }).pipe(
@@ -1671,9 +1706,6 @@ export function makeOpenCodeAdapter(
             delta: deltaToEmit,
           },
         });
-        if (part.progressClassified) {
-          yield* emitAssistantProgressCompletion(context, part, turnId, raw);
-        }
       }
 
       if (part.type === "text" && part.time?.end !== undefined && !part.completed) {
@@ -2297,7 +2329,29 @@ export function makeOpenCodeAdapter(
         return;
       }
 
-      const turnId = context.activeTurnId;
+      const lastCompletedPrompt = context.lastCompletedPrompt;
+      if (
+        context.activeTurnId === undefined &&
+        lastCompletedPrompt &&
+        event.type === "message.updated" &&
+        event.properties.info.role === "assistant" &&
+        event.properties.info.parentID === lastCompletedPrompt.messageId
+      ) {
+        context.lateAssistantMessageIds.add(event.properties.info.id);
+      }
+      const lateAssistantMessageId =
+        event.type === "message.updated" && event.properties.info.role === "assistant"
+          ? event.properties.info.id
+          : event.type === "message.part.updated"
+            ? event.properties.part.messageID
+            : event.type === "message.part.delta"
+              ? event.properties.messageID
+              : undefined;
+      const turnId =
+        context.activeTurnId ??
+        (lateAssistantMessageId && context.lateAssistantMessageIds.has(lateAssistantMessageId)
+          ? lastCompletedPrompt?.turnId
+          : undefined);
       yield* writeNativeEventBestEffort(context.session.threadId, {
         observedAt: yield* nowIso,
         event: {
@@ -2369,15 +2423,7 @@ export function makeOpenCodeAdapter(
             promptAdmission.messageObserved = true;
             yield* Deferred.succeed(promptAdmission.messageReceipt, undefined);
             if (promptAdmission.accepted) {
-              const idle = promptAdmission.idleDuringAdmission;
-              context.awaitingBusyAfterInterruption = false;
-              context.promptAdmission = undefined;
-              if (promptAdmission.recoveryFiber) {
-                yield* Fiber.interrupt(promptAdmission.recoveryFiber);
-              }
-              if (idle) {
-                yield* scheduleIdleReconciliation(context, idle.turnId, idle.raw);
-              }
+              yield* schedulePromptAdmissionRecovery(context, event);
             }
           }
           context.messageRoleById.set(event.properties.info.id, event.properties.info.role);
@@ -2385,6 +2431,14 @@ export function makeOpenCodeAdapter(
             context.textPartsByMessageId.delete(event.properties.info.id);
           }
           if (event.properties.info.role === "assistant") {
+            if (
+              promptAdmission?.messageId === event.properties.info.parentID &&
+              event.properties.info.finish === "stop"
+            ) {
+              promptAdmission.assistantResponseFinished = true;
+              yield* Deferred.succeed(promptAdmission.responseReceipt, undefined);
+              yield* schedulePromptAdmissionRecovery(context, event);
+            }
             const usage = context.turnTokenUsage;
             const parentMessageId =
               typeof event.properties.info.parentID === "string" &&
@@ -2484,9 +2538,6 @@ export function makeOpenCodeAdapter(
               delta: deltaToEmit,
             },
           });
-          if (existingPart.progressClassified) {
-            yield* emitAssistantProgressCompletion(context, existingPart, turnId, event);
-          }
           break;
         }
 
@@ -3063,6 +3114,9 @@ export function makeOpenCodeAdapter(
           messageRoleById: new Map(),
           turnTokenUsage: undefined,
           activeTurnId: undefined,
+          activePromptMessageId: undefined,
+          lastCompletedPrompt: undefined,
+          lateAssistantMessageIds: new Set(),
           activeAgent: undefined,
           activeVariant: undefined,
           cancellation: undefined,
@@ -3231,6 +3285,8 @@ export function makeOpenCodeAdapter(
             idleDuringAdmission: undefined,
             idleObservedAfterMessage: false,
             messageObserved: false,
+            assistantResponseFinished: false,
+            responseReceipt: Deferred.makeUnsafe<void>(),
             busyObserved: false,
             idleStatusConfirmations: 0,
             accepted: false,
@@ -3244,6 +3300,9 @@ export function makeOpenCodeAdapter(
           context.promptAdmission = promptAdmission;
 
           context.activeTurnId = turnId;
+          context.activePromptMessageId = messageId;
+          context.lastCompletedPrompt = undefined;
+          context.lateAssistantMessageIds.clear();
           if (steeringTurnId === undefined) {
             context.turnTokenUsage = makeOpenCodeTurnTokenUsageAccumulator();
           }

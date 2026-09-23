@@ -1984,7 +1984,7 @@ describe("deriveMessagesTimelineRows", () => {
 
   it("shows reclassified OpenCode progress inline beside raw reasoning and a final answer", () => {
     const raw = reasoningEntry("reasoning:raw:trace", "2026-01-01T00:00:01Z", "turn-1");
-    raw.message.text = "Detailed trace.\n".repeat(300);
+    raw.message.text = "Detailed trace.";
     const progress = reasoningEntry("progress", "2026-01-01T00:00:02Z", "turn-1");
     progress.message.id = MessageId.make("assistant:progress-part") as never;
     progress.message.text = "Checking the reviews.";
@@ -2006,6 +2006,35 @@ describe("deriveMessagesTimelineRows", () => {
       [progress.id, "summary"],
     ]);
     expect(rows.some((row) => row.kind === "message" && row.id === answer.id)).toBe(true);
+  });
+
+  it("folds earlier turnless reports left by a completed OpenCode prompt", () => {
+    const user = answerEntry("prompt", "2026-01-01T00:00:00Z", "turn-1");
+    user.message.role = "user" as never;
+    user.message.turnId = null as never;
+    const reports = [1, 2, 3].map((index) => {
+      const entry = answerEntry(`report-${index}`, `2026-01-01T00:00:0${index}Z`, "turn-1");
+      entry.message.turnId = null as never;
+      entry.message.text = `Audit report ${index}`;
+      return entry;
+    });
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [user, ...reports],
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
+    });
+    expect(rows.map((row) => row.kind)).toEqual(["message", "turn-fold", "message"]);
+    expect(rows.at(-1)?.id).toBe("report-3");
+    const liveRows = deriveMessagesTimelineRows({
+      timelineEntries: [user, ...reports],
+      isWorking: true,
+      activeTurnStartedAt: "2026-01-01T00:00:00Z",
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
+    });
+    expect(liveRows.filter((row) => row.kind === "turn-fold")).toHaveLength(0);
   });
 
   it("keeps provider summaries and raw traces in separate reasoning rows", () => {
@@ -2116,7 +2145,7 @@ describe("deriveMessagesTimelineRows", () => {
     ).toEqual([first.id, second.id, answer.id]);
   });
 
-  it("leaves a thought-only turn visible", () => {
+  it("folds reasoning once a final answer settles", () => {
     const thought = reasoningEntry("thought", "2026-01-01T00:00:01Z", "turn-1");
     const rows = deriveMessagesTimelineRows({
       timelineEntries: [thought, answerEntry("answer", "2026-01-01T00:00:02Z", "turn-1")],
@@ -2125,7 +2154,52 @@ describe("deriveMessagesTimelineRows", () => {
       turnDiffSummaries: [],
       supportsConversationRollback: false,
     });
-    expect(rows.map((row) => row.kind)).toEqual(["reasoning-run", "message"]);
+    expect(rows.map((row) => row.kind)).toEqual(["turn-fold", "message"]);
+  });
+
+  it("folds Mimo reasoning around a visible user question", () => {
+    const turnId = TurnId.make("turn-1");
+    const questionBase = toolEntry("question", "2026-01-01T00:00:03Z", "turn-1");
+    const question = {
+      ...questionBase,
+      entry: {
+        ...questionBase.entry,
+        questionAnswer: {
+          requestId: ApprovalRequestId.make("request-1"),
+          answers: { scope: "Audit the branch" },
+          questionTextById: { scope: "What should I audit?" },
+          attachmentsByQuestionId: {},
+        },
+      },
+    };
+    const input = {
+      timelineEntries: [
+        reasoningEntry("raw", "2026-01-01T00:00:01Z", "turn-1"),
+        reasoningEntry("progress", "2026-01-01T00:00:02Z", "turn-1"),
+        question,
+        answerEntry("report", "2026-01-01T00:00:04Z", "turn-1"),
+      ],
+      latestTurn: {
+        turnId,
+        state: "completed" as const,
+        startedAt: "2026-01-01T00:00:00Z",
+        completedAt: "2026-01-01T00:00:05Z",
+      },
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
+    } satisfies Parameters<typeof deriveMessagesTimelineRows>[0];
+    expect(deriveMessagesTimelineRows(input).map((row) => row.kind)).toEqual([
+      "turn-fold",
+      "work",
+      "message",
+    ]);
+    expect(
+      deriveMessagesTimelineRows({ ...input, expandedTurnIds: new Set([turnId]) }).map(
+        (row) => row.kind,
+      ),
+    ).toEqual(["turn-fold", "reasoning-run", "work", "message"]);
   });
 
   it("still folds a lone trailing tool call when a thought follows the answer", () => {

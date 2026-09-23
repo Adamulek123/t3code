@@ -34,7 +34,7 @@ import type { QueuedComposerMessage } from "../../queuedMessageStore";
 import {
   type MessageId,
   type OrchestrationLatestTurn,
-  type TurnId,
+  TurnId,
   type WorktreeSetupSnapshot,
 } from "@t3tools/contracts";
 import { formatWorkspaceRelativePath } from "../../filePathDisplay";
@@ -298,7 +298,7 @@ function reasoningStatsByTurn(
     const message = entry.message;
     const key = message.turnId ?? message.id;
     const turn = stats.get(key) ?? { hasSummary: false };
-    if (message.id.startsWith("reasoning:summary:")) {
+    if (message.id.startsWith("reasoning:summary:") || message.id.startsWith("assistant:")) {
       turn.hasSummary = true;
     }
     stats.set(key, turn);
@@ -631,6 +631,7 @@ function deriveTurnFolds(input: {
   terminalAssistantMessageIds: ReadonlySet<string>;
   latestTurn: TimelineLatestTurn | null;
   unfoldedTurnIds: ReadonlySet<TurnId>;
+  isWorking: boolean;
 }): ReadonlyMap<string, TurnFold> {
   interface TurnGroup {
     entries: Array<TimelineEntry>;
@@ -646,9 +647,11 @@ function deriveTurnFolds(input: {
   const groupsByTurnId = new Map<TurnId, TurnGroup>();
 
   let pendingUserBoundary: string | null = null;
+  let unkeyedResponseTurnId: TurnId | null = null;
   for (const entry of input.timelineEntries) {
     if (entry.kind === "message" && entry.message.role === "user") {
       pendingUserBoundary = entry.message.createdAt;
+      unkeyedResponseTurnId = TurnId.make(`unkeyed-response:${entry.message.id}`);
       continue;
     }
     // Reasoning reads inline between tools while the turn is live. Once it
@@ -656,7 +659,8 @@ function deriveTurnFolds(input: {
     const turnId =
       entry.kind === "message" &&
       (entry.message.role === "assistant" || entry.message.role === "reasoning")
-        ? (entry.message.turnId ?? null)
+        ? (entry.message.turnId ??
+          (entry.message.role === "assistant" ? unkeyedResponseTurnId : null))
         : entry.kind === "work"
           ? (entry.entry.turnId ?? null)
           : null;
@@ -686,6 +690,9 @@ function deriveTurnFolds(input: {
 
   const foldsByAnchorEntryId = new Map<string, TurnFold>();
   for (const [turnId, group] of groupsByTurnId) {
+    if (input.isWorking && String(turnId).startsWith("unkeyed-response:")) {
+      continue;
+    }
     if (input.unfoldedTurnIds.has(turnId)) {
       continue;
     }
@@ -737,16 +744,23 @@ function deriveTurnFolds(input: {
     if (hiddenEntryIds.size === 0) {
       continue;
     }
-    // A lone compaction row stays visible on its own; it only folds away as
-    // part of a turn that already folds other work. Reasoning alone also stays
-    // visible rather than sitting behind a fold with no other work.
+    // A lone compaction row stays visible on its own. Reasoning folds when the
+    // turn has a final answer, even if its only other activity was a question.
     const hidesFoldableWork = group.entries.some(
       (entry) =>
         hiddenEntryIds.has(entry.id) &&
         !(entry.kind === "work" && entry.entry.sourceActivityKind === "context-compaction") &&
         !(entry.kind === "message" && entry.message.role === "reasoning"),
     );
-    if (!hidesFoldableWork) {
+    const hidesReasoningBeforeAnswer =
+      group.terminalEntry !== null &&
+      group.entries.some(
+        (entry) =>
+          hiddenEntryIds.has(entry.id) &&
+          entry.kind === "message" &&
+          entry.message.role === "reasoning",
+      );
+    if (!hidesFoldableWork && !hidesReasoningBeforeAnswer) {
       continue;
     }
 
@@ -968,6 +982,7 @@ export function deriveMessagesTimelineRows(input: {
     terminalAssistantMessageIds,
     latestTurn: input.latestTurn ?? null,
     unfoldedTurnIds: activeVisualResponseTurnIds,
+    isWorking: input.isWorking,
   });
   const collapsedEntryIds = new Set<string>();
   for (const fold of foldsByAnchorEntryId.values()) {

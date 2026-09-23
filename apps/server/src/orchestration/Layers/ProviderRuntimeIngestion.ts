@@ -1762,6 +1762,7 @@ const make = Effect.gen(function* () {
       if (
         event.type === "content.delta" &&
         event.payload.streamKind !== "assistant_text" &&
+        event.payload.streamKind !== "assistant_progress_text" &&
         event.payload.streamKind !== "reasoning_text" &&
         event.payload.streamKind !== "reasoning_summary_text"
       ) {
@@ -1940,6 +1941,10 @@ const make = Effect.gen(function* () {
         event.type === "content.delta" && event.payload.streamKind === "assistant_text"
           ? event.payload.delta
           : undefined;
+      const assistantProgressDelta =
+        event.type === "content.delta" && event.payload.streamKind === "assistant_progress_text"
+          ? event.payload.delta
+          : undefined;
       const reasoningDelta =
         event.type === "content.delta" &&
         (event.payload.streamKind === "reasoning_text" ||
@@ -2073,6 +2078,30 @@ const make = Effect.gen(function* () {
             createdAt: now,
           });
         }
+      }
+
+      if (assistantProgressDelta && assistantProgressDelta.length > 0) {
+        const turnId = toTurnId(event.turnId);
+        const messageId = MessageId.make(
+          `assistant:${event.itemId ?? event.turnId ?? event.eventId}`,
+        );
+        yield* orchestrationEngine.dispatch({
+          type: "thread.message.reasoning.delta",
+          commandId: yield* providerCommandId(event, "assistant-progress-delta"),
+          threadId: thread.id,
+          messageId,
+          delta: assistantProgressDelta,
+          ...(turnId ? { turnId } : {}),
+          createdAt: now,
+        });
+        yield* orchestrationEngine.dispatch({
+          type: "thread.message.reasoning.complete",
+          commandId: yield* providerCommandId(event, "assistant-progress-complete"),
+          threadId: thread.id,
+          messageId,
+          ...(turnId ? { turnId } : {}),
+          createdAt: now,
+        });
       }
 
       const pauseForUserTurnId =
@@ -2317,7 +2346,12 @@ const make = Effect.gen(function* () {
           }
         }
 
-        if (turnId && assistantCompletion.presentation !== "progress") {
+        if (
+          turnId &&
+          (assistantCompletion.presentation !== "progress" ||
+            (Option.isSome(activeAssistantMessageId) &&
+              activeAssistantMessageId.value === assistantMessageId))
+        ) {
           yield* clearAssistantSegmentStateForTurn(thread.id, turnId);
         }
       }

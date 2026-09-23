@@ -5,13 +5,16 @@ import {
   requestKindFromRequestType,
   type PendingApproval,
 } from "@t3tools/client-runtime/pending-requests";
-import { UserInputAttachmentAnswerPayload, isToolLifecycleItemType } from "@t3tools/contracts";
+import {
+  TurnId,
+  UserInputAttachmentAnswerPayload,
+  isToolLifecycleItemType,
+} from "@t3tools/contracts";
 import type {
   OrchestrationLatestTurn,
   OrchestrationThread,
   OrchestrationThreadActivity,
   ToolLifecycleItemType,
-  TurnId,
   UserInputQuestion,
 } from "@t3tools/contracts";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
@@ -1636,15 +1639,23 @@ interface ThreadFeedTurnFold {
 function deriveThreadFeedTurnFolds(
   feed: ReadonlyArray<ThreadFeedEntry>,
   latestTurn: ThreadFeedLatestTurn | null,
+  isWorking: boolean,
 ): ReadonlyMap<string, ThreadFeedTurnFold> {
   const firstAssistantMessageIdByTurn = new Map<TurnId, string>();
   const terminalAssistantMessageIdByTurn = new Map<TurnId, string>();
+  let unkeyedResponseTurnId: TurnId | null = null;
   for (const entry of feed) {
-    if (entry.type === "message" && entry.message.role === "assistant" && entry.message.turnId) {
-      if (!firstAssistantMessageIdByTurn.has(entry.message.turnId)) {
-        firstAssistantMessageIdByTurn.set(entry.message.turnId, entry.id);
+    if (entry.type === "message" && entry.message.role === "user") {
+      unkeyedResponseTurnId = TurnId.make(`unkeyed-response:${entry.message.id}`);
+      continue;
+    }
+    if (entry.type === "message" && entry.message.role === "assistant") {
+      const turnId = entry.message.turnId ?? unkeyedResponseTurnId;
+      if (!turnId) continue;
+      if (!firstAssistantMessageIdByTurn.has(turnId)) {
+        firstAssistantMessageIdByTurn.set(turnId, entry.id);
       }
-      terminalAssistantMessageIdByTurn.set(entry.message.turnId, entry.id);
+      terminalAssistantMessageIdByTurn.set(turnId, entry.id);
     }
   }
 
@@ -1654,9 +1665,11 @@ function deriveThreadFeedTurnFolds(
   }
   const groupsByTurnId = new Map<TurnId, TurnGroup>();
   let pendingUserBoundary: string | null = null;
+  unkeyedResponseTurnId = null;
   for (const entry of feed) {
     if (entry.type === "message" && entry.message.role === "user") {
       pendingUserBoundary = entry.message.createdAt;
+      unkeyedResponseTurnId = TurnId.make(`unkeyed-response:${entry.message.id}`);
       continue;
     }
     // Thinking is work, so it folds with the rest of it. A provider that
@@ -1666,7 +1679,8 @@ function deriveThreadFeedTurnFolds(
     const turnId =
       entry.type === "message" &&
       (entry.message.role === "assistant" || entry.message.role === "reasoning")
-        ? entry.message.turnId
+        ? (entry.message.turnId ??
+          (entry.message.role === "assistant" ? unkeyedResponseTurnId : null))
         : entry.type === "activity-group"
           ? entry.turnId
           : null;
@@ -1689,6 +1703,9 @@ function deriveThreadFeedTurnFolds(
   const foldsByAnchorId = new Map<string, ThreadFeedTurnFold>();
   for (const [turnId, group] of groupsByTurnId) {
     const { entries } = group;
+    if (isWorking && String(turnId).startsWith("unkeyed-response:")) {
+      continue;
+    }
     if (turnId === unsettledTurnId) {
       continue;
     }
@@ -1697,11 +1714,12 @@ function deriveThreadFeedTurnFolds(
 
     const firstAssistantMessageId = firstAssistantMessageIdByTurn.get(turnId);
     const terminalAssistantMessageId = terminalAssistantMessageIdByTurn.get(turnId);
+    const unkeyedResponse = String(turnId).startsWith("unkeyed-response:");
     const hiddenEntryIds = new Set(
       entries
         .filter(
           (entry) =>
-            entry.id !== firstAssistantMessageId &&
+            (unkeyedResponse || entry.id !== firstAssistantMessageId) &&
             entry.id !== terminalAssistantMessageId &&
             !(entry.type === "activity-group" && isUserInputActivityGroup(entry)),
         )
@@ -1710,17 +1728,23 @@ function deriveThreadFeedTurnFolds(
     if (hiddenEntryIds.size === 0) {
       continue;
     }
-    // A lone compaction row stays visible on its own; it only folds away as
-    // part of a turn that already folds other work. Thinking is the same: a
-    // question answered by thought alone keeps its "Thought" row
-    // rather than collapsing behind a "Worked for ..." that hides nothing else.
+    // A lone compaction row stays visible on its own. Reasoning folds when
+    // the turn has a final answer, even if its only other activity was a question.
     const hidesFoldableWork = entries.some(
       (entry) =>
         hiddenEntryIds.has(entry.id) &&
         !(entry.type === "activity-group" && isContextCompactionActivityGroup(entry)) &&
         !(entry.type === "message" && entry.message.role === "reasoning"),
     );
-    if (!hidesFoldableWork) {
+    const hidesReasoningBeforeAnswer =
+      terminalAssistantMessageId !== undefined &&
+      entries.some(
+        (entry) =>
+          hiddenEntryIds.has(entry.id) &&
+          entry.type === "message" &&
+          entry.message.role === "reasoning",
+      );
+    if (!hidesFoldableWork && !hidesReasoningBeforeAnswer) {
       continue;
     }
 
@@ -1783,9 +1807,9 @@ export function deriveThreadFeedPresentation(
   const activeTailGroup = sourceFeed.findLast(
     (entry) => entry.type !== "message" || !isEmptyMessage(entry),
   );
-  const foldsByAnchorId = deriveThreadFeedTurnFolds(sourceFeed, latestTurn);
-  const unsettledTurnId = deriveUnsettledTurnId(latestTurn);
   const isWorking = activeWorkStartedAt !== null;
+  const foldsByAnchorId = deriveThreadFeedTurnFolds(sourceFeed, latestTurn, isWorking);
+  const unsettledTurnId = deriveUnsettledTurnId(latestTurn);
   const collapsedEntryIds = new Set<string>();
   for (const fold of foldsByAnchorId.values()) {
     if (!expandedTurnIds.has(fold.turnId)) {
