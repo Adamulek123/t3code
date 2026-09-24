@@ -699,6 +699,17 @@ function messageRoleForPart(
   return part.type === "tool" ? "assistant" : undefined;
 }
 
+const MAX_RECENT_MESSAGE_TURN_IDS = 4_096;
+
+function rememberMessageTurnId(context: OpenCodeSessionContext, messageId: string, turnId: TurnId) {
+  const associations = context.messageTurnIdById;
+  associations.delete(messageId);
+  associations.set(messageId, turnId);
+  if (associations.size > MAX_RECENT_MESSAGE_TURN_IDS) {
+    associations.delete(associations.keys().next().value!);
+  }
+}
+
 function detailFromToolPart(part: Extract<Part, { type: "tool" }>): string | undefined {
   switch (part.state.status) {
     case "completed":
@@ -2337,7 +2348,7 @@ export function makeOpenCodeAdapter(
         const parentId = event.properties.info.parentID;
         const parentTurnId = parentId ? context.messageTurnIdById.get(parentId) : undefined;
         if (parentTurnId) {
-          context.messageTurnIdById.set(event.properties.info.id, parentTurnId);
+          rememberMessageTurnId(context, event.properties.info.id, parentTurnId);
         }
       }
       const assistantMessageId =
@@ -3340,7 +3351,7 @@ export function makeOpenCodeAdapter(
           context.promptAdmission = promptAdmission;
 
           context.activeTurnId = turnId;
-          context.messageTurnIdById.set(messageId, turnId);
+          rememberMessageTurnId(context, messageId, turnId);
           if (steeringTurnId === undefined) {
             context.turnTokenUsage = makeOpenCodeTurnTokenUsageAccumulator();
           }
