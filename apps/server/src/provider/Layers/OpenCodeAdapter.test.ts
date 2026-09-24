@@ -7049,7 +7049,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
   );
 
   it.effect(
-    "marks OpenCode continuation text as progress while keeping stopped text as output",
+    "marks tool-call continuation text as progress while keeping length and stop output visible",
     () =>
       Effect.gen(function* () {
         const adapter = yield* OpenCodeAdapter;
@@ -7108,7 +7108,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
               event.threadId === threadId &&
               (event.type === "content.delta" || event.type === "item.completed"),
           ),
-          Stream.take(9),
+          Stream.take(8),
           Stream.runCollect,
           Effect.forkChild,
         );
@@ -7129,7 +7129,6 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
             ["part-progress-0", undefined],
             ["part-progress-0", "progress"],
             ["part-progress-1", undefined],
-            ["part-progress-1", "progress"],
             ["part-progress-2", undefined],
           ],
         );

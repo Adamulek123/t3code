@@ -2431,8 +2431,9 @@ export function makeOpenCodeAdapter(
           }
           if (event.properties.info.role === "assistant") {
             if (
-              promptAdmission?.messageId === event.properties.info.parentID &&
-              event.properties.info.finish === "stop"
+              promptAdmission !== undefined &&
+              promptAdmission.messageId === event.properties.info.parentID &&
+              (event.properties.info.finish === "stop" || event.properties.info.finish === "length")
             ) {
               promptAdmission.assistantResponseFinished = true;
               yield* Deferred.succeed(promptAdmission.responseReceipt, undefined);
@@ -2483,8 +2484,7 @@ export function makeOpenCodeAdapter(
               if (
                 part.type === "text" &&
                 !part.progressClassified &&
-                (event.properties.info.finish === "tool-calls" ||
-                  event.properties.info.finish === "length")
+                event.properties.info.finish === "tool-calls"
               ) {
                 yield* emitAssistantProgressCompletion(context, part, turnId, event);
               }
