@@ -1739,6 +1739,7 @@ function deriveThreadFeedTurnFolds(
           (entry) =>
             (unkeyedResponse || entry.id !== firstAssistantMessageId) &&
             entry.id !== terminalAssistantMessageId &&
+            !(entry.type === "activity-group" && isContextCompactionActivityGroup(entry)) &&
             !(entry.type === "activity-group" && isUserInputActivityGroup(entry)),
         )
         .map((entry) => entry.id),

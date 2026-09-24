@@ -485,6 +485,48 @@ describe("buildThreadFeed", () => {
     ]);
   });
 
+  it("keeps compaction visible beside a settled work fold", () => {
+    const turnId = TurnId.make("turn-compaction-with-work");
+    const rows = deriveThreadFeedPresentation(
+      buildThreadFeed({
+        messages: [
+          {
+            id: MessageId.make("answer"),
+            role: "assistant",
+            text: "Done",
+            turnId,
+            streaming: false,
+            createdAt: "2026-09-01T00:00:03.000Z",
+            updatedAt: "2026-09-01T00:00:03.000Z",
+          },
+        ],
+        activities: [
+          makeActivity({
+            id: EventId.make("compaction"),
+            kind: "context-compaction",
+            tone: "info",
+            summary: "Compacted context",
+            createdAt: "2026-09-01T00:00:01.000Z",
+            turnId,
+          }),
+          makeActivity({
+            id: EventId.make("command"),
+            kind: "tool.completed",
+            tone: "tool",
+            summary: "Ran command",
+            createdAt: "2026-09-01T00:00:02.000Z",
+            turnId,
+            payload: { itemType: "command_execution", title: "Ran command", status: "completed" },
+          }),
+        ],
+      }),
+      null,
+      new Set(),
+    );
+    expect(rows.map((row) => row.type)).toEqual(["activity-group", "turn-fold", "message"]);
+    expect(rows[0]?.id).toBe("compaction");
+  });
+
   it("keeps long Claude commands expandable without repeating them in full detail", () => {
     const command = `printf 'first line\nsecond line'\n&& printf done`;
     const thread = makeThread({
