@@ -599,7 +599,16 @@ function deriveActiveVisualResponseTurnIds(input: {
       const latestUserIndex = lastUserMessageIndex(input.timelineEntries);
       for (let index = input.timelineEntries.length - 1; index > latestUserIndex; index -= 1) {
         const entry = input.timelineEntries[index]!;
-        if (entry.kind !== "message" || !entry.message.streaming) continue;
+        if (
+          !(
+            (entry.kind === "message" && entry.message.streaming) ||
+            (entry.kind === "work" &&
+              (entry.entry.toolLifecycleStatus === "inProgress" ||
+                entry.entry.sourceActivityKind === "task.progress"))
+          )
+        ) {
+          continue;
+        }
         const turnId = timelineEntryTurnId(entry);
         if (turnId !== null) turnIds.add(turnId);
         break;

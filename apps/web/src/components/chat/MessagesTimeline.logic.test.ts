@@ -3053,6 +3053,56 @@ describe("deriveMessagesTimelineRows", () => {
     expect(rows.some((row) => row.kind === "work-live")).toBe(false);
   });
 
+  it("keeps fresh work visible while the turn projection still names the previous turn", () => {
+    const activeTurnId = TurnId.make("fresh-work-turn");
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "fresh-user-entry",
+          kind: "message",
+          createdAt: "2026-01-01T00:01:00Z",
+          message: {
+            id: MessageId.make("fresh-user"),
+            role: "user",
+            text: "Continue",
+            turnId: null,
+            createdAt: "2026-01-01T00:01:00Z",
+            updatedAt: "2026-01-01T00:01:00Z",
+            streaming: false,
+          },
+        },
+        {
+          id: "fresh-running-entry",
+          kind: "work",
+          createdAt: "2026-01-01T00:01:02Z",
+          entry: {
+            id: "fresh-running",
+            createdAt: "2026-01-01T00:01:02Z",
+            turnId: activeTurnId,
+            label: "Running tests",
+            command: "vp test",
+            tone: "tool",
+            toolLifecycleStatus: "inProgress",
+          },
+        },
+      ],
+      latestTurn: {
+        turnId: TurnId.make("previous-turn"),
+        state: "completed",
+        startedAt: "2026-01-01T00:00:00Z",
+        completedAt: "2026-01-01T00:00:30Z",
+      },
+      isWorking: true,
+      activeTurnStartedAt: "2026-01-01T00:01:00Z",
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
+    });
+    expect(rows.some((row) => row.kind === "turn-fold" && row.turnId === activeTurnId)).toBe(false);
+    expect(rows.some((row) => row.kind === "work-live" && row.entry.id === "fresh-running")).toBe(
+      true,
+    );
+  });
+
   it("does not revive separated historical task progress", () => {
     const rows = deriveMessagesTimelineRows({
       timelineEntries: [

@@ -2606,6 +2606,7 @@ function SummaryReasoningTimelineRow({
   row: Extract<TimelineRow, { kind: "reasoning-run" }>;
 }) {
   const ctx = use(TimelineRowCtx);
+  const activity = use(TimelineRowActivityCtx);
   const detailsId = useId();
   const messageId = row.messages[0]!.id;
   const expanded = ctx.expandedReasoningMessageIds.has(messageId);
@@ -2613,19 +2614,27 @@ function SummaryReasoningTimelineRow({
     .map((message) => message.text.trim())
     .filter(Boolean)
     .join(" ");
-  if (text.length === 0) {
-    return row.messages.some((message) => message.streaming) ? <ThinkingTimelineRow /> : null;
-  }
+  const streaming = row.messages.some(
+    (message) =>
+      message.streaming &&
+      (message.turnId ? message.turnId === activity.unsettledTurnId : activity.isWorking),
+  );
+  if (text.length === 0) return streaming ? <ThinkingTimelineRow /> : null;
   const longSummary = text.length > 2_000 || text.split("\n", 26).length > 25;
   const preview = text.slice(0, 2_000).split("\n").slice(0, 26).join("\n");
   return (
     <div className="relative min-w-0 px-1 py-0.5">
-      <div id={detailsId} className={cn(longSummary && !expanded && "max-h-48 overflow-hidden")}>
+      <div
+        id={detailsId}
+        className={cn(
+          longSummary && (expanded ? "max-h-96 overflow-y-auto" : "max-h-48 overflow-hidden"),
+        )}
+      >
         <ChatMarkdown
           text={longSummary && !expanded ? preview : text}
           cwd={ctx.markdownCwd}
           threadRef={ctx.threadRef ?? undefined}
-          isStreaming={row.messages.some((message) => message.streaming)}
+          isStreaming={streaming}
           lineBreaks={shouldPreserveAssistantLineBreaks(text)}
           skills={ctx.skills}
           headingLevelOffset={MESSAGE_HEADING_LEVEL}
@@ -2654,10 +2663,15 @@ function RawReasoningTimelineRow({
   row: Extract<TimelineRow, { kind: "reasoning-run" }>;
 }) {
   const ctx = use(TimelineRowCtx);
+  const activity = use(TimelineRowActivityCtx);
   const detailsId = useId();
   const messageId = row.messages[0]!.id;
   const expanded = ctx.expandedReasoningMessageIds.has(messageId);
-  const streaming = row.messages.some((message) => message.streaming);
+  const streaming = row.messages.some(
+    (message) =>
+      message.streaming &&
+      (message.turnId ? message.turnId === activity.unsettledTurnId : activity.isWorking),
+  );
   const label = `Thought${row.messages.length > 1 ? ` (×${row.messages.length})` : ""}`;
   return (
     <div className={cn("flex min-w-0 flex-col", expanded && "mb-1")}>
