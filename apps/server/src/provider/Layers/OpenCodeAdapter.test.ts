@@ -3305,7 +3305,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
     }),
   );
 
-  it.effect("reconciles a sole idle when the matching prompt echo arrives later", () =>
+  it.effect("reconciles a length-limited reply when the matching prompt echo arrives later", () =>
     Effect.gen(function* () {
       const adapter = yield* OpenCodeAdapter;
       const threadId = asThreadId("thread-idle-before-delayed-echo");
@@ -3370,7 +3370,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
             id: "msg-delayed-assistant",
             role: "assistant",
             parentID: messageId,
-            finish: "stop",
+            finish: "length",
           },
         },
       });
