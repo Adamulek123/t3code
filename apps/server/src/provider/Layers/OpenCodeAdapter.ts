@@ -213,6 +213,7 @@ interface OpenCodeIdleReconciliation {
 }
 
 interface OpenCodePromptAdmission {
+  steering: boolean;
   readonly generation: number;
   readonly turnId: TurnId;
   readonly messageId: string;
@@ -886,6 +887,9 @@ const cancelPendingOpenCodePrompt = Effect.fn("cancelPendingOpenCodePrompt")(fun
     return;
   }
   admission.cancelled = true;
+  if (admission.recoveryFiber) {
+    yield* Fiber.interrupt(admission.recoveryFiber);
+  }
   if (admission.promptFiber) {
     yield* Fiber.interrupt(admission.promptFiber);
   }
@@ -1511,7 +1515,13 @@ export function makeOpenCodeAdapter(
         // the turn owned until that response arrives; its terminal update
         // restarts reconciliation without polling an idle session indefinitely.
         if (promptAdmission.messageObserved && !promptAdmission.assistantResponseFinished) {
-          yield* Deferred.await(promptAdmission.responseReceipt);
+          const response = yield* Deferred.await(promptAdmission.responseReceipt).pipe(
+            Effect.timeoutOption("2 minutes"),
+          );
+          if (Option.isNone(response)) {
+            yield* failPromptAdmissionRecovery(context, promptAdmission);
+            return;
+          }
           if (
             context.promptAdmission === promptAdmission &&
             context.activeTurnId === promptAdmission.turnId &&
@@ -2437,7 +2447,14 @@ export function makeOpenCodeAdapter(
             ) {
               promptAdmission.assistantResponseFinished = true;
               yield* Deferred.succeed(promptAdmission.responseReceipt, undefined);
-              yield* schedulePromptAdmissionRecovery(context, event);
+              if (promptAdmission.accepted) {
+                if (promptAdmission.recoveryFiber) {
+                  yield* Fiber.interrupt(promptAdmission.recoveryFiber);
+                }
+                context.promptAdmission = undefined;
+                context.awaitingBusyAfterInterruption = false;
+                yield* scheduleIdleReconciliation(context, promptAdmission.turnId, event);
+              }
             }
             const usage = context.turnTokenUsage;
             const parentMessageId =
@@ -2689,8 +2706,17 @@ export function makeOpenCodeAdapter(
             yield* cancelIdleReconciliation(context);
             context.awaitingBusyAfterInterruption = false;
             if (context.promptAdmission?.turnId === turnId) {
-              context.promptAdmission.busyObserved = true;
-              yield* schedulePromptAdmissionRecovery(context, event);
+              const admission = context.promptAdmission;
+              admission.busyObserved = true;
+              if (admission.accepted && admission.messageObserved) {
+                admission.cancelled = true;
+                context.promptAdmission = undefined;
+                if (admission.recoveryFiber) {
+                  yield* Fiber.interrupt(admission.recoveryFiber);
+                }
+              } else {
+                yield* schedulePromptAdmissionRecovery(context, event);
+              }
             }
             yield* updateProviderSession(context, {
               status: "running",
@@ -2720,9 +2746,23 @@ export function makeOpenCodeAdapter(
               break;
             }
             if (context.promptAdmission?.turnId === turnId) {
-              context.promptAdmission.idleDuringAdmission = { turnId, raw: event };
-              context.promptAdmission.idleObservedAfterMessage =
-                context.promptAdmission.messageObserved;
+              const admission = context.promptAdmission;
+              const priorIdle = admission.idleDuringAdmission ?? admission.priorIdle;
+              admission.idleDuringAdmission = { turnId, raw: event };
+              admission.idleObservedAfterMessage = admission.messageObserved;
+              if (
+                admission.accepted &&
+                admission.messageObserved &&
+                (priorIdle || !context.awaitingBusyAfterInterruption)
+              ) {
+                admission.cancelled = true;
+                context.promptAdmission = undefined;
+                if (admission.recoveryFiber) {
+                  yield* Fiber.interrupt(admission.recoveryFiber);
+                }
+                yield* scheduleIdleReconciliation(context, turnId, event);
+                break;
+              }
               yield* schedulePromptAdmissionRecovery(context, event);
               break;
             }
@@ -2755,6 +2795,14 @@ export function makeOpenCodeAdapter(
             }
             if (context.interruptedTurnId !== undefined || context.reconcileIdleStatus) {
               break;
+            }
+          }
+          const promptAdmission = context.promptAdmission;
+          if (promptAdmission) {
+            promptAdmission.cancelled = true;
+            context.promptAdmission = undefined;
+            if (promptAdmission.recoveryFiber) {
+              yield* Fiber.interrupt(promptAdmission.recoveryFiber);
             }
           }
           yield* cancelIdleReconciliation(context);
@@ -3275,7 +3323,12 @@ export function makeOpenCodeAdapter(
             : undefined;
           context.pendingIdleReconciliation = undefined;
           const promptGeneration = context.promptGeneration + 1;
+          const previousAdmission = context.promptAdmission;
+          if (previousAdmission?.recoveryFiber) {
+            yield* Fiber.interrupt(previousAdmission.recoveryFiber);
+          }
           const promptAdmission: OpenCodePromptAdmission = {
+            steering: steeringTurnId !== undefined,
             generation: promptGeneration,
             turnId,
             messageId,
@@ -3593,13 +3646,29 @@ export function makeOpenCodeAdapter(
           ) {
             context.awaitingBusyAfterInterruption = false;
             const idle = promptAdmission.idleDuringAdmission;
-            if (idle && !promptAdmission.idleObservedAfterMessage) {
-              yield* schedulePromptAdmissionRecovery(context, idle.raw);
-            } else {
+            if (promptAdmission.busyObserved && promptAdmission.messageObserved) {
+              if (promptAdmission.recoveryFiber) {
+                yield* Fiber.interrupt(promptAdmission.recoveryFiber);
+              }
               context.promptAdmission = undefined;
-            }
-            if (idle && promptAdmission.idleObservedAfterMessage) {
+              if (idle) {
+                yield* scheduleIdleReconciliation(context, turnId, idle.raw);
+              }
+            } else if (promptAdmission.assistantResponseFinished) {
+              if (promptAdmission.recoveryFiber) {
+                yield* Fiber.interrupt(promptAdmission.recoveryFiber);
+              }
+              context.promptAdmission = undefined;
+              yield* scheduleIdleReconciliation(context, turnId, promptAdmission.recoveryRaw);
+            } else if (
+              idle &&
+              promptAdmission.idleObservedAfterMessage &&
+              promptAdmission.steering
+            ) {
+              context.promptAdmission = undefined;
               yield* scheduleIdleReconciliation(context, turnId, idle.raw);
+            } else {
+              yield* schedulePromptAdmissionRecovery(context, idle?.raw);
             }
           } else {
             yield* schedulePromptAdmissionRecovery(context, promptAdmission.recoveryRaw);
@@ -3728,6 +3797,9 @@ export function makeOpenCodeAdapter(
         const promptAdmission = context.promptAdmission;
         if (promptAdmission !== undefined && promptAdmission.turnId === interruptedTurnId) {
           promptAdmission.cancelled = true;
+          if (promptAdmission.recoveryFiber) {
+            yield* Fiber.interrupt(promptAdmission.recoveryFiber);
+          }
           if (promptAdmission.promptFiber) {
             yield* Fiber.interrupt(promptAdmission.promptFiber);
           }

@@ -2143,10 +2143,15 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       const threadId = asThreadId("thread-steer-reconnect-before-acceptance");
       const firstUserMessageEvent = promiseWithResolvers<unknown>();
       const reconnectEvent = promiseWithResolvers<unknown>();
+      const assistantEvent = promiseWithResolvers<unknown>();
       const steerStarted = promiseWithResolvers<void>();
       const steerRelease = promiseWithResolvers<void>();
       runtimeMock.state.autoPromptEcho = false;
-      runtimeMock.state.subscribedEvents = [firstUserMessageEvent.promise, reconnectEvent.promise];
+      runtimeMock.state.subscribedEvents = [
+        firstUserMessageEvent.promise,
+        reconnectEvent.promise,
+        assistantEvent.promise,
+      ];
       runtimeMock.state.promptAsyncImplementation = async () => {
         if (runtimeMock.state.promptCalls.length === 2) {
           steerStarted.resolve(undefined);
@@ -2211,6 +2216,19 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       steerRelease.resolve(undefined);
       yield* Fiber.join(steerFiber);
       yield* advanceTestClock(250);
+      assistantEvent.resolve({
+        id: "evt-assistant-after-reconnect-steer",
+        type: "message.updated",
+        properties: {
+          sessionID: "http://127.0.0.1:9999/session",
+          info: {
+            id: "msg-assistant-after-reconnect-steer",
+            role: "assistant",
+            parentID: steerMessageId,
+            finish: "stop",
+          },
+        },
+      });
 
       const completed = Option.getOrUndefined(
         yield* Fiber.join(completedFiber).pipe(Effect.timeout("1 second")),
@@ -2976,13 +2994,18 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       const threadId = asThreadId("thread-stale-admission-status-after-stop");
       const idleEvent = promiseWithResolvers<unknown>();
       const userMessageEvent = promiseWithResolvers<unknown>();
+      const assistantEvent = promiseWithResolvers<unknown>();
       const staleStatusStarted = promiseWithResolvers<void>();
       const staleStatusRelease = promiseWithResolvers<void>();
       const staleStatusReturned = promiseWithResolvers<void>();
       const activePromptStarted = promiseWithResolvers<void>();
       const activePromptRelease = promiseWithResolvers<void>();
       runtimeMock.state.autoPromptEcho = false;
-      runtimeMock.state.subscribedEvents = [idleEvent.promise, userMessageEvent.promise];
+      runtimeMock.state.subscribedEvents = [
+        idleEvent.promise,
+        userMessageEvent.promise,
+        assistantEvent.promise,
+      ];
       runtimeMock.state.sessionStatusImplementation = async () => {
         if (runtimeMock.state.sessionStatusCalls === 1) {
           staleStatusStarted.resolve(undefined);
@@ -3073,6 +3096,19 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       activePromptRelease.resolve(undefined);
       const activeTurn = yield* Fiber.join(activeTurnFiber);
       yield* advanceTestClock(250);
+      assistantEvent.resolve({
+        id: "evt-assistant-after-stale-status",
+        type: "message.updated",
+        properties: {
+          sessionID: "http://127.0.0.1:9999/session",
+          info: {
+            id: "msg-assistant-after-stale-status",
+            role: "assistant",
+            parentID: activeMessageId,
+            finish: "stop",
+          },
+        },
+      });
 
       const completed = Option.getOrUndefined(
         yield* Fiber.join(completedFiber).pipe(Effect.timeout("1 second")),
