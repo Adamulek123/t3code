@@ -1584,15 +1584,8 @@ describe("ProviderRuntimeIngestion", () => {
 
     emitText("progress-part", "Checking ", "evt-progress-first", "assistant_text");
     complete("progress-part", "evt-progress-classified", "progress");
-    emitText("progress-part", "the reviews.", "evt-progress-second", "assistant_progress_text");
-    await waitForThread(harness.readModel, (entry) =>
-      entry.messages.some(
-        (message: ProviderRuntimeTestMessage) =>
-          message.id === "assistant:progress-part" &&
-          message.text === "Checking the reviews." &&
-          message.streaming,
-      ),
-    );
+    emitText("progress-part", "the ", "evt-progress-second", "assistant_progress_text");
+    emitText("progress-part", "reviews.", "evt-progress-third", "assistant_progress_text");
     emitText("answer-part", "Review complete.", "evt-answer", "assistant_text");
     complete("answer-part", "evt-answer-complete");
     harness.emit({

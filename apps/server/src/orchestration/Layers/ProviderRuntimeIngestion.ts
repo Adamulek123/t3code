@@ -1051,6 +1051,11 @@ const make = Effect.gen(function* () {
     timeToLive: BUFFERED_MESSAGE_TEXT_BY_MESSAGE_ID_TTL,
     lookup: () => Effect.succeed(0),
   });
+  const progressMessageIds = yield* Cache.make<MessageId, boolean>({
+    capacity: BUFFERED_MESSAGE_TEXT_BY_MESSAGE_ID_CACHE_CAPACITY,
+    timeToLive: BUFFERED_MESSAGE_TEXT_BY_MESSAGE_ID_TTL,
+    lookup: () => Effect.succeed(false),
+  });
 
   // When a thinking block opened, so "Thought for ..." measures the model's
   // time and not the moment buffered text happened to be flushed.
@@ -1399,6 +1404,7 @@ const make = Effect.gen(function* () {
 
   const clearAssistantMessageState = (messageId: MessageId) =>
     clearBufferedAssistantText(messageId).pipe(
+      Effect.andThen(Cache.invalidate(progressMessageIds, messageId)),
       Effect.andThen(Cache.invalidate(reasoningPartIndexByMessageId, messageId)),
       Effect.andThen(Cache.invalidate(reasoningStartedAtByMessageId, messageId)),
     );
@@ -1422,7 +1428,9 @@ const make = Effect.gen(function* () {
         return false;
       }
 
-      const isReasoning = messageStreamRoleOf(input.messageId) === "reasoning";
+      const isReasoning =
+        messageStreamRoleOf(input.messageId) === "reasoning" ||
+        Option.isSome(yield* Cache.getOption(progressMessageIds, input.messageId));
       yield* orchestrationEngine.dispatch({
         type: isReasoning ? "thread.message.reasoning.delta" : "thread.message.assistant.delta",
         commandId: yield* providerCommandId(input.event, input.commandTag),
@@ -1493,7 +1501,9 @@ const make = Effect.gen(function* () {
       const hasRenderableText = hasRenderableAssistantText(text);
 
       const isReasoning =
-        input.presentation === "progress" || messageStreamRoleOf(input.messageId) === "reasoning";
+        input.presentation === "progress" ||
+        messageStreamRoleOf(input.messageId) === "reasoning" ||
+        Option.isSome(yield* Cache.getOption(progressMessageIds, input.messageId));
 
       if (hasRenderableText) {
         yield* orchestrationEngine.dispatch({
@@ -2088,15 +2098,26 @@ const make = Effect.gen(function* () {
         if (turnId) {
           yield* rememberAssistantMessageId(thread.id, turnId, messageId);
         }
-        yield* orchestrationEngine.dispatch({
-          type: "thread.message.reasoning.delta",
-          commandId: yield* providerCommandId(event, "assistant-progress-delta"),
-          threadId: thread.id,
+        yield* Cache.set(progressMessageIds, messageId, true);
+        const streamingMode = yield* resolveResponseStreamingMode(thread.projectId);
+        const progressMode = streamingMode === "token" ? "paragraph" : streamingMode;
+        const spillChunk = yield* appendBufferedAssistantText(
           messageId,
-          delta: assistantProgressDelta,
-          ...(turnId ? { turnId } : {}),
-          createdAt: now,
-        });
+          assistantProgressDelta,
+          progressMode,
+          yield* Clock.currentTimeMillis,
+        );
+        if (spillChunk.length > 0) {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.message.reasoning.delta",
+            commandId: yield* providerCommandId(event, "assistant-progress-delta-buffer-spill"),
+            threadId: thread.id,
+            messageId,
+            delta: spillChunk,
+            ...(turnId ? { turnId } : {}),
+            createdAt: now,
+          });
+        }
         // OpenCode can append text after classifying a completed part as
         // progress. Finish a live part at item or turn completion instead of
         // persisting a completion for every token. Late deltas from a settled
@@ -2110,12 +2131,16 @@ const make = Effect.gen(function* () {
           progressTurn.value.state !== "pending" &&
           progressTurn.value.state !== "running";
         if (!turnId || isSettledProgressTurn) {
-          yield* orchestrationEngine.dispatch({
-            type: "thread.message.reasoning.complete",
-            commandId: yield* providerCommandId(event, "assistant-progress-complete"),
+          yield* finalizeAssistantMessage({
+            event,
             threadId: thread.id,
             messageId,
+            ...(turnId ? { turnId } : {}),
             createdAt: now,
+            commandTag: "assistant-progress-complete",
+            finalDeltaCommandTag: "assistant-progress-delta-finalize",
+            hasProjectedMessage: (yield* getThreadMessageById(thread.id, messageId)) !== undefined,
+            presentation: "progress",
           });
         }
       }
