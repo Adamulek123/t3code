@@ -62,6 +62,7 @@ import {
   use,
   useCallback,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -2683,7 +2684,7 @@ function RawReasoningTimelineRow({
         onClick={() => ctx.onToggleReasoning(messageId, !expanded, row.id)}
       >
         <span className="flex size-6 shrink-0 items-center justify-center text-icon-muted">
-          <BrainIcon aria-hidden className="block size-4 shrink-0 stroke-[1.8] opacity-70" />
+          <BrainIcon aria-hidden className="block size-4 shrink-0 stroke-2 opacity-70" />
         </span>
         <span className="flex min-w-0 flex-1 items-center gap-1.5">
           <span
