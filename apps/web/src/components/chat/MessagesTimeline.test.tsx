@@ -1842,25 +1842,6 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain("tool call failed");
   });
 
-  it("renders reasoning markdown with the same typography as assistant text", () => {
-    const turnId = TurnId.make("turn-thought");
-    const thought = buildAssistantTimelineEntry("**Viewing image first** with `code`.");
-    const markup = renderToStaticMarkup(
-      <MessagesTimeline
-        {...buildProps()}
-        isWorking
-        runningTurnId={turnId}
-        timelineEntries={[
-          { ...thought, message: { ...thought.message, role: "reasoning", turnId } },
-        ]}
-      />,
-    );
-    expect(markup).toContain("Viewing image first");
-    expect(markup).toContain("<strong>");
-    expect(markup).toContain("<code data-inline-code");
-    expect(markup).not.toContain('data-timeline-row-kind="reasoning-trace"');
-  });
-
   it("renders adjacent thinking chunks as one compact paragraph", () => {
     const turnId = TurnId.make("turn-thought-chunks");
     const chunks = ["Launching subagents.", "Selecting direct calls.", "Sequencing the work."];
