@@ -1839,6 +1839,17 @@ export function deriveThreadFeedPresentation(
   const isWorking = activeWorkStartedAt !== null;
   const foldsByAnchorId = deriveThreadFeedTurnFolds(sourceFeed, latestTurn, isWorking);
   const unsettledTurnId = deriveUnsettledTurnId(latestTurn);
+  const turnsWithSummary = new Set(
+    sourceFeed.flatMap((entry) =>
+      entry.type === "message" &&
+      entry.message.role === "reasoning" &&
+      entry.message.turnId &&
+      (entry.message.id.startsWith("reasoning:summary:") ||
+        entry.message.id.startsWith("assistant:"))
+        ? [entry.message.turnId]
+        : [],
+    ),
+  );
   const collapsedEntryIds = new Set<string>();
   for (const fold of foldsByAnchorId.values()) {
     if (!expandedTurnIds.has(fold.turnId)) {
@@ -1902,6 +1913,7 @@ export function deriveThreadFeedPresentation(
             unsettledTurnId,
             isWorking,
             run.at(-1) === activeTailGroup,
+            turnsWithSummary.has(runTurnId),
           );
           index = end - 1;
           continue;
@@ -1964,6 +1976,7 @@ function appendMixedActivityRun(
   unsettledTurnId: TurnId | null,
   isWorking: boolean,
   activeTail: boolean,
+  hasSummary: boolean,
 ) {
   const first = run[0]!;
   const last = run.at(-1)!;
@@ -1975,7 +1988,7 @@ function appendMixedActivityRun(
       : undefined;
   const groupId = firstTool ? toolActivityGroupId(firstTool) : `activity-run:${first.id}`;
   const expanded = expandedWorkGroupIds.has(groupId);
-  const state = `${isWorking}:${unsettledTurnId}:${activeTail}:${expanded}`;
+  const state = `${isWorking}:${unsettledTurnId}:${activeTail}:${expanded}:${hasSummary}`;
   const cached = activityRunsCache.get(first);
   if (
     cached?.state === state &&
@@ -1986,7 +1999,7 @@ function appendMixedActivityRun(
     return;
   }
   const outputStart = result.length;
-  const history = groupConsecutiveReasoningMessages(run).map((entry) =>
+  const history = groupConsecutiveReasoningMessages(run, hasSummary).map((entry) =>
     entry.type === "activity-group"
       ? {
           ...entry,
@@ -2071,26 +2084,14 @@ function appendMixedActivityRun(
 
 function groupConsecutiveReasoningMessages(
   feed: ReadonlyArray<ThreadFeedEntry>,
+  hasSummary: boolean,
 ): ThreadFeedEntry[] {
   const result: ThreadFeedEntry[] = [];
-  const turnsWithSummary = new Set(
-    feed.flatMap((entry) =>
-      entry.type === "message" &&
-      entry.message.role === "reasoning" &&
-      entry.message.turnId &&
-      (entry.message.id.startsWith("reasoning:summary:") ||
-        entry.message.id.startsWith("assistant:"))
-        ? [entry.message.turnId]
-        : [],
-    ),
-  );
   const kindOf = (message: OrchestrationThread["messages"][number]) => {
     if (message.id.startsWith("reasoning:summary:") || message.id.startsWith("assistant:")) {
       return "summary";
     }
-    return (message.turnId && turnsWithSummary.has(message.turnId)) ||
-      message.text.length > 2_000 ||
-      message.text.split("\n", 26).length > 25
+    return hasSummary || message.text.length > 2_000 || message.text.split("\n", 26).length > 25
       ? "raw"
       : "summary";
   };

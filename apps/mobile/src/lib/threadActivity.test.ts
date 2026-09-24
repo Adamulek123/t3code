@@ -2685,6 +2685,33 @@ describe("buildThreadFeed", () => {
     expect(collapsed[1]).toMatchObject({ message: messages[1], reasoningKind: "summary" });
   });
 
+  it("recognizes raw reasoning after an answer when a prior run has a summary", () => {
+    const turnId = TurnId.make("split-reasoning-kinds");
+    const messages: OrchestrationThread["messages"] = [
+      ["reasoning:summary:first", "Checking the review.", "reasoning"],
+      ["assistant:answer", "Initial answer", "assistant"],
+      ["reasoning:raw:later", "Short raw trace", "reasoning"],
+    ].map(([id, value, role], index) => ({
+      id: MessageId.make(id!),
+      role: role as "reasoning" | "assistant",
+      text: value!,
+      turnId,
+      streaming: false,
+      createdAt: `2026-04-01T00:00:0${index + 1}.000Z`,
+      updatedAt: `2026-04-01T00:00:0${index + 1}.000Z`,
+    }));
+    const rows = deriveThreadFeedPresentation(
+      buildThreadFeed({ messages, activities: [] }),
+      null,
+      new Set([turnId]),
+      new Set([`activity-run:${messages[2]!.id}`]),
+    );
+    expect(rows.find((row) => row.id === messages[2]!.id)).toMatchObject({
+      type: "message",
+      reasoningKind: "raw",
+    });
+  });
+
   it("keeps a long provider summary inline and a short raw-only thought inline", () => {
     const turnId = TurnId.make("reasoning-lengths");
     const summary = {
