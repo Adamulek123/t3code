@@ -2350,7 +2350,8 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
   const isStreaming =
     row.message.streaming &&
     (row.message.turnId ? row.message.turnId === activity.unsettledTurnId : activity.isWorking);
-  const messageText = row.message.text || (isStreaming ? "" : "(empty response)");
+  const messageText =
+    row.message.text.trim().length > 0 ? row.message.text : isStreaming ? "" : "(empty response)";
 
   return (
     <>
