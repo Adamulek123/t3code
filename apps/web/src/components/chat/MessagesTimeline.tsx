@@ -2601,20 +2601,23 @@ function SummaryReasoningTimelineRow({
   row: Extract<TimelineRow, { kind: "reasoning-run" }>;
 }) {
   const ctx = use(TimelineRowCtx);
-  const [expanded, setExpanded] = useState(false);
+  const detailsId = useId();
+  const messageId = row.messages[0]!.id;
+  const expanded = ctx.expandedReasoningMessageIds.has(messageId);
   const text = row.messages
     .map((message) => message.text.trim())
     .filter(Boolean)
     .join(" ");
   if (text.length === 0) {
-    return null;
+    return row.messages.some((message) => message.streaming) ? <ThinkingTimelineRow /> : null;
   }
   const longSummary = text.length > 2_000 || text.split("\n", 26).length > 25;
+  const preview = text.slice(0, 2_000).split("\n").slice(0, 26).join("\n");
   return (
     <div className="relative min-w-0 px-1 py-0.5">
-      <div className={cn(longSummary && !expanded && "max-h-48 overflow-hidden")}>
+      <div id={detailsId} className={cn(longSummary && !expanded && "max-h-48 overflow-hidden")}>
         <ChatMarkdown
-          text={text}
+          text={longSummary && !expanded ? preview : text}
           cwd={ctx.markdownCwd}
           threadRef={ctx.threadRef ?? undefined}
           isStreaming={row.messages.some((message) => message.streaming)}
@@ -2630,7 +2633,8 @@ function SummaryReasoningTimelineRow({
           type="button"
           className="mt-1 cursor-pointer text-secondary-label text-xs hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/70"
           aria-expanded={expanded}
-          onClick={() => setExpanded((current) => !current)}
+          aria-controls={detailsId}
+          onClick={() => ctx.onToggleReasoning(messageId, !expanded, row.id)}
         >
           {expanded ? "Show less" : "Show more"}
         </button>
