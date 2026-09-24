@@ -2611,18 +2611,18 @@ function SummaryReasoningTimelineRow({
   const detailsId = useId();
   const messageId = row.messages[0]!.id;
   const expanded = ctx.expandedReasoningMessageIds.has(messageId);
-  const text = row.messages
-    .map((message) => message.text.trim())
-    .filter(Boolean)
-    .join(" ");
+  const chunks = row.messages.map((message) => message.text.trim()).filter(Boolean);
+  const text = chunks.join(" ");
   const streaming = row.messages.some(
     (message) =>
       message.streaming &&
       (message.turnId ? message.turnId === activity.unsettledTurnId : activity.isWorking),
   );
   if (text.length === 0) return streaming ? <ThinkingTimelineRow /> : null;
-  const longSummary = text.length > 2_000 || text.split("\n", 26).length > 25;
-  const preview = text.slice(0, 2_000).split("\n").slice(0, 26).join("\n");
+  const longSummary =
+    text.length > 2_000 ||
+    chunks.reduce((count, chunk) => count + chunk.split("\n").length, 0) > 25;
+  const preview = chunks.slice(0, 25).join(" ").slice(0, 2_000).split("\n").slice(0, 25).join("\n");
   return (
     <div className="relative min-w-0 px-1 py-0.5">
       <div
@@ -2721,7 +2721,10 @@ function RawReasoningTimelineRow({
               text={message.text}
               cwd={ctx.markdownCwd}
               threadRef={ctx.threadRef ?? undefined}
-              isStreaming={message.streaming}
+              isStreaming={
+                message.streaming &&
+                (message.turnId ? message.turnId === activity.unsettledTurnId : activity.isWorking)
+              }
               lineBreaks
               skills={ctx.skills}
               headingLevelOffset={MESSAGE_HEADING_LEVEL}

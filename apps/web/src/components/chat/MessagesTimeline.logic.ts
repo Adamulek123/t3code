@@ -610,8 +610,10 @@ function deriveActiveVisualResponseTurnIds(input: {
           continue;
         }
         const turnId = timelineEntryTurnId(entry);
-        if (turnId !== null) turnIds.add(turnId);
-        break;
+        if (turnId !== null) {
+          turnIds.add(turnId);
+          break;
+        }
       }
     }
     return turnIds;

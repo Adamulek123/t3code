@@ -1487,14 +1487,20 @@ function renderFeedEntry(
     if (message.role === "reasoning") {
       const messages = entry.reasoningMessages ?? [message];
       if (entry.reasoningKind === "summary") {
-        const text = messages
-          .map((item) => item.text.trim())
-          .filter(Boolean)
-          .join(" ");
+        const chunks = messages.map((item) => item.text.trim()).filter(Boolean);
+        const text = chunks.join(" ");
         if (text.length === 0) return null;
-        const longSummary = text.length > 2_000 || text.split("\n", 26).length > 25;
+        const longSummary =
+          text.length > 2_000 ||
+          chunks.reduce((count, chunk) => count + chunk.split("\n").length, 0) > 25;
         const expanded = props.expandedReasoningMessageIds.has(entry.id);
-        const preview = text.slice(0, 2_000).split("\n").slice(0, 26).join("\n");
+        const preview = chunks
+          .slice(0, 25)
+          .join(" ")
+          .slice(0, 2_000)
+          .split("\n")
+          .slice(0, 25)
+          .join("\n");
         const summaryContent = (
           <MarkdownImageAvailableWidthContext value={props.markdownContentWidth}>
             <View className="min-w-0 px-1 py-0.5">

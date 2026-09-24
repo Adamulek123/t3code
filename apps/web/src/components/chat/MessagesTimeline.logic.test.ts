@@ -2646,6 +2646,61 @@ describe("deriveMessagesTimelineRows", () => {
     ]);
   });
 
+  it("keeps streaming work visible behind turn-less progress", () => {
+    const turnId = TurnId.make("turn-streaming");
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "work-entry",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:05Z",
+          entry: {
+            id: "work",
+            createdAt: "2026-01-01T00:00:05Z",
+            turnId,
+            label: "Ran command",
+            tone: "tool",
+          },
+        },
+        {
+          id: "streaming-entry",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:06Z",
+          message: {
+            id: MessageId.make("streaming-response"),
+            role: "assistant",
+            text: "Checking results",
+            turnId,
+            createdAt: "2026-01-01T00:00:06Z",
+            updatedAt: "2026-01-01T00:00:06Z",
+            streaming: true,
+          },
+        },
+        {
+          id: "turnless-progress-entry",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:07Z",
+          entry: {
+            id: "turnless-progress",
+            createdAt: "2026-01-01T00:00:07Z",
+            turnId: null,
+            label: "Still working",
+            tone: "thinking",
+            sourceActivityKind: "task.progress",
+          },
+        },
+      ],
+      latestTurn: null,
+      isWorking: true,
+      activeTurnStartedAt: "2026-01-01T00:00:00Z",
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
+    });
+
+    expect(rows.some((row) => row.kind === "turn-fold")).toBe(false);
+    expect(rows.some((row) => row.id === "work-entry")).toBe(true);
+  });
+
   it("keeps a promptless restart in one active visual response", () => {
     const rows = deriveMessagesTimelineRows({
       timelineEntries: [

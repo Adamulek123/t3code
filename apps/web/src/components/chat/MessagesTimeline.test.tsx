@@ -1911,6 +1911,36 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain("Private raw trace.");
   });
 
+  it("bounds many short summary chunks without separating their visible text", () => {
+    const turnId = TurnId.make("turn-many-summaries");
+    const timelineEntries = Array.from({ length: 26 }, (_, index) => {
+      const entry = buildAssistantTimelineEntry(`Step ${index + 1}.`);
+      return {
+        ...entry,
+        id: `summary-entry-${index}`,
+        message: {
+          ...entry.message,
+          id: MessageId.make(`reasoning:summary:${index}`),
+          role: "reasoning" as const,
+          turnId,
+        },
+      };
+    });
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        isWorking
+        runningTurnId={turnId}
+        timelineEntries={timelineEntries}
+      />,
+    );
+
+    expect(markup.match(/data-timeline-row-kind="reasoning-run"/g)).toHaveLength(1);
+    expect(markup).toContain("Step 1. Step 2.");
+    expect(markup).toContain("Show more");
+    expect(markup).not.toContain("Step 26.");
+  });
+
   it("renders raw reasoning blocks with their original spacing when opened", async () => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     vi.stubGlobal("requestAnimationFrame", () => 0);
