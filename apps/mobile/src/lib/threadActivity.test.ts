@@ -2714,6 +2714,23 @@ describe("buildThreadFeed", () => {
       "2026-04-01T00:00:00.000Z",
     );
     expect(liveRows.filter((row) => row.type === "turn-fold")).toHaveLength(0);
+    const nextUser = {
+      id: MessageId.make("next-prompt"),
+      role: "user" as const,
+      text: "Continue",
+      turnId: null,
+      streaming: false,
+      createdAt: "2026-04-01T00:00:10.000Z",
+      updatedAt: "2026-04-01T00:00:10.000Z",
+    };
+    const nextTurnRows = deriveThreadFeedPresentation(
+      buildThreadFeed({ messages: [...messages, nextUser], activities: [] }),
+      null,
+      new Set(),
+      new Set(),
+      nextUser.createdAt,
+    );
+    expect(nextTurnRows.filter((row) => row.type === "turn-fold")).toHaveLength(1);
   });
 
   it("shows one Thinking row while a turn works without live tool activity", () => {

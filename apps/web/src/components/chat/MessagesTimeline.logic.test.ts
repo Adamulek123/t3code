@@ -2035,6 +2035,17 @@ describe("deriveMessagesTimelineRows", () => {
       supportsConversationRollback: false,
     });
     expect(liveRows.filter((row) => row.kind === "turn-fold")).toHaveLength(0);
+    const nextUser = answerEntry("next-prompt", "2026-01-01T00:00:10Z", "turn-2");
+    nextUser.message.role = "user" as never;
+    nextUser.message.turnId = null as never;
+    const nextTurnRows = deriveMessagesTimelineRows({
+      timelineEntries: [user, ...reports, nextUser],
+      isWorking: true,
+      activeTurnStartedAt: nextUser.createdAt,
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
+    });
+    expect(nextTurnRows.filter((row) => row.kind === "turn-fold")).toHaveLength(1);
   });
 
   it("keeps provider summaries and raw traces in separate reasoning rows", () => {

@@ -1701,9 +1701,14 @@ function deriveThreadFeedTurnFolds(
 
   const unsettledTurnId = deriveUnsettledTurnId(latestTurn);
   const foldsByAnchorId = new Map<string, ThreadFeedTurnFold>();
+  const activeUnkeyedResponseTurnId = isWorking ? unkeyedResponseTurnId : null;
   for (const [turnId, group] of groupsByTurnId) {
     const { entries } = group;
-    if (isWorking && String(turnId).startsWith("unkeyed-response:")) {
+    if (
+      String(turnId).startsWith("unkeyed-response:") &&
+      (turnId === activeUnkeyedResponseTurnId ||
+        entries.some((entry) => entry.type === "message" && entry.message.streaming))
+    ) {
       continue;
     }
     if (turnId === unsettledTurnId) {
