@@ -579,6 +579,25 @@ describe("applyThreadDetailEvent", () => {
       const messageId = MessageId.make("assistant:progress-part");
       const thread = {
         ...baseThread,
+        latestTurn: {
+          turnId: TurnId.make("turn-progress"),
+          state: "running" as const,
+          requestedAt: baseThread.createdAt,
+          startedAt: baseThread.createdAt,
+          completedAt: null,
+          assistantMessageId: messageId,
+        },
+        checkpoints: [
+          {
+            turnId: TurnId.make("turn-progress"),
+            checkpointTurnCount: 1,
+            checkpointRef: CheckpointRef.make("ref-progress"),
+            status: "ready" as const,
+            files: [],
+            assistantMessageId: messageId,
+            completedAt: baseThread.updatedAt,
+          },
+        ],
         messages: [
           {
             id: messageId,
@@ -617,6 +636,8 @@ describe("applyThreadDetailEvent", () => {
         role: "reasoning",
         text: "Checking the reviews.",
       });
+      expect(result.thread.latestTurn?.assistantMessageId).toBeNull();
+      expect(result.thread.checkpoints[0]?.assistantMessageId).toBeNull();
     });
 
     it("appends a new message", () => {

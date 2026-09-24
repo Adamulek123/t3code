@@ -410,6 +410,14 @@ export function applyThreadDetailEvent(
         };
       });
       if (!found) messages.push(message);
+      const reclassifiedAssistant =
+        message.role === "reasoning" &&
+        thread.messages.some((entry) => entry.id === message.id && entry.role === "assistant");
+      const replacementAssistantMessageId = reclassifiedAssistant
+        ? (messages.findLast(
+            (entry) => entry.role === "assistant" && entry.turnId === message.turnId,
+          )?.id ?? null)
+        : null;
       // Update latestTurn for assistant messages bound to a turn. A completed
       // assistant message only settles the turn once the session is no longer
       // running it — providers may emit several assistant messages per turn
@@ -421,7 +429,7 @@ export function applyThreadDetailEvent(
         thread.session?.status === "running" &&
         thread.session.activeTurnId === event.payload.turnId;
       const settlesTurn = !event.payload.streaming && !turnStillRunning;
-      const latestTurn = reuseLatestTurn(
+      const projectedLatestTurn = reuseLatestTurn(
         thread.latestTurn,
         event.payload.role === "assistant" &&
           event.payload.turnId !== null &&
@@ -455,7 +463,7 @@ export function applyThreadDetailEvent(
 
       // Rebind checkpoint assistant message IDs for assistant messages. The
       // helper hands back the same array when the entry is already bound.
-      const checkpoints =
+      const projectedCheckpoints =
         event.payload.role === "assistant" && event.payload.turnId !== null
           ? rebindCheckpointAssistantMessage(
               thread.checkpoints,
@@ -463,6 +471,17 @@ export function applyThreadDetailEvent(
               event.payload.messageId,
             )
           : thread.checkpoints;
+      const latestTurn =
+        reclassifiedAssistant && projectedLatestTurn?.assistantMessageId === message.id
+          ? { ...projectedLatestTurn, assistantMessageId: replacementAssistantMessageId }
+          : projectedLatestTurn;
+      const checkpoints = reclassifiedAssistant
+        ? Arr.map(projectedCheckpoints, (entry) =>
+            entry.assistantMessageId === message.id
+              ? { ...entry, assistantMessageId: replacementAssistantMessageId }
+              : entry,
+          )
+        : projectedCheckpoints;
 
       return {
         kind: "updated",
