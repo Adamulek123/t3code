@@ -2805,6 +2805,44 @@ describe("buildThreadFeed", () => {
     expect(nextTurnRows.filter((row) => row.type === "turn-fold")).toHaveLength(1);
   });
 
+  it("folds turnless reasoning with its completed response", () => {
+    const messages: OrchestrationThread["messages"] = [
+      {
+        id: MessageId.make("prompt"),
+        role: "user",
+        text: "Audit this branch",
+        turnId: null,
+        streaming: false,
+        createdAt: "2026-04-01T00:00:00.000Z",
+        updatedAt: "2026-04-01T00:00:00.000Z",
+      },
+      {
+        id: MessageId.make("reasoning:raw:thought"),
+        role: "reasoning",
+        text: "Checking the files.",
+        turnId: null,
+        streaming: false,
+        createdAt: "2026-04-01T00:00:01.000Z",
+        updatedAt: "2026-04-01T00:00:01.000Z",
+      },
+      {
+        id: MessageId.make("answer"),
+        role: "assistant",
+        text: "Done",
+        turnId: null,
+        streaming: false,
+        createdAt: "2026-04-01T00:00:02.000Z",
+        updatedAt: "2026-04-01T00:00:02.000Z",
+      },
+    ];
+    const rows = deriveThreadFeedPresentation(
+      buildThreadFeed({ messages, activities: [] }),
+      null,
+      new Set(),
+    );
+    expect(rows.map((row) => row.type)).toEqual(["message", "turn-fold", "message"]);
+  });
+
   it("shows one Thinking row while a turn works without live tool activity", () => {
     const turnId = TurnId.make("turn-thinking");
     const latestTurn = {

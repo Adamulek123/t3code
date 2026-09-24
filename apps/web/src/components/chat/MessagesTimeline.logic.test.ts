@@ -2048,6 +2048,24 @@ describe("deriveMessagesTimelineRows", () => {
     expect(nextTurnRows.filter((row) => row.kind === "turn-fold")).toHaveLength(1);
   });
 
+  it("folds turnless reasoning with its completed response", () => {
+    const user = answerEntry("prompt", "2026-01-01T00:00:00Z", "turn-1");
+    user.message.role = "user" as never;
+    user.message.turnId = null as never;
+    const thought = reasoningEntry("thought", "2026-01-01T00:00:01Z", "turn-1");
+    thought.message.turnId = null as never;
+    const answer = answerEntry("answer", "2026-01-01T00:00:02Z", "turn-1");
+    answer.message.turnId = null as never;
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [user, thought, answer],
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
+    });
+    expect(rows.map((row) => row.kind)).toEqual(["message", "turn-fold", "message"]);
+  });
+
   it("keeps provider summaries and raw traces in separate reasoning rows", () => {
     const summary = reasoningEntry("summary", "2026-01-01T00:00:01Z", "turn-1");
     summary.message.id = MessageId.make("reasoning:summary:item") as never;

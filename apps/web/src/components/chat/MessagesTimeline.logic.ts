@@ -659,8 +659,7 @@ function deriveTurnFolds(input: {
     const turnId =
       entry.kind === "message" &&
       (entry.message.role === "assistant" || entry.message.role === "reasoning")
-        ? (entry.message.turnId ??
-          (entry.message.role === "assistant" ? unkeyedResponseTurnId : null))
+        ? (entry.message.turnId ?? unkeyedResponseTurnId)
         : entry.kind === "work"
           ? (entry.entry.turnId ?? null)
           : null;
