@@ -1727,7 +1727,7 @@ function deriveThreadFeedTurnFolds(
         entries.some(
           (entry) =>
             entry.type === "activity-group" &&
-            entry.activities.some((activity) => activity.tone === "error"),
+            entry.activities.some((activity) => activity.workEntry.tone === "error"),
         ))
     ) {
       continue;
