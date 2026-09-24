@@ -1666,7 +1666,11 @@ function deriveThreadFeedTurnFolds(
   const groupsByTurnId = new Map<TurnId, TurnGroup>();
   let pendingUserBoundary: string | null = null;
   unkeyedResponseTurnId = null;
-  for (const entry of feed) {
+  const lastUserMessageIndex = feed.findLastIndex(
+    (entry) => entry.type === "message" && entry.message.role === "user",
+  );
+  const activeVisualTurnIds = new Set<TurnId>();
+  for (const [index, entry] of feed.entries()) {
     if (entry.type === "message" && entry.message.role === "user") {
       pendingUserBoundary = entry.message.createdAt;
       unkeyedResponseTurnId = TurnId.make(`unkeyed-response:${entry.message.id}`);
@@ -1686,6 +1690,9 @@ function deriveThreadFeedTurnFolds(
     if (!turnId) {
       continue;
     }
+    if (isWorking && index > lastUserMessageIndex) {
+      activeVisualTurnIds.add(turnId);
+    }
     let group = groupsByTurnId.get(turnId);
     if (!group) {
       group = {
@@ -1703,14 +1710,10 @@ function deriveThreadFeedTurnFolds(
   const activeUnkeyedResponseTurnId = isWorking ? unkeyedResponseTurnId : null;
   for (const [turnId, group] of groupsByTurnId) {
     const { entries } = group;
-    if (isWorking && entries.some((entry) => entry.type === "message" && entry.message.streaming)) {
+    if (activeVisualTurnIds.has(turnId)) {
       continue;
     }
-    if (
-      String(turnId).startsWith("unkeyed-response:") &&
-      (turnId === activeUnkeyedResponseTurnId ||
-        entries.some((entry) => entry.type === "message" && entry.message.streaming))
-    ) {
+    if (String(turnId).startsWith("unkeyed-response:") && turnId === activeUnkeyedResponseTurnId) {
       continue;
     }
     if (turnId === unsettledTurnId) {

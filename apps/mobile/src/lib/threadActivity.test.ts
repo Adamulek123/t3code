@@ -2748,6 +2748,32 @@ describe("buildThreadFeed", () => {
       new Set(),
     );
     expect(rows.map((row) => row.type)).toEqual(["turn-fold", "message"]);
+
+    const nextUser = {
+      id: MessageId.make("next-prompt"),
+      role: "user" as const,
+      text: "Continue",
+      turnId: null,
+      streaming: false,
+      createdAt: "2026-04-01T00:00:04.000Z",
+      updatedAt: "2026-04-01T00:00:04.000Z",
+    };
+    const whileNextTurnStarts = deriveThreadFeedPresentation(
+      buildThreadFeed({
+        messages: [{ ...messages[0]!, streaming: true }, messages[1]!, nextUser],
+        activities: [],
+      }),
+      {
+        turnId: TurnId.make("next-turn"),
+        state: "running",
+        startedAt: nextUser.createdAt,
+        completedAt: null,
+      },
+      new Set(),
+      new Set(),
+      nextUser.createdAt,
+    );
+    expect(whileNextTurnStarts.some((row) => row.type === "turn-fold")).toBe(true);
   });
 
   it("leaves failed work visible when the turn has no answer", () => {

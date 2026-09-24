@@ -2266,14 +2266,20 @@ describe("deriveMessagesTimelineRows", () => {
 
   it("does not let a stranded streaming thought hold a settled turn open", () => {
     const stranded = reasoningEntry("reasoning-stranded", "2026-01-01T00:00:01Z", "turn-1");
+    const nextUser = answerEntry("next-user", "2026-01-01T00:00:04Z", "turn-2");
     const rows = deriveMessagesTimelineRows({
       timelineEntries: [
         { ...stranded, message: { ...stranded.message, streaming: true } },
         toolEntry("tool-entry", "2026-01-01T00:00:02Z", "turn-1"),
         answerEntry("assistant-entry", "2026-01-01T00:00:03Z", "turn-1"),
+        {
+          ...nextUser,
+          message: { ...nextUser.message, role: "user", turnId: null, streaming: false },
+        },
       ],
-      isWorking: false,
-      activeTurnStartedAt: null,
+      isWorking: true,
+      runningTurnId: TurnId.make("turn-2"),
+      activeTurnStartedAt: "2026-01-01T00:00:04Z",
       turnDiffSummaries: [],
       supportsConversationRollback: false,
     });

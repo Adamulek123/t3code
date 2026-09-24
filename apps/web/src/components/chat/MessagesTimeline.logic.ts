@@ -690,17 +690,7 @@ function deriveTurnFolds(input: {
   const foldsByAnchorEntryId = new Map<string, TurnFold>();
   const activeUnkeyedResponseTurnId = input.isWorking ? unkeyedResponseTurnId : null;
   for (const [turnId, group] of groupsByTurnId) {
-    if (
-      input.isWorking &&
-      group.entries.some((entry) => entry.kind === "message" && entry.message.streaming)
-    ) {
-      continue;
-    }
-    if (
-      String(turnId).startsWith("unkeyed-response:") &&
-      (turnId === activeUnkeyedResponseTurnId ||
-        group.entries.some((entry) => entry.kind === "message" && entry.message.streaming))
-    ) {
+    if (String(turnId).startsWith("unkeyed-response:") && turnId === activeUnkeyedResponseTurnId) {
       continue;
     }
     if (input.unfoldedTurnIds.has(turnId)) {
