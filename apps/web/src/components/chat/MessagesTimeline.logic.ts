@@ -692,6 +692,12 @@ function deriveTurnFolds(input: {
   const activeUnkeyedResponseTurnId = input.isWorking ? unkeyedResponseTurnId : null;
   for (const [turnId, group] of groupsByTurnId) {
     if (
+      input.isWorking &&
+      group.entries.some((entry) => entry.kind === "message" && entry.message.streaming)
+    ) {
+      continue;
+    }
+    if (
       String(turnId).startsWith("unkeyed-response:") &&
       (turnId === activeUnkeyedResponseTurnId ||
         group.entries.some((entry) => entry.kind === "message" && entry.message.streaming))
@@ -699,6 +705,17 @@ function deriveTurnFolds(input: {
       continue;
     }
     if (input.unfoldedTurnIds.has(turnId)) {
+      continue;
+    }
+    if (
+      group.terminalEntry === null &&
+      ((input.latestTurn?.turnId === turnId && input.latestTurn.state === "error") ||
+        group.entries.some(
+          (entry) =>
+            entry.kind === "work" &&
+            (entry.entry.tone === "error" || workEntryDisplayIndicatesToolFailure(entry.entry)),
+        ))
+    ) {
       continue;
     }
     // The turn lifecycle above decides whether work is still live. A provider

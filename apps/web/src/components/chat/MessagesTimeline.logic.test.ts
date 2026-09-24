@@ -2249,6 +2249,41 @@ describe("deriveMessagesTimelineRows", () => {
     expect(rows.some((row) => row.kind === "turn-fold")).toBe(true);
   });
 
+  it("keeps a streaming turn visible when its lifecycle is unknown", () => {
+    const thought = reasoningEntry("thought", "2026-01-01T00:00:01Z", "turn-1");
+    const answer = answerEntry("answer", "2026-01-01T00:00:02Z", "turn-1");
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [thought, { ...answer, message: { ...answer.message, streaming: true } }],
+      isWorking: true,
+      activeTurnStartedAt: "2026-01-01T00:00:00Z",
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
+    });
+    expect(rows.some((row) => row.kind === "turn-fold")).toBe(false);
+    expect(rows.some((row) => row.kind === "reasoning-run")).toBe(true);
+  });
+
+  it("leaves failed work visible when the turn has no answer", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        reasoningEntry("thought", "2026-01-01T00:00:01Z", "turn-1"),
+        toolEntry("failed-tool", "2026-01-01T00:00:02Z", "turn-1"),
+      ],
+      latestTurn: {
+        turnId: TurnId.make("turn-1"),
+        state: "error",
+        startedAt: "2026-01-01T00:00:00Z",
+        completedAt: "2026-01-01T00:00:03Z",
+      },
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
+    });
+    expect(rows.some((row) => row.kind === "turn-fold")).toBe(false);
+    expect(rows.some((row) => row.kind === "work")).toBe(true);
+  });
+
   it("folds failed turn work when its visible answer was left streaming", () => {
     const answer = answerEntry("assistant-entry", "2026-01-01T00:00:03Z", "turn-1");
     const input = {

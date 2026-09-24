@@ -2708,6 +2708,48 @@ describe("buildThreadFeed", () => {
     expect(rows.map((row) => row.type)).toEqual(["turn-fold", "message"]);
   });
 
+  it("leaves failed work visible when the turn has no answer", () => {
+    const turnId = TurnId.make("failed-without-answer");
+    const latestTurn = {
+      turnId,
+      state: "error" as const,
+      requestedAt: "2026-04-01T00:00:00.000Z",
+      startedAt: "2026-04-01T00:00:00.000Z",
+      completedAt: "2026-04-01T00:00:03.000Z",
+      assistantMessageId: null,
+    };
+    const rows = deriveThreadFeedPresentation(
+      buildThreadFeed({
+        messages: [
+          {
+            id: MessageId.make("reasoning:raw:failed"),
+            role: "reasoning",
+            text: "Checking the provider.",
+            turnId,
+            streaming: false,
+            createdAt: "2026-04-01T00:00:01.000Z",
+            updatedAt: "2026-04-01T00:00:01.000Z",
+          },
+        ],
+        activities: [
+          makeActivity({
+            id: EventId.make("provider-error"),
+            kind: "runtime.error",
+            tone: "error",
+            summary: "Provider error",
+            createdAt: "2026-04-01T00:00:02.000Z",
+            turnId,
+            payload: { message: "Connection lost" },
+          }),
+        ],
+      }),
+      latestTurn,
+      new Set(),
+    );
+    expect(rows.some((row) => row.type === "turn-fold")).toBe(false);
+    expect(rows.some((row) => row.type === "activity-group")).toBe(true);
+  });
+
   it("folds earlier turnless reports from one completed response", () => {
     const messages: OrchestrationThread["messages"] = [
       {

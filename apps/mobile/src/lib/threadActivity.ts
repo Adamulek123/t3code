@@ -1704,6 +1704,9 @@ function deriveThreadFeedTurnFolds(
   const activeUnkeyedResponseTurnId = isWorking ? unkeyedResponseTurnId : null;
   for (const [turnId, group] of groupsByTurnId) {
     const { entries } = group;
+    if (isWorking && entries.some((entry) => entry.type === "message" && entry.message.streaming)) {
+      continue;
+    }
     if (
       String(turnId).startsWith("unkeyed-response:") &&
       (turnId === activeUnkeyedResponseTurnId ||
@@ -1719,6 +1722,17 @@ function deriveThreadFeedTurnFolds(
 
     const firstAssistantMessageId = firstAssistantMessageIdByTurn.get(turnId);
     const terminalAssistantMessageId = terminalAssistantMessageIdByTurn.get(turnId);
+    if (
+      terminalAssistantMessageId === undefined &&
+      ((latestTurn?.turnId === turnId && latestTurn.state === "error") ||
+        entries.some(
+          (entry) =>
+            entry.type === "activity-group" &&
+            entry.activities.some((activity) => activity.tone === "error"),
+        ))
+    ) {
+      continue;
+    }
     const unkeyedResponse = String(turnId).startsWith("unkeyed-response:");
     const hiddenEntryIds = new Set(
       entries
