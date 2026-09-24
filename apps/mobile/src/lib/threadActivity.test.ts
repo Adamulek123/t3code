@@ -2335,7 +2335,7 @@ describe("buildThreadFeed", () => {
     const messages: OrchestrationThread["messages"] = [1, 2, 3, 4].map((second) => ({
       id: MessageId.make(`reasoning:raw:${second}`),
       role: "reasoning",
-      text: `**Step ${second}**\n\nCheck ${second}.`,
+      text: `**Step ${second}**\n\n${`Check ${second}. `.repeat(250)}`,
       turnId,
       streaming: second === 4,
       createdAt: `2026-04-01T00:00:0${second}.000Z`,
@@ -2641,6 +2641,36 @@ describe("buildThreadFeed", () => {
     );
     expect(collapsed.map((row) => row.type)).toEqual(["work-toggle", "message"]);
     expect(collapsed[1]).toMatchObject({ message: messages[1], reasoningKind: "summary" });
+  });
+
+  it("keeps a long provider summary inline and a short raw-only thought inline", () => {
+    const turnId = TurnId.make("reasoning-lengths");
+    const summary = {
+      id: MessageId.make("reasoning:summary:long"),
+      role: "reasoning" as const,
+      text: "Summary ".repeat(300),
+      turnId,
+      streaming: false,
+      createdAt: "2026-04-01T00:00:01.000Z",
+      updatedAt: "2026-04-01T00:00:01.000Z",
+    };
+    const shortRaw = {
+      ...summary,
+      id: MessageId.make("reasoning:raw:short"),
+      text: "Checking the result.",
+      turnId: TurnId.make("raw-only"),
+      createdAt: "2026-04-01T00:00:02.000Z",
+      updatedAt: "2026-04-01T00:00:02.000Z",
+    };
+    const rows = deriveThreadFeedPresentation(
+      buildThreadFeed({ messages: [summary, shortRaw], activities: [] }),
+      null,
+      new Set([turnId, shortRaw.turnId]),
+    );
+    expect(rows.filter((row) => row.type === "message").map((row) => row.reasoningKind)).toEqual([
+      "summary",
+      "summary",
+    ]);
   });
 
   it("folds reasoning-only work after a final answer", () => {

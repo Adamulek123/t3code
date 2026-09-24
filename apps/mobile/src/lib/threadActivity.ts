@@ -2060,19 +2060,19 @@ function groupConsecutiveReasoningMessages(
         : [],
     ),
   );
-  const kindOf = (message: OrchestrationThread["messages"][number]) =>
-    message.id.startsWith("reasoning:raw:") ||
-    message.text.length > 2_000 ||
-    message.text.split("\n", 26).length > 25
+  const kindOf = (message: OrchestrationThread["messages"][number]) => {
+    if (message.id.startsWith("reasoning:summary:") || message.id.startsWith("assistant:")) {
+      return "summary";
+    }
+    return (message.turnId && turnsWithSummary.has(message.turnId)) ||
+      message.text.length > 2_000 ||
+      message.text.split("\n", 26).length > 25
       ? "raw"
-      : message.id.startsWith("reasoning:summary:") || message.id.startsWith("assistant:")
-        ? "summary"
-        : message.turnId && turnsWithSummary.has(message.turnId)
-          ? "raw"
-          : "summary";
+      : "summary";
+  };
   for (let index = 0; index < feed.length; index += 1) {
     const entry = feed[index]!;
-    if (entry.type !== "message" || entry.message.role !== "reasoning" || !entry.message.turnId) {
+    if (entry.type !== "message" || entry.message.role !== "reasoning") {
       result.push(entry);
       continue;
     }
