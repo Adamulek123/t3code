@@ -1487,7 +1487,7 @@ function renderFeedEntry(
     if (message.role === "reasoning") {
       const messages = entry.reasoningMessages ?? [message];
       if (entry.reasoningKind === "summary") {
-        return (
+        const summaryContent = (
           <MarkdownImageAvailableWidthContext value={props.markdownContentWidth}>
             <View className="min-w-0 px-1 py-0.5">
               {messages.map((reasoningMessage) => (
@@ -1502,6 +1502,17 @@ function renderFeedEntry(
               ))}
             </View>
           </MarkdownImageAvailableWidthContext>
+        );
+        const longSummary =
+          messages.reduce((length, reasoningMessage) => length + reasoningMessage.text.length, 0) >
+            2_000 ||
+          messages.some((reasoningMessage) => reasoningMessage.text.split("\n", 26).length > 25);
+        return longSummary ? (
+          <ScrollView nestedScrollEnabled style={{ maxHeight: 384 }}>
+            {summaryContent}
+          </ScrollView>
+        ) : (
+          summaryContent
         );
       }
       return (
