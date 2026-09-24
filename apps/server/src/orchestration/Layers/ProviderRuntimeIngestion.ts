@@ -2085,6 +2085,9 @@ const make = Effect.gen(function* () {
         const messageId = MessageId.make(
           `assistant:${event.itemId ?? event.turnId ?? event.eventId}`,
         );
+        if (turnId) {
+          yield* rememberAssistantMessageId(thread.id, turnId, messageId);
+        }
         yield* orchestrationEngine.dispatch({
           type: "thread.message.reasoning.delta",
           commandId: yield* providerCommandId(event, "assistant-progress-delta"),
@@ -2094,14 +2097,27 @@ const make = Effect.gen(function* () {
           ...(turnId ? { turnId } : {}),
           createdAt: now,
         });
-        yield* orchestrationEngine.dispatch({
-          type: "thread.message.reasoning.complete",
-          commandId: yield* providerCommandId(event, "assistant-progress-complete"),
-          threadId: thread.id,
-          messageId,
-          ...(turnId ? { turnId } : {}),
-          createdAt: now,
-        });
+        // OpenCode can append text after classifying a completed part as
+        // progress. Finish a live part at item or turn completion instead of
+        // persisting a completion for every token. Late deltas from a settled
+        // turn still need immediate completion.
+        const progressTurn =
+          turnId && (activeTurnId === null || !sameId(activeTurnId, turnId))
+            ? yield* projectionTurnRepository.getByTurnId({ threadId: thread.id, turnId })
+            : Option.none();
+        const isSettledProgressTurn =
+          Option.isSome(progressTurn) &&
+          progressTurn.value.state !== "pending" &&
+          progressTurn.value.state !== "running";
+        if (!turnId || isSettledProgressTurn) {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.message.reasoning.complete",
+            commandId: yield* providerCommandId(event, "assistant-progress-complete"),
+            threadId: thread.id,
+            messageId,
+            createdAt: now,
+          });
+        }
       }
 
       const pauseForUserTurnId =
@@ -2426,6 +2442,9 @@ const make = Effect.gen(function* () {
                     commandTag: "assistant-complete-finalize",
                     finalDeltaCommandTag: "assistant-delta-finalize-fallback",
                     hasProjectedMessage: existingMessage !== undefined,
+                    ...(existingMessage?.role === "reasoning"
+                      ? { presentation: "progress" as const }
+                      : {}),
                   }),
                 ),
               ),

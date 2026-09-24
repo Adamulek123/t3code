@@ -1543,8 +1543,25 @@ describe("ProviderRuntimeIngestion", () => {
     emitText("progress-part", "Checking ", "evt-progress-first", "assistant_text");
     complete("progress-part", "evt-progress-classified", "progress");
     emitText("progress-part", "the reviews.", "evt-progress-second", "assistant_progress_text");
+    await waitForThread(harness.readModel, (entry) =>
+      entry.messages.some(
+        (message: ProviderRuntimeTestMessage) =>
+          message.id === "assistant:progress-part" &&
+          message.text === "Checking the reviews." &&
+          message.streaming,
+      ),
+    );
     emitText("answer-part", "Review complete.", "evt-answer", "assistant_text");
     complete("answer-part", "evt-answer-complete");
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-turn-complete"),
+      provider: ProviderDriverKind.make("opencode"),
+      createdAt: now,
+      threadId,
+      turnId,
+      status: "completed",
+    });
 
     const thread = await waitForThread(
       harness.readModel,
@@ -1555,7 +1572,9 @@ describe("ProviderRuntimeIngestion", () => {
         ) &&
         entry.messages.some(
           (message: ProviderRuntimeTestMessage) =>
-            message.id === "assistant:progress-part" && message.text === "Checking the reviews.",
+            message.id === "assistant:progress-part" &&
+            message.text === "Checking the reviews." &&
+            !message.streaming,
         ),
     );
     expect(
@@ -1566,6 +1585,21 @@ describe("ProviderRuntimeIngestion", () => {
       ["assistant:answer-part", "assistant", "Review complete."],
       ["assistant:progress-part", "reasoning", "Checking the reviews."],
     ]);
+
+    emitText("progress-part", " Later note.", "evt-progress-late", "assistant_progress_text");
+    const withLateProgress = await waitForThread(harness.readModel, (entry) =>
+      entry.messages.some(
+        (message: ProviderRuntimeTestMessage) =>
+          message.id === "assistant:progress-part" &&
+          message.text === "Checking the reviews. Later note." &&
+          !message.streaming,
+      ),
+    );
+    expect(
+      withLateProgress.messages.find(
+        (message: ProviderRuntimeTestMessage) => message.id === "assistant:progress-part",
+      )?.role,
+    ).toBe("reasoning");
   });
 
   it("streams reasoning deltas into a finalized reasoning message", async () => {
