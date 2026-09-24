@@ -595,6 +595,16 @@ function deriveActiveVisualResponseTurnIds(input: {
 }): ReadonlySet<TurnId> {
   const turnIds = new Set<TurnId>();
   if (input.unsettledTurnId === null) {
+    if (input.isWorking) {
+      const latestUserIndex = lastUserMessageIndex(input.timelineEntries);
+      for (let index = input.timelineEntries.length - 1; index > latestUserIndex; index -= 1) {
+        const entry = input.timelineEntries[index]!;
+        if (entry.kind !== "message" || !entry.message.streaming) continue;
+        const turnId = timelineEntryTurnId(entry);
+        if (turnId !== null) turnIds.add(turnId);
+        break;
+      }
+    }
     return turnIds;
   }
 
