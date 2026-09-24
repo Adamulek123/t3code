@@ -17,6 +17,7 @@ import {
   agentSpawnSummary,
   buildPendingUserInputAnswers,
   buildThreadFeed,
+  deriveActiveFeedTurnId,
   deriveThreadFeedPresentation,
   isPendingUserInputOptionSelected,
   setPendingUserInputCustomAnswer,
@@ -414,7 +415,13 @@ describe("buildThreadFeed", () => {
       ),
     });
     const initial = buildThreadFeed(thread);
-    expect(initial.map((row) => row.id)).toEqual(["work-1", "message-4", "work-5"]);
+    expect(initial.map((row) => row.id)).toEqual([
+      "work-1",
+      "message-2",
+      "work-3",
+      "message-4",
+      "work-5",
+    ]);
     const split = buildThreadFeed({
       ...thread,
       messages: [{ ...messages[0]!, text: "Now visible" }, messages[1]!],
@@ -426,17 +433,18 @@ describe("buildThreadFeed", () => {
       "message-4",
       "work-5",
     ]);
-    expect(split[0]).not.toBe(initial[0]);
+    expect(split[0]).toBe(initial[0]);
+    expect(split[1]).not.toBe(initial[1]);
     expect(split.at(-1)).toBe(initial.at(-1));
-    expect(initial[0]).toMatchObject({ activities: [{ id: "work-1" }, { id: "work-3" }] });
+    expect(initial[0]).toMatchObject({ activities: [{ id: "work-1" }] });
 
     const reordered = buildThreadFeed({
       ...thread,
       messages: [messages[0]!, { ...messages[1]!, createdAt: "2026-04-01T00:00:06.000Z" }],
     });
-    expect(reordered.map((row) => row.id)).toEqual(["work-1", "message-4"]);
-    expect(reordered[0]).toMatchObject({
-      activities: [{ id: "work-1" }, { id: "work-3" }, { id: "work-5" }],
+    expect(reordered.map((row) => row.id)).toEqual(["work-1", "message-2", "work-3", "message-4"]);
+    expect(reordered[2]).toMatchObject({
+      activities: [{ id: "work-3" }, { id: "work-5" }],
     });
     const olderMessage = {
       ...messages[1]!,
@@ -452,6 +460,8 @@ describe("buildThreadFeed", () => {
     expect(prepended.map((row) => row.id)).toEqual([
       "older-message",
       "work-1",
+      "message-2",
+      "work-3",
       "message-4",
       "work-5",
     ]);
@@ -2644,7 +2654,7 @@ describe("buildThreadFeed", () => {
           id: message.id,
           createdAt: message.createdAt,
           message,
-          ...(message.turnId ? { reasoningKind: "summary" } : {}),
+          reasoningKind: "summary",
         })),
       );
     },
@@ -2842,6 +2852,23 @@ describe("buildThreadFeed", () => {
       type: "message",
       message: { role: "assistant", text: "" },
     });
+    const providerEmptyRows = buildThreadFeed({
+      messages: [
+        {
+          id: MessageId.make("provider-empty-answer"),
+          role: "assistant",
+          text: "  ",
+          turnId,
+          streaming: true,
+          createdAt: "2026-04-01T00:00:02.000Z",
+          updatedAt: "2026-04-01T00:00:02.000Z",
+        },
+      ],
+      activities: [],
+    });
+    expect(providerEmptyRows).toMatchObject([
+      { type: "message", message: { id: "provider-empty-answer", text: "  " } },
+    ]);
   });
 
   it("leaves failed work visible when the turn has no answer", () => {
@@ -2884,6 +2911,90 @@ describe("buildThreadFeed", () => {
     );
     expect(rows.some((row) => row.type === "turn-fold")).toBe(false);
     expect(rows.some((row) => row.type === "activity-group")).toBe(true);
+  });
+
+  it("keeps a failed tool visible when its display tone is still tool", () => {
+    const turnId = TurnId.make("failed-tool-without-answer");
+    const feed = buildThreadFeed({
+      messages: [
+        {
+          id: MessageId.make("failed-tool-reasoning"),
+          role: "reasoning",
+          text: "Checking the tests.",
+          turnId,
+          streaming: false,
+          createdAt: "2026-04-01T00:00:01.000Z",
+          updatedAt: "2026-04-01T00:00:01.000Z",
+        },
+      ],
+      activities: [
+        makeActivity({
+          id: EventId.make("failed-tool"),
+          kind: "tool.completed",
+          tone: "tool",
+          summary: "Run tests",
+          createdAt: "2026-04-01T00:00:02.000Z",
+          turnId,
+          payload: { itemType: "command_execution", status: "failed", detail: "Exit code 1" },
+        }),
+      ],
+    });
+    const rows = deriveThreadFeedPresentation(
+      feed,
+      {
+        turnId,
+        state: "completed",
+        startedAt: "2026-04-01T00:00:00.000Z",
+        completedAt: "2026-04-01T00:00:03.000Z",
+      },
+      new Set(),
+    );
+    expect(rows.some((row) => row.type === "turn-fold")).toBe(false);
+    expect(rows.some((row) => row.type === "work-toggle" && row.hasFailure)).toBe(true);
+  });
+
+  it("keeps a new live tool visible while the latest turn projection still names the prior turn", () => {
+    const priorTurnId = TurnId.make("prior-turn");
+    const activeTurnId = TurnId.make("new-running-turn");
+    const latestTurn = {
+      turnId: priorTurnId,
+      state: "completed" as const,
+      startedAt: "2026-04-01T00:00:00.000Z",
+      completedAt: "2026-04-01T00:00:01.000Z",
+    };
+    const feed = buildThreadFeed({
+      messages: [
+        {
+          id: MessageId.make("new-turn-prompt"),
+          role: "user",
+          text: "Run the tests",
+          turnId: null,
+          streaming: false,
+          createdAt: "2026-04-01T00:00:02.000Z",
+          updatedAt: "2026-04-01T00:00:02.000Z",
+        },
+      ],
+      activities: [
+        makeActivity({
+          id: EventId.make("new-running-tool"),
+          kind: "tool.updated",
+          tone: "tool",
+          summary: "Running tests",
+          createdAt: "2026-04-01T00:00:03.000Z",
+          turnId: activeTurnId,
+          payload: { itemType: "command_execution", status: "inProgress" },
+        }),
+      ],
+    });
+    const activeWorkStartedAt = "2026-04-01T00:00:02.000Z";
+    expect(deriveActiveFeedTurnId(feed, latestTurn, activeWorkStartedAt)).toBe(activeTurnId);
+    expect(
+      deriveThreadFeedPresentation(feed, latestTurn, new Set(), new Set(), activeWorkStartedAt),
+    ).toMatchObject([
+      { type: "message", message: { role: "user" } },
+      { type: "work-toggle", live: true, shimmer: true },
+    ]);
+    expect(deriveActiveFeedTurnId(feed, latestTurn, null)).toBeNull();
   });
 
   it("folds earlier turnless reports from one completed response", () => {

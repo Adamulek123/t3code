@@ -149,7 +149,7 @@ import {
 } from "@t3tools/mobile-markdown-text/links";
 import {
   deriveThreadFeedPresentation,
-  deriveUnsettledTurnId,
+  deriveActiveFeedTurnId,
   isContextCompactionActivityGroup,
   type ThreadFeedEntry,
   type ThreadFeedLatestTurn,
@@ -1487,32 +1487,49 @@ function renderFeedEntry(
     if (message.role === "reasoning") {
       const messages = entry.reasoningMessages ?? [message];
       if (entry.reasoningKind === "summary") {
+        const text = messages
+          .map((item) => item.text.trim())
+          .filter(Boolean)
+          .join(" ");
+        if (text.length === 0) return null;
+        const longSummary = text.length > 2_000 || text.split("\n", 26).length > 25;
+        const expanded = props.expandedReasoningMessageIds.has(entry.id);
+        const preview = text.slice(0, 2_000).split("\n").slice(0, 26).join("\n");
         const summaryContent = (
           <MarkdownImageAvailableWidthContext value={props.markdownContentWidth}>
             <View className="min-w-0 px-1 py-0.5">
-              {messages.map((reasoningMessage) => (
-                <AssistantMarkdownContent
-                  key={reasoningMessage.id}
-                  markdown={reasoningMessage.text}
-                  markdownStyles={markdownStyles.assistant}
-                  linkHandlers={props.markdownLinkHandlers}
-                  renderImage={props.renderMarkdownImage}
-                  skills={props.skills}
-                />
-              ))}
+              <AssistantMarkdownContent
+                markdown={longSummary && !expanded ? preview : text}
+                markdownStyles={markdownStyles.assistant}
+                linkHandlers={props.markdownLinkHandlers}
+                renderImage={props.renderMarkdownImage}
+                skills={props.skills}
+              />
             </View>
           </MarkdownImageAvailableWidthContext>
         );
-        const longSummary =
-          messages.reduce((length, reasoningMessage) => length + reasoningMessage.text.length, 0) >
-            2_000 ||
-          messages.some((reasoningMessage) => reasoningMessage.text.split("\n", 26).length > 25);
-        return longSummary ? (
-          <ScrollView nestedScrollEnabled style={{ maxHeight: 384 }}>
-            {summaryContent}
-          </ScrollView>
-        ) : (
-          summaryContent
+        return (
+          <View>
+            {longSummary && expanded ? (
+              <ScrollView nestedScrollEnabled style={{ maxHeight: 384 }}>
+                {summaryContent}
+              </ScrollView>
+            ) : (
+              summaryContent
+            )}
+            {longSummary ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityState={{ expanded }}
+                onPress={() => props.onToggleReasoning(entry.id)}
+                className="min-h-11 justify-center px-1"
+              >
+                <Text className="text-xs text-foreground-muted">
+                  {expanded ? "Show less" : "Show more"}
+                </Text>
+              </Pressable>
+            ) : null}
+          </View>
         );
       }
       return (
@@ -1521,7 +1538,13 @@ function renderFeedEntry(
           iconSubtleColor={iconSubtleColor}
           expanded={props.expandedReasoningMessageIds.has(entry.id)}
           label={`Thought${messages.length > 1 ? ` (×${messages.length})` : ""}`}
-          streaming={false}
+          streaming={messages.some(
+            (reasoningMessage) =>
+              reasoningMessage.streaming &&
+              (reasoningMessage.turnId
+                ? reasoningMessage.turnId === props.unsettledTurnId
+                : props.isWorking),
+          )}
           onToggle={() => props.onToggleReasoning(entry.id)}
         >
           <MarkdownImageAvailableWidthContext
@@ -1544,8 +1567,13 @@ function renderFeedEntry(
       );
     }
     const isUser = message.role === "user";
+    const assistantTurnStillInProgress =
+      message.role === "assistant" &&
+      (message.turnId !== null ? message.turnId === props.unsettledTurnId : props.isWorking);
     const renderedText = renderAssistantCitationsAsText(
-      message.role === "assistant" && !message.streaming && message.text.trim().length === 0
+      message.role === "assistant" &&
+        !assistantTurnStillInProgress &&
+        message.text.trim().length === 0
         ? "(empty response)"
         : message.text,
     );
@@ -1559,10 +1587,6 @@ function renderFeedEntry(
     // is clamped, so the paragraphs around the block end up drawn on top of
     // each other. Pinning the width removes that pass.
     const hasWideBlock = hasWideMarkdownBlock(renderedText, WIDE_MARKDOWN_BLOCK_OPTIONS);
-    const assistantTurnStillInProgress =
-      message.role === "assistant" &&
-      props.unsettledTurnId !== null &&
-      message.turnId === props.unsettledTurnId;
     const showAssistantMeta =
       message.role === "assistant" &&
       props.terminalAssistantMessageIds.has(message.id) &&
@@ -2312,7 +2336,11 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   const reviewCommentColors = useReviewCommentColors();
   // One definition of "still live", shared with the fold derivation: two
   // copies of this test are what let a row and the fold beside it disagree.
-  const unsettledTurnId = deriveUnsettledTurnId(props.latestTurn ?? null);
+  const unsettledTurnId = deriveActiveFeedTurnId(
+    props.feed,
+    props.latestTurn ?? null,
+    props.activeWorkStartedAt,
+  );
   // LegendList does not invalidate visible rows when only the renderItem closure changes.
   // Include turn completion so unchanged message rows reveal their footer and spacing
   // even when the final message update arrives before the turn settles.

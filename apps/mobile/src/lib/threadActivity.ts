@@ -31,6 +31,7 @@ import {
   toolGroupAction,
   toolGroupSummaryKind,
   workEntryIndicatesToolFailure,
+  workEntryDisplayIndicatesToolFailure,
   workEntryIndicatesToolSuccess,
   workLogEntryIsToolLike,
   type ToolGroupSummaryKind,
@@ -1575,11 +1576,8 @@ function groupAdjacentActivities(entries: ReadonlyArray<RawThreadFeedEntry>): Th
   };
 
   for (const entry of entries) {
-    // Skip empty messages so they don't break activity grouping.
-    if (
-      isEmptyMessage(entry) &&
-      (entry.type !== "message" || !entry.message.id.startsWith("assistant:empty:"))
-    ) {
+    // Keep empty assistant responses visible; they are the turn's terminal answer.
+    if (isEmptyMessage(entry) && (entry.type !== "message" || entry.message.role !== "assistant")) {
       continue;
     }
 
@@ -1630,6 +1628,31 @@ export function deriveUnsettledTurnId(latestTurn: ThreadFeedLatestTurn | null): 
   }
   const settled = latestTurn.completedAt !== null && latestTurn.state !== "running";
   return settled ? null : latestTurn.turnId;
+}
+
+export function deriveActiveFeedTurnId(
+  feed: ReadonlyArray<ThreadFeedEntry>,
+  latestTurn: ThreadFeedLatestTurn | null,
+  activeWorkStartedAt: string | null,
+): TurnId | null {
+  const unsettledTurnId = deriveUnsettledTurnId(latestTurn);
+  if (unsettledTurnId !== null || activeWorkStartedAt === null) return unsettledTurnId;
+  const startedAt = Date.parse(activeWorkStartedAt);
+  const completedAt = latestTurn?.completedAt ? Date.parse(latestTurn.completedAt) : NaN;
+  for (let index = feed.length - 1; index >= 0; index -= 1) {
+    const entry = feed[index]!;
+    if (entry.type === "message" && entry.message.role === "user") break;
+    if (Number.isFinite(startedAt) && Date.parse(entry.createdAt) < startedAt) continue;
+    if (Number.isFinite(completedAt) && Date.parse(entry.createdAt) <= completedAt) continue;
+    const turnId =
+      entry.type === "activity-group"
+        ? entry.turnId
+        : entry.type === "message"
+          ? entry.message.turnId
+          : null;
+    if (turnId !== null) return turnId;
+  }
+  return null;
 }
 
 interface ThreadFeedTurnFold {
@@ -1733,7 +1756,11 @@ function deriveThreadFeedTurnFolds(
         entries.some(
           (entry) =>
             entry.type === "activity-group" &&
-            entry.activities.some((activity) => activity.workEntry.tone === "error"),
+            entry.activities.some(
+              (activity) =>
+                activity.status === "failure" ||
+                workEntryDisplayIndicatesToolFailure(activity.workEntry),
+            ),
         ))
     ) {
       continue;
@@ -1838,7 +1865,7 @@ export function deriveThreadFeedPresentation(
   );
   const isWorking = activeWorkStartedAt !== null;
   const foldsByAnchorId = deriveThreadFeedTurnFolds(sourceFeed, latestTurn, isWorking);
-  const unsettledTurnId = deriveUnsettledTurnId(latestTurn);
+  const unsettledTurnId = deriveActiveFeedTurnId(sourceFeed, latestTurn, activeWorkStartedAt);
   const turnsWithSummary = new Set(
     sourceFeed.flatMap((entry) =>
       entry.type === "message" &&
@@ -1918,6 +1945,10 @@ export function deriveThreadFeedPresentation(
           index = end - 1;
           continue;
         }
+      }
+      if (entry.type === "message" && entry.message.role === "reasoning" && runTurnId === null) {
+        result.push(...groupConsecutiveReasoningMessages([entry], false));
+        continue;
       }
       appendPresentedFeedEntry(
         result,
