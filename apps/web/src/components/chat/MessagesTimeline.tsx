@@ -2346,7 +2346,11 @@ function TurnFoldTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "turn-
 
 function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
-  const messageText = row.message.text || (row.message.streaming ? "" : "(empty response)");
+  const activity = use(TimelineRowActivityCtx);
+  const isStreaming =
+    row.message.streaming &&
+    (row.message.turnId ? row.message.turnId === activity.unsettledTurnId : activity.isWorking);
+  const messageText = row.message.text || (isStreaming ? "" : "(empty response)");
 
   return (
     <>
@@ -2363,7 +2367,7 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
             text={messageText}
             cwd={ctx.markdownCwd}
             threadRef={ctx.threadRef ?? undefined}
-            isStreaming={Boolean(row.message.streaming)}
+            isStreaming={isStreaming}
             lineBreaks={shouldPreserveAssistantLineBreaks(messageText)}
             skills={ctx.skills}
             headingLevelOffset={MESSAGE_HEADING_LEVEL}
