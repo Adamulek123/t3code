@@ -7323,6 +7323,14 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       );
       NodeAssert.equal(completed?.turnId, turn.turnId);
 
+      const nextTurn = yield* adapter.sendTurn({
+        threadId,
+        input: "Continue the audit",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("opencode"),
+          "opencode/kimi-k3",
+        ),
+      });
       const lateDeltaFiber = yield* adapter.streamEvents.pipe(
         Stream.filter(
           (event) =>
@@ -7363,6 +7371,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         yield* Fiber.join(lateDeltaFiber).pipe(Effect.timeout("1 second")),
       );
       NodeAssert.equal(lateDelta?.turnId, turn.turnId);
+      NodeAssert.notEqual(lateDelta?.turnId, nextTurn.turnId);
       yield* adapter.stopSession(threadId);
     }),
   );

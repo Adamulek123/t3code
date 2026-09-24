@@ -354,14 +354,12 @@ interface OpenCodeSessionContext {
   readonly pendingPermissions: Map<string, PermissionRequest>;
   readonly pendingQuestions: Map<string, QuestionRequest>;
   readonly messageRoleById: Map<string, "user" | "assistant">;
+  readonly messageTurnIdById: Map<string, TurnId>;
   // OpenCode permits edits to completed parts. Keep text for snapshot comparison
   // until native removal or session teardown, but do not retain other part payloads.
   readonly textPartsByMessageId: Map<string, Map<string, OpenCodeTextPartState>>;
   turnTokenUsage: OpenCodeTurnTokenUsageAccumulator | undefined;
   activeTurnId: TurnId | undefined;
-  activePromptMessageId: string | undefined;
-  lastCompletedPrompt: { messageId: string; turnId: TurnId } | undefined;
-  readonly lateAssistantMessageIds: Set<string>;
   activeAgent: string | undefined;
   activeVariant: string | undefined;
   cancellation: OpenCodeCancellation | undefined;
@@ -1150,10 +1148,6 @@ export function makeOpenCodeAdapter(
         context.pendingIdleReconciliation = undefined;
       }
       const tokenUsage = takeOpenCodeTurnTokenUsage(context, true);
-      if (context.activePromptMessageId) {
-        context.lastCompletedPrompt = { messageId: context.activePromptMessageId, turnId };
-      }
-      context.activePromptMessageId = undefined;
       context.activeTurnId = undefined;
       context.activeAgent = undefined;
       context.activeVariant = undefined;
@@ -2339,17 +2333,14 @@ export function makeOpenCodeAdapter(
         return;
       }
 
-      const lastCompletedPrompt = context.lastCompletedPrompt;
-      if (
-        context.activeTurnId === undefined &&
-        lastCompletedPrompt &&
-        event.type === "message.updated" &&
-        event.properties.info.role === "assistant" &&
-        event.properties.info.parentID === lastCompletedPrompt.messageId
-      ) {
-        context.lateAssistantMessageIds.add(event.properties.info.id);
+      if (event.type === "message.updated" && event.properties.info.role === "assistant") {
+        const parentId = event.properties.info.parentID;
+        const parentTurnId = parentId ? context.messageTurnIdById.get(parentId) : undefined;
+        if (parentTurnId) {
+          context.messageTurnIdById.set(event.properties.info.id, parentTurnId);
+        }
       }
-      const lateAssistantMessageId =
+      const assistantMessageId =
         event.type === "message.updated" && event.properties.info.role === "assistant"
           ? event.properties.info.id
           : event.type === "message.part.updated"
@@ -2358,10 +2349,8 @@ export function makeOpenCodeAdapter(
               ? event.properties.messageID
               : undefined;
       const turnId =
-        context.activeTurnId ??
-        (lateAssistantMessageId && context.lateAssistantMessageIds.has(lateAssistantMessageId)
-          ? lastCompletedPrompt?.turnId
-          : undefined);
+        (assistantMessageId ? context.messageTurnIdById.get(assistantMessageId) : undefined) ??
+        context.activeTurnId;
       yield* writeNativeEventBestEffort(context.session.threadId, {
         observedAt: yield* nowIso,
         event: {
@@ -3160,11 +3149,9 @@ export function makeOpenCodeAdapter(
           pendingQuestions: new Map(),
           textPartsByMessageId: new Map(),
           messageRoleById: new Map(),
+          messageTurnIdById: new Map(),
           turnTokenUsage: undefined,
           activeTurnId: undefined,
-          activePromptMessageId: undefined,
-          lastCompletedPrompt: undefined,
-          lateAssistantMessageIds: new Set(),
           activeAgent: undefined,
           activeVariant: undefined,
           cancellation: undefined,
@@ -3353,9 +3340,7 @@ export function makeOpenCodeAdapter(
           context.promptAdmission = promptAdmission;
 
           context.activeTurnId = turnId;
-          context.activePromptMessageId = messageId;
-          context.lastCompletedPrompt = undefined;
-          context.lateAssistantMessageIds.clear();
+          context.messageTurnIdById.set(messageId, turnId);
           if (steeringTurnId === undefined) {
             context.turnTokenUsage = makeOpenCodeTurnTokenUsageAccumulator();
           }
@@ -4150,6 +4135,7 @@ export function makeOpenCodeAdapter(
           context.relatedSessionIds.clear();
           context.relatedSessionIds.add(forkedSessionId);
           context.messageRoleById.clear();
+          context.messageTurnIdById.clear();
           context.textPartsByMessageId.clear();
           context.turnTokenUsage = undefined;
           context.activeTurnId = undefined;
