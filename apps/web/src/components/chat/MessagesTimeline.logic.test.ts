@@ -2250,6 +2250,20 @@ describe("deriveMessagesTimelineRows", () => {
     expect(ids).not.toContain("reasoning-after");
   });
 
+  it("places a late-only reasoning fold before its answer", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        answerEntry("answer", "2026-01-01T00:00:02Z", "turn-1"),
+        reasoningEntry("late-thought", "2026-01-01T00:00:03Z", "turn-1"),
+      ],
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
+    });
+    expect(rows.map((row) => row.kind)).toEqual(["turn-fold", "message"]);
+  });
+
   it("does not let a stranded streaming thought hold a settled turn open", () => {
     const stranded = reasoningEntry("reasoning-stranded", "2026-01-01T00:00:01Z", "turn-1");
     const rows = deriveMessagesTimelineRows({

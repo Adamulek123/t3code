@@ -1798,9 +1798,13 @@ function deriveThreadFeedTurnFolds(
         ? `Worked for ${duration}`
         : "Worked";
 
-    foldsByAnchorId.set(firstHiddenEntry.id, {
+    const anchorEntry =
+      terminalEntry && entries.indexOf(firstHiddenEntry) > entries.indexOf(terminalEntry)
+        ? terminalEntry
+        : firstHiddenEntry;
+    foldsByAnchorId.set(anchorEntry.id, {
       turnId,
-      createdAt: firstHiddenEntry.createdAt,
+      createdAt: anchorEntry.createdAt,
       hiddenEntryIds,
       label,
     });

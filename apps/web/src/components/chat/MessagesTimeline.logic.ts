@@ -817,10 +817,15 @@ function deriveTurnFolds(input: {
         ? `Worked for ${duration}`
         : "Worked";
 
-    foldsByAnchorEntryId.set(firstHiddenEntry.id, {
+    const anchorEntry =
+      group.terminalEntry &&
+      group.entries.indexOf(firstHiddenEntry) > group.entries.indexOf(group.terminalEntry)
+        ? group.terminalEntry
+        : firstHiddenEntry;
+    foldsByAnchorEntryId.set(anchorEntry.id, {
       turnId,
-      anchorEntryId: firstHiddenEntry.id,
-      createdAt: firstHiddenEntry.createdAt,
+      anchorEntryId: anchorEntry.id,
+      createdAt: anchorEntry.createdAt,
       hiddenEntryIds,
       label,
     });

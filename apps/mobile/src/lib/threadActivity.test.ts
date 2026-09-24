@@ -2843,6 +2843,36 @@ describe("buildThreadFeed", () => {
     expect(rows.map((row) => row.type)).toEqual(["message", "turn-fold", "message"]);
   });
 
+  it("places a late-only reasoning fold before its answer", () => {
+    const turnId = TurnId.make("late-thought");
+    const messages: OrchestrationThread["messages"] = [
+      {
+        id: MessageId.make("answer"),
+        role: "assistant",
+        text: "Done",
+        turnId,
+        streaming: false,
+        createdAt: "2026-04-01T00:00:02.000Z",
+        updatedAt: "2026-04-01T00:00:02.000Z",
+      },
+      {
+        id: MessageId.make("reasoning:raw:late"),
+        role: "reasoning",
+        text: "One last check.",
+        turnId,
+        streaming: false,
+        createdAt: "2026-04-01T00:00:03.000Z",
+        updatedAt: "2026-04-01T00:00:03.000Z",
+      },
+    ];
+    const rows = deriveThreadFeedPresentation(
+      buildThreadFeed({ messages, activities: [] }),
+      null,
+      new Set(),
+    );
+    expect(rows.map((row) => row.type)).toEqual(["turn-fold", "message"]);
+  });
+
   it("shows one Thinking row while a turn works without live tool activity", () => {
     const turnId = TurnId.make("turn-thinking");
     const latestTurn = {
