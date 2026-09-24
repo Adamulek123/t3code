@@ -623,7 +623,7 @@ function deriveActiveVisualResponseTurnIds(input: {
   return turnIds;
 }
 
-export function workEntryIsActiveTurnActivity(entry: WorkLogEntry): boolean {
+function workEntryIsActiveTurnActivity(entry: WorkLogEntry): boolean {
   return (
     entry.toolLifecycleStatus === "inProgress" ||
     (entry.toolLifecycleStatus === undefined &&
