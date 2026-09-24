@@ -2186,6 +2186,29 @@ describe("deriveMessagesTimelineRows", () => {
     expect(rows.map((row) => row.kind)).toEqual(["turn-fold", "message"]);
   });
 
+  it("keeps compaction visible beside folded tool work", () => {
+    const compaction = toolEntry("compaction", "2026-01-01T00:00:01Z", "turn-1");
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          ...compaction,
+          entry: {
+            ...compaction.entry,
+            tone: "info" as const,
+            sourceActivityKind: "context-compaction" as const,
+          },
+        },
+        toolEntry("tool", "2026-01-01T00:00:02Z", "turn-1"),
+        answerEntry("answer", "2026-01-01T00:00:03Z", "turn-1"),
+      ],
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
+    });
+    expect(rows.map((row) => row.kind)).toEqual(["context-compaction", "turn-fold", "message"]);
+  });
+
   it("folds Mimo reasoning around a visible user question", () => {
     const turnId = TurnId.make("turn-1");
     const questionBase = toolEntry("question", "2026-01-01T00:00:03Z", "turn-1");

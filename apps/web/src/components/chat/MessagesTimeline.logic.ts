@@ -728,6 +728,9 @@ function deriveTurnFolds(input: {
       }
       const isCompaction =
         entry.kind === "work" && entry.entry.sourceActivityKind === "context-compaction";
+      if (isCompaction) {
+        continue;
+      }
       const isSingleTrailingActivity =
         trailingEntryCount === 1 &&
         entry.kind === "work" &&
@@ -735,12 +738,7 @@ function deriveTurnFolds(input: {
       // A thinking block after the answer folds with its turn rather than
       // trailing under it, which is what mobile already does.
       const isReasoning = entry.kind === "message" && entry.message.role === "reasoning";
-      if (
-        !isCompaction &&
-        !isReasoning &&
-        index > terminalEntryIndex &&
-        !isSingleTrailingActivity
-      ) {
+      if (!isReasoning && index > terminalEntryIndex && !isSingleTrailingActivity) {
         continue;
       }
       // User input and subagent batches stay visible after their turn settles.
