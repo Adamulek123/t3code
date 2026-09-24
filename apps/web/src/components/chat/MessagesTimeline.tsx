@@ -309,6 +309,12 @@ interface TimelineRowActivityState {
   backgroundWorktreeSetup: WorktreeSetupSnapshot | null;
 }
 
+function messageIsLiveStreaming(message: ChatMessage, activity: TimelineRowActivityState): boolean {
+  if (!message.streaming) return false;
+  if (message.turnId === null || activity.unsettledTurnId === null) return activity.isWorking;
+  return message.turnId === activity.unsettledTurnId;
+}
+
 const TimelineRowCtx = createContext<TimelineRowSharedState>(null!);
 const TimelineRowActivityCtx = createContext<TimelineRowActivityState>(null!);
 
@@ -2348,9 +2354,7 @@ function TurnFoldTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "turn-
 function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
   const activity = use(TimelineRowActivityCtx);
-  const isStreaming =
-    row.message.streaming &&
-    (row.message.turnId ? row.message.turnId === activity.unsettledTurnId : activity.isWorking);
+  const isStreaming = messageIsLiveStreaming(row.message, activity);
   const messageText =
     row.message.text.trim().length > 0 ? row.message.text : isStreaming ? "" : "(empty response)";
 
@@ -2613,11 +2617,7 @@ function SummaryReasoningTimelineRow({
   const expanded = ctx.expandedReasoningMessageIds.has(messageId);
   const chunks = row.messages.map((message) => message.text.trim()).filter(Boolean);
   const text = chunks.join(" ");
-  const streaming = row.messages.some(
-    (message) =>
-      message.streaming &&
-      (message.turnId ? message.turnId === activity.unsettledTurnId : activity.isWorking),
-  );
+  const streaming = row.messages.some((message) => messageIsLiveStreaming(message, activity));
   if (text.length === 0) return streaming ? <ThinkingTimelineRow /> : null;
   const longSummary =
     text.length > 2_000 ||
@@ -2668,11 +2668,7 @@ function RawReasoningTimelineRow({
   const detailsId = useId();
   const messageId = row.messages[0]!.id;
   const expanded = ctx.expandedReasoningMessageIds.has(messageId);
-  const streaming = row.messages.some(
-    (message) =>
-      message.streaming &&
-      (message.turnId ? message.turnId === activity.unsettledTurnId : activity.isWorking),
-  );
+  const streaming = row.messages.some((message) => messageIsLiveStreaming(message, activity));
   const label = `Thought${row.messages.length > 1 ? ` (×${row.messages.length})` : ""}`;
   return (
     <div className={cn("flex min-w-0 flex-col", expanded && "mb-1")}>
@@ -2721,10 +2717,7 @@ function RawReasoningTimelineRow({
               text={message.text}
               cwd={ctx.markdownCwd}
               threadRef={ctx.threadRef ?? undefined}
-              isStreaming={
-                message.streaming &&
-                (message.turnId ? message.turnId === activity.unsettledTurnId : activity.isWorking)
-              }
+              isStreaming={messageIsLiveStreaming(message, activity)}
               lineBreaks
               skills={ctx.skills}
               headingLevelOffset={MESSAGE_HEADING_LEVEL}

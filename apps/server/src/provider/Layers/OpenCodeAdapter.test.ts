@@ -61,6 +61,8 @@ type MessageEntry = {
   info: {
     id: string;
     role: "user" | "assistant";
+    parentID?: string;
+    finish?: string;
   };
   parts: Array<unknown>;
 };
@@ -101,6 +103,7 @@ const runtimeMock = {
     promptEchoEvents: [] as Array<unknown>,
     closeError: null as Error | null,
     messages: [] as MessageEntry[],
+    sessionMessagesCalls: 0,
     forkMessagesBySession: new Map<string, MessageEntry[]>(),
     forkPreservesBoundary: true,
     subscribedEvents: [] as Array<unknown | Promise<unknown>>,
@@ -165,6 +168,7 @@ const runtimeMock = {
     this.state.promptEchoEvents.length = 0;
     this.state.closeError = null;
     this.state.messages = [];
+    this.state.sessionMessagesCalls = 0;
     this.state.forkMessagesBySession.clear();
     this.state.forkPreservesBoundary = true;
     this.state.subscribedEvents = [];
@@ -405,10 +409,13 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
           runtimeMock.state.summarizeCalls.push(input);
           return { data: true };
         },
-        messages: async ({ sessionID }: { sessionID: string }) => ({
-          data:
-            runtimeMock.state.forkMessagesBySession.get(sessionID) ?? runtimeMock.state.messages,
-        }),
+        messages: async ({ sessionID }: { sessionID: string }) => {
+          runtimeMock.state.sessionMessagesCalls += 1;
+          return {
+            data:
+              runtimeMock.state.forkMessagesBySession.get(sessionID) ?? runtimeMock.state.messages,
+          };
+        },
         message: async ({ sessionID, messageID }: { sessionID: string; messageID: string }) => {
           runtimeMock.state.messageCalls.push({ sessionID, messageID });
           if (runtimeMock.state.messageFailures > 0) {
@@ -7845,6 +7852,78 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       NodeAssert.equal(Option.getOrThrow(yield* Fiber.join(completedFiber)).turnId, turn.turnId);
       NodeAssert.equal(
         (yield* adapter.listSessions()).find((session) => session.threadId === threadId)?.status,
+        "ready",
+      );
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect("recovers a finished assistant message whose terminal event was lost", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-reconnect-lost-terminal-message");
+      const reconnect = promiseWithResolvers<unknown>();
+      runtimeMock.state.subscribedEvents = [reconnect.promise];
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const turn = yield* adapter.sendTurn({
+        threadId,
+        input: "Finish during reconnect",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("opencode"),
+          "opencode/kimi-k3",
+        ),
+      });
+      const promptMessageId = (runtimeMock.state.promptCalls[0] as { messageID: string }).messageID;
+      runtimeMock.state.messages.push(
+        {
+          info: {
+            id: "assistant-from-previous-turn",
+            role: "assistant",
+            parentID: "other-prompt",
+            finish: "stop",
+          },
+          parts: [],
+        },
+        {
+          info: {
+            id: "assistant-finished-during-reconnect",
+            role: "assistant",
+            parentID: promptMessageId,
+            finish: "length",
+          },
+          parts: [],
+        },
+      );
+      const warningFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId && event.type === "runtime.warning"),
+        Stream.runHead,
+        Effect.forkChild,
+      );
+      const completedFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId && event.type === "turn.completed"),
+        Stream.runHead,
+        Effect.forkChild,
+      );
+      runtimeMock.state.eventStreamError?.(new Error("socket closed"));
+      yield* Fiber.join(warningFiber);
+      reconnect.resolve({
+        id: "evt-reconnected-after-finished-message",
+        type: "server.connected",
+        properties: {},
+      } satisfies OpenCodeEvent);
+      yield* advanceTestClock(6_000);
+      const completed = Option.getOrUndefined(
+        yield* Fiber.join(completedFiber).pipe(Effect.timeout("1 second")),
+      );
+      NodeAssert.equal(completed?.turnId, turn.turnId);
+      NodeAssert.equal(runtimeMock.state.sessionMessagesCalls, 1);
+      NodeAssert.equal(
+        (yield* adapter.listSessions()).find((candidate) => candidate.threadId === threadId)
+          ?.status,
         "ready",
       );
       yield* adapter.stopSession(threadId);

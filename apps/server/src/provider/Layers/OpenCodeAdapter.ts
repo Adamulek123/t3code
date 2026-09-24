@@ -1383,6 +1383,7 @@ export function makeOpenCodeAdapter(
         if (!promptAdmission.requiresMessageReceipt) {
           yield* Deferred.await(promptAdmission.acceptance);
         }
+        let lastStatusIsIdle = false;
         for (
           let retryCount = 0;
           retryCount < 5 || (promptAdmission.requiresMessageReceipt && !promptAdmission.accepted);
@@ -1459,6 +1460,7 @@ export function makeOpenCodeAdapter(
           const status = statusData?.[context.openCodeSessionId];
           const isIdle =
             statusData !== undefined && (status === undefined || status.type === "idle");
+          lastStatusIsIdle = isIdle;
           const isBusy = status?.type === "busy" || status?.type === "retry";
           if (isBusy) {
             promptAdmission.busyObserved = true;
@@ -1520,6 +1522,35 @@ export function makeOpenCodeAdapter(
         // the turn owned until that response arrives; its terminal update
         // restarts reconciliation without polling an idle session indefinitely.
         if (promptAdmission.messageObserved && !promptAdmission.assistantResponseFinished) {
+          // The terminal assistant event may have been lost during a reconnect.
+          // Confirm it from OpenCode's durable messages before waiting for the stream.
+          if (lastStatusIsIdle) {
+            const messages = yield* runOpenCodeSdk("session.messages", (signal) =>
+              context.client.session.messages({ sessionID: context.openCodeSessionId }, { signal }),
+            ).pipe(Effect.timeout("1 second"), Effect.option);
+            if (
+              (yield* Ref.get(context.stopped)) ||
+              sessions.get(context.session.threadId) !== context ||
+              context.promptAdmission !== promptAdmission ||
+              context.activeTurnId !== promptAdmission.turnId ||
+              context.promptGeneration !== promptAdmission.generation ||
+              promptAdmission.cancelled
+            ) {
+              return;
+            }
+            const finished =
+              Option.isSome(messages) &&
+              messages.value.data?.some(
+                (message) =>
+                  message.info.role === "assistant" &&
+                  message.info.parentID === promptAdmission.messageId &&
+                  (message.info.finish === "stop" || message.info.finish === "length"),
+              );
+            if (finished) {
+              promptAdmission.assistantResponseFinished = true;
+              yield* Deferred.succeed(promptAdmission.responseReceipt, undefined);
+            }
+          }
           const response = yield* Deferred.await(promptAdmission.responseReceipt).pipe(
             Effect.timeoutOption("2 minutes"),
           );

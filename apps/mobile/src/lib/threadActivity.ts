@@ -1549,6 +1549,12 @@ function isEmptyMessage(entry: RawThreadFeedEntry): boolean {
 
 function groupAdjacentActivities(entries: ReadonlyArray<RawThreadFeedEntry>): ThreadFeedEntry[] {
   const grouped: ThreadFeedEntry[] = [];
+  const lastAssistantIndexByTurnId = new Map<TurnId, number>();
+  entries.forEach((entry, index) => {
+    if (entry.type === "message" && entry.message.role === "assistant" && entry.message.turnId) {
+      lastAssistantIndexByTurnId.set(entry.message.turnId, index);
+    }
+  });
   let firstActivityEntry: Extract<RawThreadFeedEntry, { readonly type: "activity" }> | null = null;
   let openGroupActivities: ThreadFeedActivity[] = [];
   const flushGroup = () => {
@@ -1575,9 +1581,18 @@ function groupAdjacentActivities(entries: ReadonlyArray<RawThreadFeedEntry>): Th
     openGroupActivities = [];
   };
 
-  for (const entry of entries) {
-    // Keep empty assistant responses visible; they are the turn's terminal answer.
+  for (const [index, entry] of entries.entries()) {
+    // Keep the terminal empty assistant answer visible without splitting earlier work.
     if (isEmptyMessage(entry) && (entry.type !== "message" || entry.message.role !== "assistant")) {
+      continue;
+    }
+    if (
+      entry.type === "message" &&
+      entry.message.role === "assistant" &&
+      isEmptyMessage(entry) &&
+      entry.message.turnId &&
+      lastAssistantIndexByTurnId.get(entry.message.turnId) !== index
+    ) {
       continue;
     }
 

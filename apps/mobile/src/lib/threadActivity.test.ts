@@ -2871,6 +2871,49 @@ describe("buildThreadFeed", () => {
     ]);
   });
 
+  it("keeps one work group across intermediate empty assistant messages", () => {
+    const turnId = TurnId.make("turn-empty-progress");
+    const at = (second: number) => `2026-04-01T00:00:0${second}.000Z`;
+    const rows = buildThreadFeed({
+      messages: [
+        {
+          id: MessageId.make("intermediate-empty"),
+          role: "assistant",
+          text: "",
+          turnId,
+          streaming: false,
+          createdAt: at(2),
+          updatedAt: at(2),
+        },
+        {
+          id: MessageId.make("terminal-empty"),
+          role: "assistant",
+          text: "",
+          turnId,
+          streaming: false,
+          createdAt: at(4),
+          updatedAt: at(4),
+        },
+      ],
+      activities: [1, 3].map((second) =>
+        makeActivity({
+          id: EventId.make(`tool-${second}`),
+          kind: "tool.completed",
+          tone: "tool",
+          summary: "Read files",
+          turnId,
+          createdAt: at(second),
+          payload: { itemType: "file_read", status: "completed" },
+        }),
+      ),
+    });
+
+    expect(rows).toMatchObject([
+      { type: "activity-group", activities: [{ id: "tool-1" }, { id: "tool-3" }] },
+      { type: "message", message: { id: "terminal-empty", text: "" } },
+    ]);
+  });
+
   it("leaves failed work visible when the turn has no answer", () => {
     const turnId = TurnId.make("failed-without-answer");
     const latestTurn = {
