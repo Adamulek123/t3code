@@ -2450,6 +2450,25 @@ const make = Effect.gen(function* () {
               ),
             { concurrency: 1 },
           ).pipe(Effect.asVoid);
+          if (
+            String(event.provider) === "opencode" &&
+            event.type === "turn.completed" &&
+            event.payload.state === "completed" &&
+            !(yield* projectionThreadMessages.hasAssistantMessageForTurn({
+              threadId: thread.id,
+              turnId,
+              streamingOnly: false,
+            }))
+          ) {
+            yield* orchestrationEngine.dispatch({
+              type: "thread.message.assistant.complete",
+              commandId: yield* providerCommandId(event, "empty-assistant-complete"),
+              threadId: thread.id,
+              messageId: MessageId.make(`assistant:empty:${turnId}`),
+              turnId,
+              createdAt: now,
+            });
+          }
           yield* clearAssistantMessageIdsForTurn(thread.id, turnId);
           yield* clearAssistantSegmentStateForTurn(thread.id, turnId);
           yield* clearAssistantSegmentStateForTurn(thread.id, turnId, "reasoning");
