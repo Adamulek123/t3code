@@ -2776,6 +2776,47 @@ describe("buildThreadFeed", () => {
     expect(whileNextTurnStarts.some((row) => row.type === "turn-fold")).toBe(true);
   });
 
+  it("retains a settled empty assistant answer after reasoning", () => {
+    const turnId = TurnId.make("empty-answer");
+    const rows = deriveThreadFeedPresentation(
+      buildThreadFeed({
+        messages: [
+          {
+            id: MessageId.make("reasoning:summary:empty-answer"),
+            role: "reasoning",
+            text: "Checked the branch.",
+            turnId,
+            streaming: false,
+            createdAt: "2026-04-01T00:00:01.000Z",
+            updatedAt: "2026-04-01T00:00:01.000Z",
+          },
+          {
+            id: MessageId.make("assistant:empty:empty-answer"),
+            role: "assistant",
+            text: "",
+            turnId,
+            streaming: false,
+            createdAt: "2026-04-01T00:00:02.000Z",
+            updatedAt: "2026-04-01T00:00:02.000Z",
+          },
+        ],
+        activities: [],
+      }),
+      {
+        turnId,
+        state: "completed",
+        startedAt: "2026-04-01T00:00:00.000Z",
+        completedAt: "2026-04-01T00:00:03.000Z",
+      },
+      new Set(),
+    );
+    expect(rows.map((row) => row.type)).toEqual(["turn-fold", "message"]);
+    expect(rows.at(-1)).toMatchObject({
+      type: "message",
+      message: { role: "assistant", text: "" },
+    });
+  });
+
   it("leaves failed work visible when the turn has no answer", () => {
     const turnId = TurnId.make("failed-without-answer");
     const latestTurn = {

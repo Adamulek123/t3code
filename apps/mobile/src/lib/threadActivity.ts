@@ -1576,7 +1576,10 @@ function groupAdjacentActivities(entries: ReadonlyArray<RawThreadFeedEntry>): Th
 
   for (const entry of entries) {
     // Skip empty messages so they don't break activity grouping.
-    if (isEmptyMessage(entry)) {
+    if (
+      isEmptyMessage(entry) &&
+      (entry.type !== "message" || !entry.message.id.startsWith("assistant:empty:"))
+    ) {
       continue;
     }
 
@@ -1690,7 +1693,7 @@ function deriveThreadFeedTurnFolds(
     if (!turnId) {
       continue;
     }
-    if (isWorking && index > lastUserMessageIndex) {
+    if (isWorking && lastUserMessageIndex >= 0 && index > lastUserMessageIndex) {
       activeVisualTurnIds.add(turnId);
     }
     let group = groupsByTurnId.get(turnId);

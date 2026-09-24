@@ -1533,7 +1533,11 @@ function renderFeedEntry(
       );
     }
     const isUser = message.role === "user";
-    const renderedText = renderAssistantCitationsAsText(message.text);
+    const renderedText = renderAssistantCitationsAsText(
+      message.role === "assistant" && !message.streaming && message.text.trim().length === 0
+        ? "(empty response)"
+        : message.text,
+    );
     const styles = isUser ? markdownStyles.user : markdownStyles.assistant;
     const timestampLabel = formatMessageTime(isUser ? message.createdAt : message.updatedAt);
     const attachments = message.attachments ?? [];
