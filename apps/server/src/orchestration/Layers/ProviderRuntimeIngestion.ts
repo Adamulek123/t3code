@@ -1248,22 +1248,38 @@ const make = Effect.gen(function* () {
     turnId?: TurnId;
   }) =>
     Effect.gen(function* () {
+      const baseKey = assistantSegmentBaseKeyFromEvent(input.event);
       if (!input.turnId) {
-        return assistantSegmentMessageId(assistantSegmentBaseKeyFromEvent(input.event), 0);
+        return assistantSegmentMessageId(baseKey, 0);
       }
 
-      const activeMessageId = yield* getActiveAssistantMessageIdForTurn(
-        input.threadId,
-        input.turnId,
-      );
-      if (Option.isSome(activeMessageId)) {
-        return activeMessageId.value;
+      const state = yield* getAssistantSegmentStateForTurn(input.threadId, input.turnId);
+      const activeMessageId = Option.getOrUndefined(state)?.activeMessageId;
+      if (activeMessageId) {
+        // OpenCode can classify an already streamed text part as tool-call
+        // progress when its parent message finishes. Keep each part separate
+        // so that reclassification cannot move text from an earlier answer.
+        if (
+          input.event.provider !== "opencode" ||
+          Option.getOrUndefined(state)?.baseKey === baseKey
+        ) {
+          return activeMessageId;
+        }
+        yield* finalizeActiveSegmentForTurn({
+          event: input.event,
+          threadId: input.threadId,
+          turnId: input.turnId,
+          createdAt: input.event.createdAt,
+          commandTag: "assistant-complete-on-new-part",
+          finalDeltaCommandTag: "assistant-delta-finalize-on-new-part",
+          hasProjectedMessage: false,
+        });
       }
 
       return yield* startAssistantSegmentForTurn({
         threadId: input.threadId,
         turnId: input.turnId,
-        baseKey: assistantSegmentBaseKeyFromEvent(input.event),
+        baseKey,
       });
     });
 
@@ -2333,8 +2349,13 @@ const make = Effect.gen(function* () {
         const activeAssistantMessageId = turnId
           ? yield* getActiveAssistantMessageIdForTurn(thread.id, turnId)
           : Option.none<MessageId>();
+        const activeMessageMatchesItem =
+          Option.isSome(activeAssistantMessageId) &&
+          (activeAssistantMessageId.value === assistantCompletion.messageId ||
+            activeAssistantMessageId.value.startsWith(`${assistantCompletion.messageId}:segment:`));
         const assistantMessageId =
-          assistantCompletion.presentation === "progress"
+          assistantCompletion.presentation === "progress" ||
+          (event.provider === "opencode" && !activeMessageMatchesItem)
             ? assistantCompletion.messageId
             : Option.getOrElse(activeAssistantMessageId, () => assistantCompletion.messageId);
         const [existingAssistantMessage, hasAssistantMessagesForTurn] = yield* Effect.all([
@@ -2475,25 +2496,6 @@ const make = Effect.gen(function* () {
               ),
             { concurrency: 1 },
           ).pipe(Effect.asVoid);
-          if (
-            String(event.provider) === "opencode" &&
-            event.type === "turn.completed" &&
-            event.payload.state === "completed" &&
-            !(yield* projectionThreadMessages.hasAssistantMessageForTurn({
-              threadId: thread.id,
-              turnId,
-              streamingOnly: false,
-            }))
-          ) {
-            yield* orchestrationEngine.dispatch({
-              type: "thread.message.assistant.complete",
-              commandId: yield* providerCommandId(event, "empty-assistant-complete"),
-              threadId: thread.id,
-              messageId: MessageId.make(`assistant:empty:${turnId}`),
-              turnId,
-              createdAt: now,
-            });
-          }
           yield* clearAssistantMessageIdsForTurn(thread.id, turnId);
           yield* clearAssistantSegmentStateForTurn(thread.id, turnId);
           yield* clearAssistantSegmentStateForTurn(thread.id, turnId, "reasoning");

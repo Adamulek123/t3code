@@ -1467,7 +1467,9 @@ describe("ProviderRuntimeIngestion", () => {
     const thread = await waitForThread(harness.readModel, (entry) =>
       entry.messages.some(
         (message: ProviderRuntimeTestMessage) =>
-          message.id === `assistant:empty:${turnId}` && !message.streaming,
+          message.role === "reasoning" &&
+          message.text === "Checked the branch." &&
+          !message.streaming,
       ),
     );
     expect(
@@ -1475,10 +1477,8 @@ describe("ProviderRuntimeIngestion", () => {
         ?.text,
     ).toBe("Checked the branch.");
     expect(
-      thread.messages.find(
-        (message: ProviderRuntimeTestMessage) => message.id === `assistant:empty:${turnId}`,
-      ),
-    ).toMatchObject({ role: "assistant", text: "", streaming: false, turnId });
+      thread.messages.some((message: ProviderRuntimeTestMessage) => message.role === "assistant"),
+    ).toBe(false);
   });
 
   it("reclassifies completed OpenCode progress text without changing the final answer", async () => {
@@ -1497,7 +1497,7 @@ describe("ProviderRuntimeIngestion", () => {
         itemId: asItemId(item),
         payload: { streamKind: "assistant_text", delta: text },
       });
-    const complete = (item: string, event: string, presentation?: "progress") =>
+    const complete = (item: string, event: string, presentation?: "progress", detail?: string) =>
       harness.emit({
         type: "item.completed",
         eventId: asEventId(event),
@@ -1510,11 +1510,13 @@ describe("ProviderRuntimeIngestion", () => {
           itemType: "assistant_message",
           status: "completed",
           ...(presentation ? { presentation } : {}),
+          ...(detail ? { detail } : {}),
         },
       });
 
+    emitText("preface-part", "Starting the review.", "evt-preface-text");
     emitText("progress-part", "Checking the reviews.", "evt-progress-text");
-    complete("progress-part", "evt-progress-complete");
+    complete("progress-part", "evt-progress-complete", undefined, "Checking the reviews.");
     emitText("answer-part", "The review ", "evt-answer-text-first");
     complete("progress-part", "evt-progress-classified", "progress");
     emitText("answer-part", "is complete.", "evt-answer-text-second");
@@ -1535,12 +1537,15 @@ describe("ProviderRuntimeIngestion", () => {
     expect(
       thread.messages
         .filter((message: ProviderRuntimeTestMessage) =>
-          ["assistant:progress-part", "assistant:answer-part"].includes(message.id),
+          ["assistant:preface-part", "assistant:progress-part", "assistant:answer-part"].includes(
+            message.id,
+          ),
         )
         .map((message: ProviderRuntimeTestMessage) => [message.id, message.role, message.text])
         .sort(),
     ).toEqual([
       ["assistant:answer-part", "assistant", "The review is complete."],
+      ["assistant:preface-part", "assistant", "Starting the review."],
       ["assistant:progress-part", "reasoning", "Checking the reviews."],
     ]);
   });
