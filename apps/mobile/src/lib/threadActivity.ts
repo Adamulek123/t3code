@@ -1,4 +1,11 @@
 import * as Option from "effect/Option";
+import {
+  isReasoningSummaryMessage,
+  isUnkeyedResponseTurnId,
+  reasoningDisplayKind,
+  unkeyedResponseTurnId as makeUnkeyedResponseTurnId,
+  unsettledTurnId,
+} from "@t3tools/client-runtime/thread-message-presentation";
 import { foldUserInputActivities } from "@t3tools/client-runtime/work-log/user-input";
 import * as Schema from "effect/Schema";
 import {
@@ -1638,11 +1645,7 @@ function maxIsoTimestamp(a: string | null, b: string | null): string | null {
 }
 
 export function deriveUnsettledTurnId(latestTurn: ThreadFeedLatestTurn | null): TurnId | null {
-  if (!latestTurn) {
-    return null;
-  }
-  const settled = latestTurn.completedAt !== null && latestTurn.state !== "running";
-  return settled ? null : latestTurn.turnId;
+  return unsettledTurnId(latestTurn);
 }
 
 export function deriveActiveFeedTurnId(
@@ -1684,21 +1687,6 @@ function deriveThreadFeedTurnFolds(
 ): ReadonlyMap<string, ThreadFeedTurnFold> {
   const firstAssistantMessageIdByTurn = new Map<TurnId, string>();
   const terminalAssistantMessageIdByTurn = new Map<TurnId, string>();
-  let unkeyedResponseTurnId: TurnId | null = null;
-  for (const entry of feed) {
-    if (entry.type === "message" && entry.message.role === "user") {
-      unkeyedResponseTurnId = TurnId.make(`unkeyed-response:${entry.message.id}`);
-      continue;
-    }
-    if (entry.type === "message" && entry.message.role === "assistant") {
-      const turnId = entry.message.turnId ?? unkeyedResponseTurnId;
-      if (!turnId) continue;
-      if (!firstAssistantMessageIdByTurn.has(turnId)) {
-        firstAssistantMessageIdByTurn.set(turnId, entry.id);
-      }
-      terminalAssistantMessageIdByTurn.set(turnId, entry.id);
-    }
-  }
 
   interface TurnGroup {
     readonly entries: ThreadFeedEntry[];
@@ -1706,7 +1694,7 @@ function deriveThreadFeedTurnFolds(
   }
   const groupsByTurnId = new Map<TurnId, TurnGroup>();
   let pendingUserBoundary: string | null = null;
-  unkeyedResponseTurnId = null;
+  let unkeyedResponseTurnId: TurnId | null = null;
   const lastUserMessageIndex = feed.findLastIndex(
     (entry) => entry.type === "message" && entry.message.role === "user",
   );
@@ -1714,7 +1702,7 @@ function deriveThreadFeedTurnFolds(
   for (const [index, entry] of feed.entries()) {
     if (entry.type === "message" && entry.message.role === "user") {
       pendingUserBoundary = entry.message.createdAt;
-      unkeyedResponseTurnId = TurnId.make(`unkeyed-response:${entry.message.id}`);
+      unkeyedResponseTurnId = makeUnkeyedResponseTurnId(entry.message.id);
       continue;
     }
     // Thinking is work, so it folds with the rest of it. A provider that
@@ -1730,6 +1718,12 @@ function deriveThreadFeedTurnFolds(
           : null;
     if (!turnId) {
       continue;
+    }
+    if (entry.type === "message" && entry.message.role === "assistant") {
+      if (!firstAssistantMessageIdByTurn.has(turnId)) {
+        firstAssistantMessageIdByTurn.set(turnId, entry.id);
+      }
+      terminalAssistantMessageIdByTurn.set(turnId, entry.id);
     }
     if (isWorking && lastUserMessageIndex >= 0 && index > lastUserMessageIndex) {
       activeVisualTurnIds.add(turnId);
@@ -1754,7 +1748,7 @@ function deriveThreadFeedTurnFolds(
     if (activeVisualTurnIds.has(turnId)) {
       continue;
     }
-    if (String(turnId).startsWith("unkeyed-response:") && turnId === activeUnkeyedResponseTurnId) {
+    if (isUnkeyedResponseTurnId(turnId) && turnId === activeUnkeyedResponseTurnId) {
       continue;
     }
     if (turnId === unsettledTurnId) {
@@ -1780,7 +1774,7 @@ function deriveThreadFeedTurnFolds(
     ) {
       continue;
     }
-    const unkeyedResponse = String(turnId).startsWith("unkeyed-response:");
+    const unkeyedResponse = isUnkeyedResponseTurnId(turnId);
     const hiddenEntryIds = new Set(
       entries
         .filter(
@@ -1867,6 +1861,7 @@ export function deriveThreadFeedPresentation(
   expandedTurnIds: ReadonlySet<TurnId>,
   expandedWorkGroupIds: ReadonlySet<string> = new Set(),
   activeWorkStartedAt: string | null = null,
+  activeFeedTurnId?: TurnId | null,
 ): ThreadFeedEntry[] {
   const sourceFeed = feed.filter(
     (entry) =>
@@ -1880,14 +1875,16 @@ export function deriveThreadFeedPresentation(
   );
   const isWorking = activeWorkStartedAt !== null;
   const foldsByAnchorId = deriveThreadFeedTurnFolds(sourceFeed, latestTurn, isWorking);
-  const unsettledTurnId = deriveActiveFeedTurnId(sourceFeed, latestTurn, activeWorkStartedAt);
+  const unsettledTurnId =
+    activeFeedTurnId === undefined
+      ? deriveActiveFeedTurnId(sourceFeed, latestTurn, activeWorkStartedAt)
+      : activeFeedTurnId;
   const turnsWithSummary = new Set(
     sourceFeed.flatMap((entry) =>
       entry.type === "message" &&
       entry.message.role === "reasoning" &&
       entry.message.turnId &&
-      (entry.message.id.startsWith("reasoning:summary:") ||
-        entry.message.id.startsWith("assistant:"))
+      isReasoningSummaryMessage(entry.message)
         ? [entry.message.turnId]
         : [],
     ),
@@ -2133,14 +2130,8 @@ function groupConsecutiveReasoningMessages(
   hasSummary: boolean,
 ): ThreadFeedEntry[] {
   const result: ThreadFeedEntry[] = [];
-  const kindOf = (message: OrchestrationThread["messages"][number]) => {
-    if (message.id.startsWith("reasoning:summary:") || message.id.startsWith("assistant:")) {
-      return "summary";
-    }
-    return hasSummary || message.text.length > 2_000 || message.text.split("\n", 26).length > 25
-      ? "raw"
-      : "summary";
-  };
+  const kindOf = (message: OrchestrationThread["messages"][number]) =>
+    reasoningDisplayKind(message, hasSummary);
   for (let index = 0; index < feed.length; index += 1) {
     const entry = feed[index]!;
     if (entry.type !== "message" || entry.message.role !== "reasoning") {

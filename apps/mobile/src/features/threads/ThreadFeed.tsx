@@ -2526,6 +2526,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
           expandedTurnIds,
           expandedWorkGroupIds,
           props.activeWorkStartedAt,
+          unsettledTurnId,
         ),
         props.feed,
         props.queuedMessages,
@@ -2537,6 +2538,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       props.activeWorkStartedAt,
       props.feed,
       props.latestTurn,
+      unsettledTurnId,
     ],
   );
   const setupAnchorIndex = presentedFeed.findIndex(

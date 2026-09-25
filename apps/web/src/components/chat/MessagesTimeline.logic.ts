@@ -1,4 +1,11 @@
 import { worktreeSetupAgentStarted } from "@t3tools/client-runtime/worktree-setup";
+import {
+  isReasoningSummaryMessage,
+  isUnkeyedResponseTurnId,
+  reasoningDisplayKind as sharedReasoningDisplayKind,
+  unkeyedResponseTurnId as makeUnkeyedResponseTurnId,
+  unsettledTurnId,
+} from "@t3tools/client-runtime/thread-message-presentation";
 export { worktreeSetupAgentStarted } from "@t3tools/client-runtime/worktree-setup";
 import * as Equal from "effect/Equal";
 import { shallow } from "zustand/vanilla/shallow";
@@ -302,7 +309,7 @@ function reasoningStatsByMessage(
     // Imported responses can lack a turn ID; the preceding user message bounds them.
     const key = message.turnId ? `turn:${message.turnId}` : `unkeyed:${userBoundary}`;
     const response = statsByResponse.get(key) ?? { hasSummary: false };
-    if (message.id.startsWith("reasoning:summary:") || message.id.startsWith("assistant:")) {
+    if (isReasoningSummaryMessage(message)) {
       response.hasSummary = true;
     }
     statsByResponse.set(key, response);
@@ -315,14 +322,7 @@ export function reasoningDisplayKind(
   message: ChatMessage,
   response: ReasoningResponseStats,
 ): "summary" | "raw" {
-  if (message.id.startsWith("reasoning:summary:") || message.id.startsWith("assistant:")) {
-    return "summary";
-  }
-  return response.hasSummary ||
-    message.text.length > 2_000 ||
-    message.text.split("\n", 26).length > 25
-    ? "raw"
-    : "summary";
+  return sharedReasoningDisplayKind(message, response.hasSummary);
 }
 
 export type MessagesTimelineRow =
@@ -561,14 +561,7 @@ export function deriveUnsettledTurnId(
   latestTurn: TimelineLatestTurn | null,
   runningTurnId: TurnId | null,
 ): TurnId | null {
-  if (runningTurnId !== null) {
-    return runningTurnId;
-  }
-  if (!latestTurn) {
-    return null;
-  }
-  const isSettled = latestTurn.completedAt !== null && latestTurn.state !== "running";
-  return isSettled ? null : latestTurn.turnId;
+  return unsettledTurnId(latestTurn, runningTurnId);
 }
 
 function lastUserMessageIndex(timelineEntries: ReadonlyArray<TimelineEntry>): number {
@@ -679,7 +672,7 @@ function deriveTurnFolds(input: {
   for (const entry of input.timelineEntries) {
     if (entry.kind === "message" && entry.message.role === "user") {
       pendingUserBoundary = entry.message.createdAt;
-      unkeyedResponseTurnId = TurnId.make(`unkeyed-response:${entry.message.id}`);
+      unkeyedResponseTurnId = makeUnkeyedResponseTurnId(entry.message.id);
       continue;
     }
     // Reasoning reads inline between tools while the turn is live. Once it
@@ -718,7 +711,7 @@ function deriveTurnFolds(input: {
   const foldsByAnchorEntryId = new Map<string, TurnFold>();
   const activeUnkeyedResponseTurnId = input.isWorking ? unkeyedResponseTurnId : null;
   for (const [turnId, group] of groupsByTurnId) {
-    if (String(turnId).startsWith("unkeyed-response:") && turnId === activeUnkeyedResponseTurnId) {
+    if (isUnkeyedResponseTurnId(turnId) && turnId === activeUnkeyedResponseTurnId) {
       continue;
     }
     if (input.unfoldedTurnIds.has(turnId)) {
