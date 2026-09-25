@@ -2084,6 +2084,69 @@ describe("deriveMessagesTimelineRows", () => {
     ).toEqual(["summary", "raw"]);
   });
 
+  it("keeps turnless raw reasoning collapsed beside its summary", () => {
+    const user = answerEntry("prompt", "2026-01-01T00:00:00Z", "turn-1");
+    user.message.role = "user" as never;
+    user.message.turnId = null as never;
+    const summary = reasoningEntry("reasoning:summary:brief", "2026-01-01T00:00:01Z", null);
+    const raw = reasoningEntry("reasoning:raw:brief", "2026-01-01T00:00:02Z", null);
+    raw.message.text = "Short raw trace.";
+    raw.message.streaming = true;
+    const input = {
+      timelineEntries: [user, summary, raw],
+      isWorking: true,
+      activeTurnStartedAt: user.createdAt,
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
+    } satisfies Parameters<typeof deriveMessagesTimelineRows>[0];
+    const first = deriveMessagesTimelineRowsWithState(input);
+    expect(
+      first.rows.filter((row) => row.kind === "reasoning-run").map((row) => row.reasoningKind),
+    ).toEqual(["summary", "raw"]);
+
+    const updatedRaw = {
+      ...raw,
+      message: { ...raw.message, text: "Short raw trace, still growing." },
+    };
+    const updated = deriveMessagesTimelineRowsWithState(
+      { ...input, timelineEntries: [user, summary, updatedRaw] },
+      first,
+    );
+    expect(updated.rows.find((row) => row.id === raw.id)).toMatchObject({
+      kind: "reasoning-run",
+      reasoningKind: "raw",
+      messages: [updatedRaw.message],
+    });
+
+    const nextUser = answerEntry("next-prompt", "2026-01-01T00:00:03Z", "turn-2");
+    nextUser.message.role = "user" as never;
+    nextUser.message.turnId = null as never;
+    const nextRaw = reasoningEntry("reasoning:raw:next", "2026-01-01T00:00:04Z", null);
+    const nextRows = deriveMessagesTimelineRows({
+      ...input,
+      timelineEntries: [user, summary, raw, nextUser, nextRaw],
+      activeTurnStartedAt: nextUser.createdAt,
+    });
+    expect(nextRows.find((row) => row.id === nextRaw.id)).toMatchObject({
+      kind: "reasoning-run",
+      reasoningKind: "summary",
+    });
+  });
+
+  it("shows Thinking after settled reasoning while a turn keeps running", () => {
+    const thought = reasoningEntry("reasoning:summary:settled", "2026-01-01T00:00:01Z", "turn-1");
+    const commentary = answerEntry("commentary", "2026-01-01T00:00:02Z", "turn-1");
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [thought, commentary],
+      runningTurnId: TurnId.make("turn-1"),
+      isWorking: true,
+      activeTurnStartedAt: "2026-01-01T00:00:00Z",
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
+    });
+    expect(rows.at(-1)).toMatchObject({ kind: "thinking", id: "live-activity-row" });
+  });
+
   it("renders reasoning between adjacent tool groups in turn order", () => {
     const first = reasoningEntry("thought-first", "2026-01-01T00:00:01Z", "turn-1");
     const tools = [

@@ -285,35 +285,42 @@ export type TimelineLatestTurn = Pick<
 
 const LIVE_ACTIVITY_ROW_ID = "live-activity-row";
 
-interface ReasoningTurnStats {
+interface ReasoningResponseStats {
   hasSummary: boolean;
 }
 
-function reasoningStatsByTurn(
+function reasoningStatsByMessage(
   entries: ReadonlyArray<TimelineEntry>,
-): Map<string, ReasoningTurnStats> {
-  const stats = new Map<string, ReasoningTurnStats>();
+): Map<string, ReasoningResponseStats> {
+  const statsByResponse = new Map<string, ReasoningResponseStats>();
+  const statsByMessageId = new Map<string, ReasoningResponseStats>();
+  let userBoundary = 0;
   for (const entry of entries) {
+    if (entry.kind === "message" && entry.message.role === "user") userBoundary += 1;
     if (entry.kind !== "message" || entry.message.role !== "reasoning") continue;
     const message = entry.message;
-    const key = message.turnId ?? message.id;
-    const turn = stats.get(key) ?? { hasSummary: false };
+    // Imported responses can lack a turn ID; the preceding user message bounds them.
+    const key = message.turnId ? `turn:${message.turnId}` : `unkeyed:${userBoundary}`;
+    const response = statsByResponse.get(key) ?? { hasSummary: false };
     if (message.id.startsWith("reasoning:summary:") || message.id.startsWith("assistant:")) {
-      turn.hasSummary = true;
+      response.hasSummary = true;
     }
-    stats.set(key, turn);
+    statsByResponse.set(key, response);
+    statsByMessageId.set(message.id, response);
   }
-  return stats;
+  return statsByMessageId;
 }
 
 export function reasoningDisplayKind(
   message: ChatMessage,
-  turn: ReasoningTurnStats,
+  response: ReasoningResponseStats,
 ): "summary" | "raw" {
   if (message.id.startsWith("reasoning:summary:") || message.id.startsWith("assistant:")) {
     return "summary";
   }
-  return turn.hasSummary || message.text.length > 2_000 || message.text.split("\n", 26).length > 25
+  return response.hasSummary ||
+    message.text.length > 2_000 ||
+    message.text.split("\n", 26).length > 25
     ? "raw"
     : "summary";
 }
@@ -1126,12 +1133,9 @@ export function deriveMessagesTimelineRows(input: {
     hasActivityRow ||= activeWorkRow.active;
   };
 
-  const reasoningTurns = reasoningStatsByTurn(input.timelineEntries);
+  const reasoningStats = reasoningStatsByMessage(input.timelineEntries);
   const displayKind = (message: ChatMessage) =>
-    reasoningDisplayKind(
-      message,
-      reasoningTurns.get(message.turnId ?? message.id) ?? { hasSummary: false },
-    );
+    reasoningDisplayKind(message, reasoningStats.get(message.id) ?? { hasSummary: false });
 
   for (let index = 0; index < input.timelineEntries.length; index += 1) {
     const timelineEntry = input.timelineEntries[index];
@@ -1352,7 +1356,9 @@ export function deriveMessagesTimelineRows(input: {
         reasoningKind,
         messages,
       });
-      hasActivityRow ||= entryBelongsToActiveTurn(timelineEntry, index);
+      hasActivityRow ||=
+        entryBelongsToActiveTurn(timelineEntry, index) &&
+        messages.some((message) => message.streaming);
       index = cursor - 1;
       continue;
     }
@@ -1509,8 +1515,8 @@ function replaceStreamingMessageRows(
     return null;
   }
   const replacements = new Map<ChatMessage, ChatMessage>();
-  let previousReasoningTurns: Map<string, ReasoningTurnStats> | null = null;
-  let nextReasoningTurns: Map<string, ReasoningTurnStats> | null = null;
+  let previousReasoningStats: Map<string, ReasoningResponseStats> | null = null;
+  let nextReasoningStats: Map<string, ReasoningResponseStats> | null = null;
   for (const [index, entry] of timelineEntries.entries()) {
     const previousEntry = previousEntries[index]!;
     if (entry === previousEntry) continue;
@@ -1525,17 +1531,15 @@ function replaceStreamingMessageRows(
     if (entry.message === previousEntry.message) continue;
     if (!isStreamingMessageTextUpdate(previousEntry.message, entry.message)) return null;
     if (entry.message.role === "reasoning") {
-      previousReasoningTurns ??= reasoningStatsByTurn(previousEntries);
-      nextReasoningTurns ??= reasoningStatsByTurn(timelineEntries);
-      const previousTurn = previousReasoningTurns.get(
-        previousEntry.message.turnId ?? previousEntry.message.id,
-      );
-      const nextTurn = nextReasoningTurns.get(entry.message.turnId ?? entry.message.id);
+      previousReasoningStats ??= reasoningStatsByMessage(previousEntries);
+      nextReasoningStats ??= reasoningStatsByMessage(timelineEntries);
+      const previousStats = previousReasoningStats.get(previousEntry.message.id);
+      const nextStats = nextReasoningStats.get(entry.message.id);
       if (
-        previousTurn &&
-        nextTurn &&
-        reasoningDisplayKind(previousEntry.message, previousTurn) !==
-          reasoningDisplayKind(entry.message, nextTurn)
+        previousStats &&
+        nextStats &&
+        reasoningDisplayKind(previousEntry.message, previousStats) !==
+          reasoningDisplayKind(entry.message, nextStats)
       ) {
         return null;
       }
