@@ -802,11 +802,12 @@ export function projectEvent(
         const cappedMessages = messages.slice(-MAX_THREAD_MESSAGES);
         const reclassifiedAssistant =
           existingMessage?.role === "assistant" && message.role === "reasoning";
-        const replacementAssistantMessageId = reclassifiedAssistant
-          ? (cappedMessages.findLast(
-              (entry) => entry.role === "assistant" && entry.turnId === message.turnId,
-            )?.id ?? null)
-          : null;
+        const replacementAssistantMessageId =
+          reclassifiedAssistant && message.turnId !== null
+            ? (cappedMessages.findLast(
+                (entry) => entry.role === "assistant" && entry.turnId === message.turnId,
+              )?.id ?? null)
+            : null;
         const latestTurn =
           reclassifiedAssistant && thread.latestTurn?.assistantMessageId === message.id
             ? { ...thread.latestTurn, assistantMessageId: replacementAssistantMessageId }

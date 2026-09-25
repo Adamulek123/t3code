@@ -413,11 +413,12 @@ export function applyThreadDetailEvent(
       const reclassifiedAssistant =
         message.role === "reasoning" &&
         thread.messages.some((entry) => entry.id === message.id && entry.role === "assistant");
-      const replacementAssistantMessageId = reclassifiedAssistant
-        ? (messages.findLast(
-            (entry) => entry.role === "assistant" && entry.turnId === message.turnId,
-          )?.id ?? null)
-        : null;
+      const replacementAssistantMessageId =
+        reclassifiedAssistant && message.turnId !== null
+          ? (messages.findLast(
+              (entry) => entry.role === "assistant" && entry.turnId === message.turnId,
+            )?.id ?? null)
+          : null;
       // Update latestTurn for assistant messages bound to a turn. A completed
       // assistant message only settles the turn once the session is no longer
       // running it — providers may emit several assistant messages per turn
