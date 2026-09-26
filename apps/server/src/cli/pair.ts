@@ -23,6 +23,7 @@ import {
   readTailscaleStatus,
 } from "@t3tools/tailscale";
 import * as Config from "effect/Config";
+import * as Clock from "effect/Clock";
 import * as Console from "effect/Console";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -214,30 +215,33 @@ type EnvironmentProbeResult =
   | { readonly _tag: "unreachable" }
   | { readonly _tag: "not-a-t3-server" };
 
-const readBoundedProbeBody = (ok: HttpClientResponse.HttpClientResponse) =>
-  ok.stream.pipe(
-    Stream.runFoldEffect(
-      () => ({ bytes: 0, chunks: [] as Array<Uint8Array> }),
-      (acc, chunk) => {
-        if (acc.bytes + chunk.byteLength > MAX_PROBE_BODY_BYTES) {
-          return Effect.fail({ _tag: "not-a-t3-server" } as const);
+const readBoundedProbeBody = (ok: HttpClientResponse.HttpClientResponse, deadline: number) =>
+  Effect.gen(function* () {
+    const remaining = Math.max(0, deadline - (yield* Clock.currentTimeMillis));
+    return yield* ok.stream.pipe(
+      Stream.runFoldEffect(
+        () => ({ bytes: 0, chunks: [] as Array<Uint8Array> }),
+        (acc, chunk) => {
+          if (acc.bytes + chunk.byteLength > MAX_PROBE_BODY_BYTES) {
+            return Effect.fail({ _tag: "not-a-t3-server" } as const);
+          }
+          acc.bytes += chunk.byteLength;
+          acc.chunks.push(chunk);
+          return Effect.succeed(acc);
+        },
+      ),
+      Effect.map(({ bytes, chunks }) => {
+        const merged = new Uint8Array(bytes);
+        let offset = 0;
+        for (const chunk of chunks) {
+          merged.set(chunk, offset);
+          offset += chunk.byteLength;
         }
-        acc.bytes += chunk.byteLength;
-        acc.chunks.push(chunk);
-        return Effect.succeed(acc);
-      },
-    ),
-    Effect.map(({ bytes, chunks }) => {
-      const merged = new Uint8Array(bytes);
-      let offset = 0;
-      for (const chunk of chunks) {
-        merged.set(chunk, offset);
-        offset += chunk.byteLength;
-      }
-      return new TextDecoder().decode(merged);
-    }),
-    Effect.timeout(PAIR_PROBE_TIMEOUT),
-  );
+        return new TextDecoder().decode(merged);
+      }),
+      Effect.timeout(Duration.millis(remaining)),
+    );
+  });
 
 const probeEnvironmentDescriptor = (
   baseUrl: string,
@@ -245,6 +249,7 @@ const probeEnvironmentDescriptor = (
   Effect.gen(function* () {
     const client = yield* HttpClient.HttpClient;
     const request = HttpClientRequest.get(new URL(WELL_KNOWN_ENVIRONMENT_PATH, baseUrl).toString());
+    const deadline = (yield* Clock.currentTimeMillis) + Duration.toMillis(PAIR_PROBE_TIMEOUT);
     const response = yield* client.execute(request).pipe(
       Effect.timeout(PAIR_PROBE_TIMEOUT),
       // Transport failure or timeout: nothing (reachable) is listening there.
@@ -257,7 +262,7 @@ const probeEnvironmentDescriptor = (
     // connection is reusable for the re-configured mapping; the drain itself
     // is time-bounded and best-effort.
     if (response.status === 502 || response.status === 503 || response.status === 504) {
-      yield* Effect.ignore(readBoundedProbeBody(response));
+      yield* Effect.ignore(readBoundedProbeBody(response, deadline));
       return { _tag: "unreachable" } as const;
     }
     // Anything else that answered HTTP but not with a valid descriptor is
@@ -269,22 +274,18 @@ const probeEnvironmentDescriptor = (
     const contentType = response.headers["content-type"] ?? "";
     const mediaType = contentType.split(";", 1)[0]?.trim().toLowerCase();
     if (mediaType !== "application/json" && !mediaType?.endsWith("+json")) {
-      yield* Effect.ignore(readBoundedProbeBody(response));
+      yield* Effect.ignore(readBoundedProbeBody(response, deadline));
       return { _tag: "not-a-t3-server" } as const;
     }
     // A non-2xx answer is still a stranger, but its body must be drained
     // boundedly for the same reason: an unconsumed stream pins the pooled
     // connection across repeated probes.
     if (response.status < 200 || response.status >= 300) {
-      yield* Effect.ignore(readBoundedProbeBody(response));
+      yield* Effect.ignore(readBoundedProbeBody(response, deadline));
       return { _tag: "not-a-t3-server" } as const;
     }
-    const descriptor = yield* readBoundedProbeBody(response).pipe(
-      Effect.flatMap((body) =>
-        decodeProbeDescriptor(body).pipe(
-          Effect.mapError(() => ({ _tag: "not-a-t3-server" }) as const),
-        ),
-      ),
+    const descriptor = yield* readBoundedProbeBody(response, deadline).pipe(
+      Effect.flatMap(decodeProbeDescriptor),
       Effect.mapError(() => ({ _tag: "not-a-t3-server" }) as const),
     );
     return { _tag: "descriptor", descriptor } as const;

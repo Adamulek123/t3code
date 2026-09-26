@@ -506,46 +506,54 @@ describe("t3 pair", () => {
     ).pipe(Effect.provide(NodeServices.layer)),
   );
 
-  it.effect("pairs when the descriptor arrives with an uppercase JSON content type", () =>
-    Effect.acquireUseRelease(
-      Effect.callback<NodeHttp.Server>((resume) => {
-        const server = NodeHttp.createServer((request, response) => {
-          if (request.url === "/.well-known/t3/environment") {
-            response.writeHead(200, { "content-type": "Application/JSON; charset=utf-8" });
-            response.end(JSON.stringify(testDescriptor));
-            return;
-          }
-          response.writeHead(404);
-          response.end();
-        });
-        server.listen(0, "127.0.0.1", () => resume(Effect.succeed(server)));
-      }),
-      (server) =>
-        Effect.gen(function* () {
-          const address = server.address();
-          if (address === null || typeof address === "string") {
-            return Effect.die(new Error("Expected a TCP address"));
-          }
-          const baseDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-pair-ctype-test-"));
-          const statePath = NodePath.join(baseDir, "userdata", "server-runtime.json");
-          yield* persistServerRuntimeState({
-            path: statePath,
-            state: yield* makePersistedServerRuntimeState({
-              config: { host: "127.0.0.1", devUrl: undefined },
-              port: address.port,
-            }),
+  it.effect.each(["Application/JSON; charset=utf-8", "application/vnd.t3+json"])(
+    "pairs when the descriptor arrives with content type %s",
+    (contentType) =>
+      Effect.acquireUseRelease(
+        Effect.callback<NodeHttp.Server>((resume) => {
+          const server = NodeHttp.createServer((request, response) => {
+            if (request.url === "/.well-known/t3/environment") {
+              response.writeHead(200, { "content-type": contentType });
+              response.end(JSON.stringify(testDescriptor));
+              return;
+            }
+            response.writeHead(404);
+            response.end();
           });
-
-          const output = yield* captureStdout(runCli(["pair", "--base-dir", baseDir]));
-
-          assert.include(output, "Pairing with pair-test (");
-          assert.include(output, "/pair#token=");
+          server.listen(0, "127.0.0.1", () => resume(Effect.succeed(server)));
         }),
-      (server) => Effect.sync(() => server.close()),
-    ).pipe(Effect.provide(NodeServices.layer)),
+        (server) =>
+          Effect.gen(function* () {
+            const address = server.address();
+            if (address === null || typeof address === "string") {
+              return Effect.die(new Error("Expected a TCP address"));
+            }
+            const baseDir = NodeFS.mkdtempSync(
+              NodePath.join(NodeOS.tmpdir(), "t3-pair-ctype-test-"),
+            );
+            const statePath = NodePath.join(baseDir, "userdata", "server-runtime.json");
+            yield* persistServerRuntimeState({
+              path: statePath,
+              state: yield* makePersistedServerRuntimeState({
+                config: { host: "127.0.0.1", devUrl: undefined },
+                port: address.port,
+              }),
+            });
+
+            const output = yield* captureStdout(runCli(["pair", "--base-dir", baseDir]));
+
+            assert.include(output, "Pairing with pair-test (");
+            assert.include(output, "/pair#token=");
+          }),
+        (server) => Effect.sync(() => server.close()),
+      ).pipe(Effect.provide(NodeServices.layer)),
   );
 
-  it.live("times out a slow-drip stranger body instead of hanging discovery", () => {
+  it.live.each([
+    { status: 200, contentType: "application/json" },
+    { status: 200, contentType: "text/html" },
+    { status: 500, contentType: "application/json" },
+  ])("times out a slow-drip $status $contentType body", ({ status, contentType }) => {
     // Handoff from the raw Node request handler below: it holds the response
     // open so the test fiber can drip into it. Completed synchronously from
     // the callback via `doneUnsafe`, so no manual Effect runtime is created
@@ -555,7 +563,7 @@ describe("t3 pair", () => {
       Effect.callback<NodeHttp.Server>((resume) => {
         const server = NodeHttp.createServer((request, response) => {
           if (request.url === "/.well-known/t3/environment") {
-            response.writeHead(200, { "content-type": "application/json" });
+            response.writeHead(status, { "content-type": contentType });
             // A never-ending drip that stays under the size cap: discovery
             // must give up via the body timeout rather than hang on the open
             // stream.
@@ -643,6 +651,35 @@ describe("t3 pair", () => {
 });
 
 describe("pair discovery order", () => {
+  it.effect("shares the probe deadline between headers and body", () =>
+    Effect.gen(function* () {
+      const { baseDir } = yield* makeDiscoveryFixture;
+      const firstRequest = yield* Deferred.make<void>();
+      const client = HttpClient.make((request) =>
+        Effect.gen(function* () {
+          yield* Deferred.succeed(firstRequest, undefined);
+          yield* Effect.sleep("2 seconds");
+          return HttpClientResponse.fromWeb(
+            request,
+            new Response(new ReadableStream<Uint8Array>(), {
+              headers: { "content-type": "application/json" },
+            }),
+          );
+        }),
+      );
+      const fiber = yield* discoverPairTarget(baseDir).pipe(
+        Effect.provideService(HttpClient.HttpClient, client),
+        Effect.flip,
+        Effect.forkScoped,
+      );
+      yield* Deferred.await(firstRequest);
+      yield* TestClock.adjust("2 seconds");
+      yield* TestClock.adjust("500 millis");
+      const error = yield* Fiber.join(fiber);
+      expect(error._tag).toBe("NoRunningServerError");
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it.effect.each([
     { status: 200, winner: "userdata" },
     { status: 503, winner: "dev" },
