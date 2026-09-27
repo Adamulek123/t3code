@@ -1519,14 +1519,17 @@ export const make = Effect.gen(function* () {
     }).pipe(Effect.orElseSucceed(() => null));
   });
 
-  const findExactPublishedBranchRemote = Effect.fn("findExactPublishedBranchRemote")(function* (
+  // A no-upstream branch may have local commits after its last push. Prefer a
+  // unique exact ref, then a unique remote tip in its history; never break a
+  // fork tie by remote order.
+  const findPublishedBranchRemote = Effect.fn("findPublishedBranchRemote")(function* (
     cwd: string,
     branch: string,
   ) {
     const localRef = `refs/heads/${branch}`;
     const remoteRefSuffix = `/${branch}`;
     const refs = yield* gitCore.execute({
-      operation: "GitManager.findExactPublishedBranchRemote",
+      operation: "GitManager.findPublishedBranchRemote",
       cwd,
       args: [
         "for-each-ref",
@@ -1539,17 +1542,35 @@ export const make = Effect.gen(function* () {
     const entries = refs.stdout
       .split("\n")
       .map((line) => line.trim().split("\u0000"))
-      .filter((entry) => entry.length === 2);
+      .filter((entry): entry is [string, string] => entry.length === 2);
     const localOid = entries.find(([ref]) => ref === localRef)?.[1];
     if (!localOid) return null;
 
-    const matchingRemotes = entries.flatMap(([ref, oid]) =>
-      ref?.startsWith("refs/remotes/") && ref.endsWith(remoteRefSuffix) && oid === localOid
-        ? [ref.slice("refs/remotes/".length, -remoteRefSuffix.length)]
+    const remoteRefs = entries.flatMap(([ref, oid]) =>
+      ref.startsWith("refs/remotes/") && ref.endsWith(remoteRefSuffix)
+        ? [{ name: ref.slice("refs/remotes/".length, -remoteRefSuffix.length), oid }]
         : [],
     );
-    const [remoteName] = matchingRemotes;
-    if (matchingRemotes.length !== 1 || remoteName === undefined) return null;
+    const exactRemotes = remoteRefs.filter((remote) => remote.oid === localOid);
+    if (exactRemotes.length > 1) return null;
+    let remoteName = exactRemotes[0]?.name;
+    if (remoteName === undefined) {
+      const ancestorRemotes = yield* Effect.forEach(remoteRefs, (remote) =>
+        gitCore
+          .execute({
+            operation: "GitManager.findPublishedBranchRemote.ancestor",
+            cwd,
+            args: ["merge-base", "--is-ancestor", remote.oid, localOid],
+            allowNonZeroExit: true,
+            timeoutMs: 5_000,
+          })
+          .pipe(Effect.map((result) => (result.exitCode === 0 ? remote.name : null))),
+      );
+      const matches = ancestorRemotes.filter((name) => name !== null);
+      if (matches.length !== 1) return null;
+      remoteName = matches[0];
+    }
+    if (remoteName === undefined) return null;
     const remoteUrl = yield* readConfigValueNullable(cwd, `remote.${remoteName}.url`);
     return remoteUrl === null ? null : remoteName;
   });
@@ -1577,7 +1598,7 @@ export const make = Effect.gen(function* () {
   ) {
     const headContext = yield* resolveBranchHeadContext(cwd, details);
     if (details.upstreamRef === null && headContext.remoteName === null) {
-      const remoteName = yield* findExactPublishedBranchRemote(cwd, details.branch).pipe(
+      const remoteName = yield* findPublishedBranchRemote(cwd, details.branch).pipe(
         Effect.orElseSucceed(() => null),
       );
       if (remoteName !== null) {

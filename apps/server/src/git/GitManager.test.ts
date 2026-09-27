@@ -1396,7 +1396,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
         forkDir,
       );
 
-      const { manager, ghCalls } = yield* makeManager({
+      const { manager } = yield* makeManager({
         ghScenario: {
           prListByHeadSelector: {
             // @effect-diagnostics-next-line preferSchemaOverJson:off
@@ -1434,7 +1434,40 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       });
       expect(pullRequest?.number).toBe(41);
       expect((yield* manager.status({ cwd: repoDir })).pr?.number).toBe(41);
-      expect(ghCalls.some((call) => call.includes("--head feature/no-upstream-fork"))).toBe(true);
+
+      yield* runGit(repoDir, ["commit", "--allow-empty", "-m", "Continue feature"]);
+      const localHead = yield* runGit(repoDir, ["rev-parse", "HEAD"]);
+      const pushedHead = yield* runGit(repoDir, [
+        "rev-parse",
+        "refs/remotes/fork/feature/no-upstream-fork",
+      ]);
+      expect(localHead.stdout.trim()).not.toBe(pushedHead.stdout.trim());
+      const { manager: aheadManager } = yield* makeManager({
+        ghScenario: {
+          prListByHeadSelector: {
+            // @effect-diagnostics-next-line preferSchemaOverJson:off
+            "feature/no-upstream-fork": JSON.stringify([
+              {
+                number: 41,
+                title: "Our fork's PR",
+                url: "https://github.com/pingdotgg/codething-mvp/pull/41",
+                baseRefName: "main",
+                headRefName: "feature/no-upstream-fork",
+                state: "OPEN",
+                isCrossRepository: true,
+                headRepository: { nameWithOwner: "contributor/codething-mvp" },
+                headRepositoryOwner: { login: "contributor" },
+              },
+            ]),
+          },
+        },
+      });
+      expect(
+        (yield* aheadManager.branchPullRequest({
+          cwd: repoDir,
+          branch: "feature/no-upstream-fork",
+        }))?.number,
+      ).toBe(41);
     }),
   );
 
