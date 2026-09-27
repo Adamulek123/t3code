@@ -90,6 +90,10 @@ make your first commit before pushing.
 Use a thread's Git actions to commit, push, and create a pull request. T3 Code can generate commit
 messages, review titles, and descriptions from your changes.
 
+An existing fork PR can appear beside the branch even if you pushed without setting an upstream.
+If its badge is missing because several remotes hold that branch, set the branch's upstream to
+the intended remote with `git branch --set-upstream-to=<remote>/<branch>`.
+
 Choose the writing style and model in **Settings → Source Control**. **Repository conventions**
 uses the project's instructions and recent commit subjects.
 
@@ -155,8 +159,6 @@ Agents can link their pull requests with the `link_pull_request` tool.
 Use **Link this PR** in a branch-detected badge's tooltip to keep it with the thread. From a review
 on the Pull Requests page, **Link to thread** lets you search for an active thread. The review header
 also lists the threads that link to it, including archived threads, so you can return to their context.
-If a branch has no upstream, T3 Code can still detect its PR when one remote has the same branch
-at the current commit. If several remotes match, set the branch's upstream to the intended remote.
 
 Thread badges show a stack's layer count or the current review number with a count of additional
 links. On mobile, the Git overview lists linked reviews and their stacks; tap a review to open it.
