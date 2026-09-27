@@ -1485,7 +1485,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
     }),
   );
 
-  it.effect("does not guess a fork when two remotes hold the same untracked branch", () =>
+  it.effect("prefers an exact fork ref but does not guess between equal refs", () =>
     Effect.gen(function* () {
       const repoDir = yield* makeTempDir("t3code-git-manager-");
       yield* initRepo(repoDir);
@@ -2030,9 +2030,11 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
   );
 
   it.effect.each([
-    "git@gitlab.com:Group/Subgroup/Fork.git",
-    "https://gitlab.com/Group/Subgroup/Fork.git",
-  ])("matches nested GitLab forks through the adapter for %s", (remoteUrl) =>
+    { remoteUrl: "git@gitlab.com:Group/Subgroup/Fork.git", setUpstream: true },
+    { remoteUrl: "git@gitlab.com:Group/Subgroup/Fork.git", setUpstream: false },
+    { remoteUrl: "https://gitlab.com/Group/Subgroup/Fork.git", setUpstream: true },
+    { remoteUrl: "https://gitlab.com/Group/Subgroup/Fork.git", setUpstream: false },
+  ] as const)("matches GitLab forks for $remoteUrl/$setUpstream", ({ remoteUrl, setUpstream }) =>
     Effect.gen(function* () {
       const repoDir = yield* makeTempDir("t3code-git-manager-");
       yield* initRepo(repoDir);
@@ -2043,7 +2045,13 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       yield* runGit(repoDir, ["push", "-u", "origin", "main"]);
       yield* runGit(repoDir, ["remote", "add", "fork", forkDir]);
       yield* runGit(repoDir, ["checkout", "-b", branch]);
-      yield* runGit(repoDir, ["push", "-u", "fork", branch]);
+      yield* runGit(repoDir, ["push", ...(setUpstream ? ["-u"] : []), "fork", branch]);
+      const upstream = yield* runGit(repoDir, [
+        "for-each-ref",
+        "--format=%(upstream:short)",
+        `refs/heads/${branch}`,
+      ]);
+      expect(upstream.stdout.trim()).toBe(setUpstream ? `fork/${branch}` : "");
       yield* configureVisibleRemoteUrlWithLocalRewrite(
         repoDir,
         "origin",
