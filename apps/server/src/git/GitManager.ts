@@ -1519,6 +1519,41 @@ export const make = Effect.gen(function* () {
     }).pipe(Effect.orElseSucceed(() => null));
   });
 
+  const findExactPublishedBranchRemote = Effect.fn("findExactPublishedBranchRemote")(function* (
+    cwd: string,
+    branch: string,
+  ) {
+    const localRef = `refs/heads/${branch}`;
+    const remoteRefSuffix = `/${branch}`;
+    const refs = yield* gitCore.execute({
+      operation: "GitManager.findExactPublishedBranchRemote",
+      cwd,
+      args: [
+        "for-each-ref",
+        "--format=%(refname)%00%(objectname)",
+        localRef,
+        `refs/remotes/*/${branch}`,
+      ],
+      timeoutMs: 5_000,
+    });
+    const entries = refs.stdout
+      .split("\n")
+      .map((line) => line.trim().split("\u0000"))
+      .filter((entry) => entry.length === 2);
+    const localOid = entries.find(([ref]) => ref === localRef)?.[1];
+    if (!localOid) return null;
+
+    const matchingRemotes = entries.flatMap(([ref, oid]) =>
+      ref?.startsWith("refs/remotes/") && ref.endsWith(remoteRefSuffix) && oid === localOid
+        ? [ref.slice("refs/remotes/".length, -remoteRefSuffix.length)]
+        : [],
+    );
+    const [remoteName] = matchingRemotes;
+    if (matchingRemotes.length !== 1 || remoteName === undefined) return null;
+    const remoteUrl = yield* readConfigValueNullable(cwd, `remote.${remoteName}.url`);
+    return remoteUrl === null ? null : remoteName;
+  });
+
   // `git worktree add -b feature origin/main` makes the new local branch track
   // origin/main. That upstream is the branch's base, not its published PR
   // head. Looking up PRs for it can attach an old reverse merge from main and
@@ -1541,6 +1576,17 @@ export const make = Effect.gen(function* () {
     },
   ) {
     const headContext = yield* resolveBranchHeadContext(cwd, details);
+    if (details.upstreamRef === null && headContext.remoteName === null) {
+      const remoteName = yield* findExactPublishedBranchRemote(cwd, details.branch).pipe(
+        Effect.orElseSucceed(() => null),
+      );
+      if (remoteName !== null) {
+        return {
+          headContext: yield* resolveBranchHeadContext(cwd, { ...details, remoteName }),
+          lookup: true,
+        };
+      }
+    }
     const upstreamHeadIsDefault =
       headContext.headBranch === details.defaultBranch ||
       (details.defaultBranch === null &&

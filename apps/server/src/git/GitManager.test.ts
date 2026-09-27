@@ -1372,6 +1372,132 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
     }),
   );
 
+  it.effect("finds a fork PR for a branch pushed without an upstream", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      const originDir = yield* createBareRemote();
+      const forkDir = yield* createBareRemote();
+      yield* runGit(repoDir, ["remote", "add", "origin", originDir]);
+      yield* runGit(repoDir, ["push", "-u", "origin", "main"]);
+      yield* runGit(repoDir, ["remote", "add", "fork", forkDir]);
+      yield* runGit(repoDir, ["checkout", "-b", "feature/no-upstream-fork"]);
+      yield* runGit(repoDir, ["push", "fork", "feature/no-upstream-fork"]);
+      yield* configureVisibleRemoteUrlWithLocalRewrite(
+        repoDir,
+        "origin",
+        "git@github.com:pingdotgg/codething-mvp.git",
+        originDir,
+      );
+      yield* configureVisibleRemoteUrlWithLocalRewrite(
+        repoDir,
+        "fork",
+        "git@github.com:contributor/codething-mvp.git",
+        forkDir,
+      );
+
+      const { manager, ghCalls } = yield* makeManager({
+        ghScenario: {
+          prListByHeadSelector: {
+            // @effect-diagnostics-next-line preferSchemaOverJson:off
+            "feature/no-upstream-fork": JSON.stringify([
+              {
+                number: 40,
+                title: "Another fork's PR",
+                url: "https://github.com/pingdotgg/codething-mvp/pull/40",
+                baseRefName: "main",
+                headRefName: "feature/no-upstream-fork",
+                state: "OPEN",
+                isCrossRepository: true,
+                headRepository: { nameWithOwner: "someone-else/codething-mvp" },
+                headRepositoryOwner: { login: "someone-else" },
+              },
+              {
+                number: 41,
+                title: "Our fork's PR",
+                url: "https://github.com/pingdotgg/codething-mvp/pull/41",
+                baseRefName: "main",
+                headRefName: "feature/no-upstream-fork",
+                state: "OPEN",
+                isCrossRepository: true,
+                headRepository: { nameWithOwner: "contributor/codething-mvp" },
+                headRepositoryOwner: { login: "contributor" },
+              },
+            ]),
+          },
+        },
+      });
+
+      const pullRequest = yield* manager.branchPullRequest({
+        cwd: repoDir,
+        branch: "feature/no-upstream-fork",
+      });
+      expect(pullRequest?.number).toBe(41);
+      expect((yield* manager.status({ cwd: repoDir })).pr?.number).toBe(41);
+      expect(ghCalls.some((call) => call.includes("--head feature/no-upstream-fork"))).toBe(true);
+    }),
+  );
+
+  it.effect("does not guess a fork when two remotes hold the same untracked branch", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      const originDir = yield* createBareRemote();
+      const firstForkDir = yield* createBareRemote();
+      const secondForkDir = yield* createBareRemote();
+      yield* runGit(repoDir, ["remote", "add", "origin", originDir]);
+      yield* runGit(repoDir, ["push", "-u", "origin", "main"]);
+      yield* runGit(repoDir, ["remote", "add", "first-fork", firstForkDir]);
+      yield* runGit(repoDir, ["remote", "add", "second-fork", secondForkDir]);
+      yield* runGit(repoDir, ["checkout", "-b", "feature/ambiguous-fork"]);
+      yield* runGit(repoDir, ["push", "first-fork", "feature/ambiguous-fork"]);
+      yield* runGit(repoDir, ["push", "second-fork", "feature/ambiguous-fork"]);
+      yield* configureVisibleRemoteUrlWithLocalRewrite(
+        repoDir,
+        "origin",
+        "git@github.com:pingdotgg/codething-mvp.git",
+        originDir,
+      );
+      yield* configureVisibleRemoteUrlWithLocalRewrite(
+        repoDir,
+        "first-fork",
+        "git@github.com:contributor/codething-mvp.git",
+        firstForkDir,
+      );
+      yield* configureVisibleRemoteUrlWithLocalRewrite(
+        repoDir,
+        "second-fork",
+        "git@github.com:someone-else/codething-mvp.git",
+        secondForkDir,
+      );
+
+      const { manager } = yield* makeManager({
+        ghScenario: {
+          prListByHeadSelector: {
+            // @effect-diagnostics-next-line preferSchemaOverJson:off
+            "feature/ambiguous-fork": JSON.stringify([
+              {
+                number: 41,
+                title: "One fork's PR",
+                url: "https://github.com/pingdotgg/codething-mvp/pull/41",
+                baseRefName: "main",
+                headRefName: "feature/ambiguous-fork",
+                state: "OPEN",
+                isCrossRepository: true,
+                headRepository: { nameWithOwner: "contributor/codething-mvp" },
+                headRepositoryOwner: { login: "contributor" },
+              },
+            ]),
+          },
+        },
+      });
+
+      expect(
+        yield* manager.branchPullRequest({ cwd: repoDir, branch: "feature/ambiguous-fork" }),
+      ).toBeNull();
+    }),
+  );
+
   it.effect("branch PR lookup does not reuse a cached PR after the remote is repointed", () =>
     Effect.gen(function* () {
       const repoDir = yield* makeTempDir("t3code-git-manager-");
