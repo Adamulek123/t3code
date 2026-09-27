@@ -1527,7 +1527,17 @@ export const make = Effect.gen(function* () {
     branch: string,
   ) {
     const localRef = `refs/heads/${branch}`;
-    const remoteRefSuffix = `/${branch}`;
+    const remoteNames = (yield* gitCore.execute({
+      operation: "GitManager.findPublishedBranchRemote.remotes",
+      cwd,
+      args: ["remote"],
+      timeoutMs: 5_000,
+    })).stdout
+      .split("\n")
+      .map((name) => name.trim())
+      .filter((name) => name.length > 0);
+    if (remoteNames.length === 0) return null;
+
     const refs = yield* gitCore.execute({
       operation: "GitManager.findPublishedBranchRemote",
       cwd,
@@ -1535,22 +1545,23 @@ export const make = Effect.gen(function* () {
         "for-each-ref",
         "--format=%(refname)%00%(objectname)",
         localRef,
-        `refs/remotes/*/${branch}`,
+        ...remoteNames.map((name) => `refs/remotes/${name}/${branch}`),
       ],
       timeoutMs: 5_000,
     });
-    const entries = refs.stdout
-      .split("\n")
-      .map((line) => line.trim().split("\u0000"))
-      .filter((entry): entry is [string, string] => entry.length === 2);
-    const localOid = entries.find(([ref]) => ref === localRef)?.[1];
+    const oidByRef = new Map(
+      refs.stdout
+        .split("\n")
+        .map((line) => line.trim().split("\u0000"))
+        .filter((entry): entry is [string, string] => entry.length === 2),
+    );
+    const localOid = oidByRef.get(localRef);
     if (!localOid) return null;
 
-    const remoteRefs = entries.flatMap(([ref, oid]) =>
-      ref.startsWith("refs/remotes/") && ref.endsWith(remoteRefSuffix)
-        ? [{ name: ref.slice("refs/remotes/".length, -remoteRefSuffix.length), oid }]
-        : [],
-    );
+    const remoteRefs = remoteNames.flatMap((name) => {
+      const oid = oidByRef.get(`refs/remotes/${name}/${branch}`);
+      return oid ? [{ name, oid }] : [];
+    });
     const exactRemotes = remoteRefs.filter((remote) => remote.oid === localOid);
     if (exactRemotes.length > 1) return null;
     let remoteName = exactRemotes[0]?.name;
@@ -1639,7 +1650,7 @@ export const make = Effect.gen(function* () {
    * terminal and agent pushes land), and configured upstream metadata survives
    * when a merged change request's remote branch is deleted. Together they
    * distinguish branches known to have reached a host from genuinely local
-   * branches. The ref glob spans every remote so a fork branch still counts. A
+   * branches. The remote ref check includes names containing slashes. A
    * repository that tracks no remotes at all cannot answer the question,
    * because then every branch looks unpublished; it, and any failed probe,
    * keeps the lookup.
@@ -1673,11 +1684,11 @@ export const make = Effect.gen(function* () {
         return false;
       }
 
-      const [tracksAnyRemote, tracksThisBranch] = yield* Effect.all(
-        [matchesRef("refs/remotes"), matchesRef(`refs/remotes/*/${headContext.headBranch}`)],
+      const [tracksAnyRemote, trackedRemote] = yield* Effect.all(
+        [matchesRef("refs/remotes"), findRemoteTrackingRemote(cwd, headContext.headBranch, null)],
         { concurrency: "unbounded" },
       );
-      return tracksAnyRemote && !tracksThisBranch;
+      return tracksAnyRemote && trackedRemote === null;
     }).pipe(Effect.orElseSucceed(() => false));
   });
 
