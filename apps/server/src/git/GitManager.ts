@@ -1242,8 +1242,21 @@ export const make = Effect.gen(function* () {
         ),
       ),
       Effect.map(({ pr }) => pr),
-      Effect.catch((error) =>
-        Effect.logWarning("PR lookup failed; keeping last known PR state.").pipe(
+      Effect.catch((error) => {
+        // No prior PR means there is no badge to preserve or remote to verify.
+        const fallback = lastKnownPrByBranchKey.get(branchKey)?.pr
+          ? resolveLookupHeadContext(cwd, details).pipe(
+              Effect.map(({ headContext }) =>
+                resolveLastKnownPr(branchKey, {
+                  upstreamRef: details.upstreamRef,
+                  headBranch: headContext.headBranch,
+                  remoteName: headContext.remoteName,
+                  headRemoteUrlKey: headContext.headRemoteUrlKey,
+                }),
+              ),
+            )
+          : Effect.succeed(null);
+        return Effect.logWarning("PR lookup failed; keeping last known PR state.").pipe(
           Effect.annotateLogs({
             operation: "lookupStatusPr",
             branch: details.branch,
@@ -1260,17 +1273,9 @@ export const make = Effect.gen(function* () {
                 }
               : {}),
           }),
-          Effect.andThen(resolveLookupHeadContext(cwd, details)),
-          Effect.map(({ headContext }) =>
-            resolveLastKnownPr(branchKey, {
-              upstreamRef: details.upstreamRef,
-              headBranch: headContext.headBranch,
-              remoteName: headContext.remoteName,
-              headRemoteUrlKey: headContext.headRemoteUrlKey,
-            }),
-          ),
-        ),
-      ),
+          Effect.andThen(fallback),
+        );
+      }),
     );
   });
   const readRemoteStatus = Effect.fn("readRemoteStatus")(function* (
@@ -1516,7 +1521,7 @@ export const make = Effect.gen(function* () {
       }
       if (matching.includes("origin")) return "origin";
       return matching[0] ?? null;
-    }).pipe(Effect.orElseSucceed(() => null));
+    });
   });
 
   // A no-upstream branch may have local commits after its last push. Prefer a
@@ -1630,7 +1635,11 @@ export const make = Effect.gen(function* () {
     ) {
       return { headContext, lookup: true };
     }
-    const remoteName = yield* findRemoteTrackingRemote(cwd, details.branch, headContext.remoteName);
+    const remoteName = yield* findRemoteTrackingRemote(
+      cwd,
+      details.branch,
+      headContext.remoteName,
+    ).pipe(Effect.orElseSucceed(() => null));
     if (remoteName === null) {
       return { headContext, lookup: false };
     }
