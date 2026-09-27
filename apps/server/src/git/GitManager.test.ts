@@ -1396,37 +1396,36 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
         forkDir,
       );
 
-      const { manager } = yield* makeManager({
-        ghScenario: {
-          prListByHeadSelector: {
-            // @effect-diagnostics-next-line preferSchemaOverJson:off
-            "feature/no-upstream-fork": JSON.stringify([
-              {
-                number: 40,
-                title: "Another fork's PR",
-                url: "https://github.com/pingdotgg/codething-mvp/pull/40",
-                baseRefName: "main",
-                headRefName: "feature/no-upstream-fork",
-                state: "OPEN",
-                isCrossRepository: true,
-                headRepository: { nameWithOwner: "someone-else/codething-mvp" },
-                headRepositoryOwner: { login: "someone-else" },
-              },
-              {
-                number: 41,
-                title: "Our fork's PR",
-                url: "https://github.com/pingdotgg/codething-mvp/pull/41",
-                baseRefName: "main",
-                headRefName: "feature/no-upstream-fork",
-                state: "OPEN",
-                isCrossRepository: true,
-                headRepository: { nameWithOwner: "contributor/codething-mvp" },
-                headRepositoryOwner: { login: "contributor" },
-              },
-            ]),
-          },
+      const ghScenario = {
+        prListByHeadSelector: {
+          // @effect-diagnostics-next-line preferSchemaOverJson:off
+          "feature/no-upstream-fork": JSON.stringify([
+            {
+              number: 40,
+              title: "Another fork's PR",
+              url: "https://github.com/pingdotgg/codething-mvp/pull/40",
+              baseRefName: "main",
+              headRefName: "feature/no-upstream-fork",
+              state: "OPEN",
+              isCrossRepository: true,
+              headRepository: { nameWithOwner: "someone-else/codething-mvp" },
+              headRepositoryOwner: { login: "someone-else" },
+            },
+            {
+              number: 41,
+              title: "Our fork's PR",
+              url: "https://github.com/pingdotgg/codething-mvp/pull/41",
+              baseRefName: "main",
+              headRefName: "feature/no-upstream-fork",
+              state: "OPEN",
+              isCrossRepository: true,
+              headRepository: { nameWithOwner: "contributor/codething-mvp" },
+              headRepositoryOwner: { login: "contributor" },
+            },
+          ]),
         },
-      });
+      };
+      const { manager } = yield* makeManager({ ghScenario });
 
       const pullRequest = yield* manager.branchPullRequest({
         cwd: repoDir,
@@ -1442,28 +1441,24 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
         "refs/remotes/fork/feature/no-upstream-fork",
       ]);
       expect(localHead.stdout.trim()).not.toBe(pushedHead.stdout.trim());
-      const { manager: aheadManager } = yield* makeManager({
-        ghScenario: {
-          prListByHeadSelector: {
-            // @effect-diagnostics-next-line preferSchemaOverJson:off
-            "feature/no-upstream-fork": JSON.stringify([
-              {
-                number: 41,
-                title: "Our fork's PR",
-                url: "https://github.com/pingdotgg/codething-mvp/pull/41",
-                baseRefName: "main",
-                headRefName: "feature/no-upstream-fork",
-                state: "OPEN",
-                isCrossRepository: true,
-                headRepository: { nameWithOwner: "contributor/codething-mvp" },
-                headRepositoryOwner: { login: "contributor" },
-              },
-            ]),
-          },
-        },
-      });
+      const { manager: aheadManager } = yield* makeManager({ ghScenario });
       expect(
         (yield* aheadManager.branchPullRequest({
+          cwd: repoDir,
+          branch: "feature/no-upstream-fork",
+        }))?.number,
+      ).toBe(41);
+
+      yield* runGit(repoDir, ["config", "branch.feature/no-upstream-fork.remote", "origin"]);
+      const upstream = yield* runGit(repoDir, [
+        "for-each-ref",
+        "--format=%(upstream:short)",
+        "refs/heads/feature/no-upstream-fork",
+      ]);
+      expect(upstream.stdout.trim()).toBe("");
+      const { manager: staleRemoteManager } = yield* makeManager({ ghScenario });
+      expect(
+        (yield* staleRemoteManager.branchPullRequest({
           cwd: repoDir,
           branch: "feature/no-upstream-fork",
         }))?.number,

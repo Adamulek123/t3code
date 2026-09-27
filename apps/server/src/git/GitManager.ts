@@ -1608,11 +1608,11 @@ export const make = Effect.gen(function* () {
     },
   ) {
     const headContext = yield* resolveBranchHeadContext(cwd, details);
-    if (details.upstreamRef === null && headContext.remoteName === null) {
+    if (details.upstreamRef === null) {
       const remoteName = yield* findPublishedBranchRemote(cwd, details.branch).pipe(
         Effect.orElseSucceed(() => null),
       );
-      if (remoteName !== null) {
+      if (remoteName !== null && remoteName !== headContext.remoteName) {
         return {
           headContext: yield* resolveBranchHeadContext(cwd, { ...details, remoteName }),
           lookup: true,
