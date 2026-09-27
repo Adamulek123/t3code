@@ -1479,7 +1479,6 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       yield* runGit(repoDir, ["remote", "add", "second-fork", secondForkDir]);
       yield* runGit(repoDir, ["checkout", "-b", "feature/ambiguous-fork"]);
       yield* runGit(repoDir, ["push", "first-fork", "feature/ambiguous-fork"]);
-      yield* runGit(repoDir, ["push", "second-fork", "feature/ambiguous-fork"]);
       yield* configureVisibleRemoteUrlWithLocalRewrite(
         repoDir,
         "origin",
@@ -1499,27 +1498,34 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
         secondForkDir,
       );
 
-      const { manager } = yield* makeManager({
-        ghScenario: {
-          prListByHeadSelector: {
-            // @effect-diagnostics-next-line preferSchemaOverJson:off
-            "feature/ambiguous-fork": JSON.stringify([
-              {
-                number: 41,
-                title: "One fork's PR",
-                url: "https://github.com/pingdotgg/codething-mvp/pull/41",
-                baseRefName: "main",
-                headRefName: "feature/ambiguous-fork",
-                state: "OPEN",
-                isCrossRepository: true,
-                headRepository: { nameWithOwner: "contributor/codething-mvp" },
-                headRepositoryOwner: { login: "contributor" },
-              },
-            ]),
-          },
+      const ghScenario = {
+        prListByHeadSelector: {
+          // @effect-diagnostics-next-line preferSchemaOverJson:off
+          "feature/ambiguous-fork": JSON.stringify([
+            {
+              number: 41,
+              title: "One fork's PR",
+              url: "https://github.com/pingdotgg/codething-mvp/pull/41",
+              baseRefName: "main",
+              headRefName: "feature/ambiguous-fork",
+              state: "OPEN",
+              isCrossRepository: true,
+              headRepository: { nameWithOwner: "contributor/codething-mvp" },
+              headRepositoryOwner: { login: "contributor" },
+            },
+          ]),
         },
-      });
+      };
+      const { manager: singleRemoteManager } = yield* makeManager({ ghScenario });
+      expect(
+        (yield* singleRemoteManager.branchPullRequest({
+          cwd: repoDir,
+          branch: "feature/ambiguous-fork",
+        }))?.number,
+      ).toBe(41);
 
+      yield* runGit(repoDir, ["push", "second-fork", "feature/ambiguous-fork"]);
+      const { manager } = yield* makeManager({ ghScenario });
       expect(
         yield* manager.branchPullRequest({ cwd: repoDir, branch: "feature/ambiguous-fork" }),
       ).toBeNull();
