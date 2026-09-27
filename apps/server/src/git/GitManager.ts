@@ -1256,7 +1256,7 @@ export const make = Effect.gen(function* () {
               ),
             )
           : Effect.succeed(null);
-        return Effect.logWarning("PR lookup failed; keeping last known PR state.").pipe(
+        return Effect.logWarning("PR lookup failed.").pipe(
           Effect.annotateLogs({
             operation: "lookupStatusPr",
             branch: details.branch,
