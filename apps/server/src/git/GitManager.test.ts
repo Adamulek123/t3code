@@ -1448,6 +1448,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
           branch: "feature/no-upstream-fork",
         }))?.number,
       ).toBe(41);
+      expect((yield* aheadManager.status({ cwd: repoDir })).pr?.number).toBe(41);
 
       yield* runGit(repoDir, ["config", "branch.feature/no-upstream-fork.remote", "origin"]);
       const upstream = yield* runGit(repoDir, [
