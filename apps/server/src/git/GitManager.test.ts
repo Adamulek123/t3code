@@ -1464,6 +1464,24 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
           branch: "feature/no-upstream-fork",
         }))?.number,
       ).toBe(41);
+
+      yield* runGit(repoDir, ["config", "--unset", "branch.feature/no-upstream-fork.remote"]);
+      yield* runGit(repoDir, ["checkout", "-b", "diverged-push", "main"]);
+      yield* runGit(repoDir, ["commit", "--allow-empty", "-m", "Rewrite fork head"]);
+      yield* runGit(repoDir, [
+        "push",
+        "--force",
+        "fork",
+        "HEAD:refs/heads/feature/no-upstream-fork",
+      ]);
+      yield* runGit(repoDir, ["checkout", "feature/no-upstream-fork"]);
+      const { manager: divergedManager } = yield* makeManager({ ghScenario });
+      expect(
+        yield* divergedManager.branchPullRequest({
+          cwd: repoDir,
+          branch: "feature/no-upstream-fork",
+        }),
+      ).toBeNull();
     }),
   );
 
@@ -1530,6 +1548,16 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       expect(
         yield* manager.branchPullRequest({ cwd: repoDir, branch: "feature/ambiguous-fork" }),
       ).toBeNull();
+
+      yield* runGit(repoDir, ["commit", "--allow-empty", "-m", "Continue feature"]);
+      yield* runGit(repoDir, ["push", "first-fork", "feature/ambiguous-fork"]);
+      const { manager: exactManager } = yield* makeManager({ ghScenario });
+      expect(
+        (yield* exactManager.branchPullRequest({
+          cwd: repoDir,
+          branch: "feature/ambiguous-fork",
+        }))?.number,
+      ).toBe(41);
     }),
   );
 
