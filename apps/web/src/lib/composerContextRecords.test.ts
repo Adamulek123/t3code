@@ -19,9 +19,16 @@ import {
   asKnownContextRecord,
   attachmentContextRecord,
   buildMessageContext,
+  buildPendingPullRequestReferenceContext,
   composerContextImportLookupIds,
+  isPendingPullRequestReferenceContext,
   isPullRequestSummaryContext,
   isSameComposerContextPayload,
+  pastedPullRequestReferenceScope,
+  reviewCommentContextReference,
+  restoreFailedPastedPullRequestText,
+  shouldBlockPastedPullRequestSend,
+  unresolvedPastedPullRequestReferences,
   pullRequestContextDisplayState,
   pullRequestContextKindLabel,
   previewAnnotationContextLabel,
@@ -351,6 +358,143 @@ describe("composerContextRecords", () => {
         diff: "+const answer = 42;",
       }),
     ).toBe(false);
+  });
+
+  it("treats a folded pasted PR reference id as pending, and a resolved one as not", () => {
+    const pending = buildPendingPullRequestReferenceContext(11420);
+    expect(isPendingPullRequestReferenceContext(pending)).toBe(true);
+
+    const imported = reviewCommentFromRecord(
+      reviewCommentContextRecord({ ...pending, id: "pr-reference:11420" }),
+    );
+    expect(imported.id).not.toBe("pr-reference:11420");
+    expect(isPendingPullRequestReferenceContext(imported)).toBe(true);
+
+    const resolved = reviewCommentFromRecord(
+      reviewCommentContextRecord({
+        ...pending,
+        pullRequest: {
+          number: 11420,
+          title: "Fix the loader",
+          url: "https://github.com/t3code/t3/pull/11420",
+          headBranch: "fix/loader",
+          baseBranch: "main",
+          state: "open" as const,
+          isDraft: false,
+        },
+      }),
+    );
+    expect(isPendingPullRequestReferenceContext(resolved)).toBe(false);
+  });
+
+  it("collects unresolved pasted PR references by folded id, ignoring loaded clipboard records", () => {
+    const pending = buildPendingPullRequestReferenceContext(7);
+    const loaded = reviewCommentFromRecord(
+      reviewCommentContextRecord({
+        ...buildPendingPullRequestReferenceContext(9),
+        pullRequest: {
+          number: 9,
+          title: "Loaded record",
+          url: "https://github.com/t3code/t3/pull/9",
+          headBranch: "fix/loaded",
+          baseBranch: "main",
+          state: "open" as const,
+          isDraft: false,
+        },
+      }),
+    );
+    const plain = {
+      ...pending,
+      id: "other-review",
+      sectionId: "file:a.ts",
+      filePath: "a.ts",
+      rangeLabel: "L1",
+    };
+    const prompt = [
+      formatInlineContextReference(reviewCommentContextReference(pending)),
+      formatInlineContextReference(reviewCommentContextReference(loaded)),
+      formatInlineContextReference(reviewCommentContextReference(plain)),
+    ].join(" and ");
+
+    const unresolved = unresolvedPastedPullRequestReferences(prompt, [pending, loaded, plain]);
+    expect(unresolved.map((entry) => entry.number)).toEqual([7]);
+    expect(unresolved[0]?.contextId).toContain("pr-reference-7-");
+  });
+
+  it("does not resolve a missing reference from an unrelated chip with the same number", () => {
+    const pending = buildPendingPullRequestReferenceContext(7);
+    const prompt = formatInlineContextReference(reviewCommentContextReference(pending));
+    const unrelated = { ...pending, id: "unrelated", text: "A legacy summary" };
+    expect(unresolvedPastedPullRequestReferences(prompt, [unrelated])).toHaveLength(1);
+    expect(unresolvedPastedPullRequestReferences(prompt, [])).toHaveLength(1);
+    expect(unresolvedPastedPullRequestReferences("", [pending])).toEqual([]);
+  });
+
+  it("keeps the pasted PR number as text after a failed lookup without changing other chips", () => {
+    const pending = buildPendingPullRequestReferenceContext(7);
+    const reference = reviewCommentContextReference(pending);
+    const prompt = `Review ${formatInlineContextReference(reference)} and [file](t3-context://v1/file/file_1)`;
+    const unresolved = unresolvedPastedPullRequestReferences(prompt, [pending]);
+    const restored = restoreFailedPastedPullRequestText(
+      prompt,
+      new Set(unresolved.map((entry) => entry.contextId)),
+    );
+    expect(restored).toBe("Review #7 and [file](t3-context://v1/file/file_1)");
+    expect(unresolvedPastedPullRequestReferences(restored, [])).toEqual([]);
+  });
+
+  it("blocks send only until the pasted PR resolves or becomes plain text", () => {
+    const pending = buildPendingPullRequestReferenceContext(7);
+    const prompt = formatInlineContextReference(reviewCommentContextReference(pending));
+    const input = {
+      prompt,
+      reviewComments: [pending],
+      canResolve: true,
+      answeringPendingInput: false,
+    };
+    expect(shouldBlockPastedPullRequestSend(input)).toBe(true);
+    expect(shouldBlockPastedPullRequestSend({ ...input, canResolve: false })).toBe(false);
+    expect(shouldBlockPastedPullRequestSend({ ...input, answeringPendingInput: true })).toBe(false);
+    const resolved = {
+      ...pending,
+      pullRequest: {
+        number: 7,
+        title: "Resolved",
+        url: "https://github.com/t3code/t3/pull/7",
+        headBranch: "fix",
+        baseBranch: "main",
+        state: "open" as const,
+        isDraft: false,
+      },
+    };
+    expect(shouldBlockPastedPullRequestSend({ ...input, reviewComments: [resolved] })).toBe(false);
+    expect(shouldBlockPastedPullRequestSend({ ...input, prompt: "#7", reviewComments: [] })).toBe(
+      false,
+    );
+  });
+
+  it("rejects a pending record whose id only resembles a pasted PR reference", () => {
+    expect(
+      isPendingPullRequestReferenceContext({
+        ...buildPendingPullRequestReferenceContext(7),
+        id: "other_pr-reference-7-abcdef12",
+      }),
+    ).toBe(false);
+  });
+
+  it("keys the single-flight scope on environment, target, project, and repository", () => {
+    const base = {
+      environmentId: "env",
+      target: "draft",
+      projectId: "p",
+      repository: "Repo",
+    };
+    expect(pastedPullRequestReferenceScope(base)).toBe(
+      pastedPullRequestReferenceScope({ ...base, repository: "repo " }),
+    );
+    expect(pastedPullRequestReferenceScope(base)).not.toBe(
+      pastedPullRequestReferenceScope({ ...base, target: "thread:1" }),
+    );
   });
 
   it("builds a preview annotation record with element details and readable style changes", () => {

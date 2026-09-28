@@ -3,9 +3,14 @@ import { useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Alert } from "react-native";
-import type { EnvironmentId } from "@t3tools/contracts";
+import type { EnvironmentId, ProjectId } from "@t3tools/contracts";
 import { encodeComposerContextFragment } from "@t3tools/shared/composerContextClipboard";
-import { collectComposerContextReferences } from "@t3tools/shared/composerContextReferences";
+import {
+  collectComposerContextReferences,
+  replaceComposerContextReferences,
+  rewritePastedPullRequestMarkers,
+  selfConsistentPastedPullRequestNumber,
+} from "@t3tools/shared/composerContextReferences";
 import { ComposerEditor as NativeComposerEditor } from "../native/T3ComposerEditor";
 import type { ComposerEditorProps as NativeComposerEditorProps } from "../native/T3ComposerEditor";
 import {
@@ -17,10 +22,15 @@ import {
   insertComposerDraftText,
   rememberComposerDraftSelection,
   setComposerDraftContext,
+  setComposerDraftText,
   setComposerContextImporting,
   useComposerDraft,
 } from "../state/use-composer-drafts";
 import { importComposerContextClipboard } from "../lib/composerContextClipboard";
+import { pullRequestComposerContext } from "../lib/composerContext";
+import { pendingPastedPullRequestRecords } from "../lib/pastedPullRequestContext";
+import { composerPullRequests } from "../state/pull-requests";
+import { useAtomQueryRunner } from "../state/use-atom-query-runner";
 import { mobilePreferencesAtom } from "../state/preferences";
 import { ComposerContextSheet } from "./ComposerContextSheet";
 import { AppText as Text } from "./AppText";
@@ -33,6 +43,8 @@ import {
 export type ComposerEditorProps = NativeComposerEditorProps & {
   readonly draftKey?: string | null;
   readonly environmentId?: EnvironmentId;
+  readonly pullRequestProjectId?: ProjectId | null;
+  readonly pullRequestRepository?: string | null;
   readonly onOpenMention?: (path: string) => void;
   /** Documents open in the file screen; pictures, video and PDF keep their native viewers. */
   readonly onOpenAttachment?: (attachment: ComposerDocumentAttachment) => void;
@@ -49,6 +61,8 @@ export type ComposerEditorProps = NativeComposerEditorProps & {
 export function ComposerEditor({
   draftKey,
   environmentId,
+  pullRequestProjectId,
+  pullRequestRepository,
   onOpenMention,
   onOpenAttachment,
   chipsInert,
@@ -56,6 +70,23 @@ export function ComposerEditor({
   ...props
 }: ComposerEditorProps) {
   const draft = useComposerDraft(draftKey ?? null);
+  const readPastedPullRequestDetail = useAtomQueryRunner(composerPullRequests.detail, {
+    reportFailure: false,
+    reportDefect: false,
+  });
+  const pullRequestScope =
+    draftKey && environmentId && pullRequestProjectId && pullRequestRepository
+      ? JSON.stringify([draftKey, environmentId, pullRequestProjectId, pullRequestRepository])
+      : null;
+  const pullRequestScopeRef = useRef(pullRequestScope);
+  pullRequestScopeRef.current = pullRequestScope;
+  useEffect(() => {
+    pullRequestScopeRef.current = pullRequestScope;
+    return () => {
+      pullRequestScopeRef.current = null;
+    };
+  }, [pullRequestScope]);
+  const pendingPullRequestLookupsRef = useRef(new Set<string>());
   const preferencesResult = useAtomValue(mobilePreferencesAtom);
   const preferredEnterBehavior = AsyncResult.isSuccess(preferencesResult)
     ? preferencesResult.value.composerEnterBehavior
@@ -81,6 +112,10 @@ export function ComposerEditor({
   useEffect(
     () => () => {
       importRef.current?.abort();
+      if (pendingPullRequestLookupsRef.current.size > 0 && draftKey) {
+        pendingPullRequestLookupsRef.current.clear();
+        setComposerContextImporting(draftKey, false);
+      }
     },
     [draftKey],
   );
@@ -89,6 +124,9 @@ export function ComposerEditor({
   ) => {
     if (!draftKey || importRef.current || props.readOnly || props.editable === false) return;
     const insertion = { text: clipboard.value, ...clipboard.selection };
+    const pastedText = pullRequestScope
+      ? rewritePastedPullRequestMarkers(clipboard.text)
+      : clipboard.text;
     const controller = new AbortController();
     importRef.current = controller;
     setImporting(true);
@@ -96,23 +134,38 @@ export function ComposerEditor({
     try {
       const retained = getComposerDraftAfterSelection(draftKey, insertion);
       const result = await importComposerContextClipboard(
-        clipboard,
+        { ...clipboard, text: pastedText },
         retained.attachments.length,
         controller.signal,
         retained.context?.records.length ?? 0,
       );
-      if (!result) {
-        insertComposerDraftText(draftKey, clipboard.text, insertion);
+      const text = result?.text ?? pastedText;
+      const importedRecords = result?.context.records ?? [];
+      const pendingRecords = pullRequestScope
+        ? pendingPastedPullRequestRecords(text, importedRecords)
+        : [];
+      if (!result && pendingRecords.length === 0) {
+        insertComposerDraftText(draftKey, text, insertion);
         return;
       }
-      if (!insertComposerDraftContext(draftKey, result, insertion)) {
+      if (
+        !insertComposerDraftContext(
+          draftKey,
+          {
+            text,
+            context: { version: 1, records: [...importedRecords, ...pendingRecords] },
+            attachments: result?.attachments,
+          },
+          insertion,
+        )
+      ) {
         Alert.alert(
           "Could not paste context",
           "Remove some attachments or context items from the draft, then paste again.",
         );
         return;
       }
-      if (result.failures.length > 0)
+      if (result && result.failures.length > 0)
         Alert.alert(
           "Some attachments could not be copied",
           "Reconnect to the source environment and copy them again. References without their files are marked unavailable.",
@@ -129,6 +182,145 @@ export function ComposerEditor({
       setImporting(false);
     }
   };
+  useEffect(() => {
+    if (!draftKey || !pullRequestScope || importRef.current) return;
+    const rewritten = rewritePastedPullRequestMarkers(draft.text);
+    const pending = pendingPastedPullRequestRecords(rewritten, draft.context?.records ?? []);
+    if (rewritten !== draft.text) setComposerDraftText(draftKey, rewritten);
+    if (pending.length > 0) {
+      setComposerDraftContext(draftKey, {
+        version: 1,
+        records: [...(draft.context?.records ?? []), ...pending],
+      });
+    }
+  }, [draftKey, draft.text, draft.context, pullRequestScope, importing]);
+  useEffect(() => {
+    if (
+      !draftKey ||
+      !pullRequestScope ||
+      !environmentId ||
+      !pullRequestProjectId ||
+      !pullRequestRepository
+    ) {
+      if (pendingPullRequestLookupsRef.current.size > 0) {
+        pendingPullRequestLookupsRef.current.clear();
+        if (draftKey) setComposerContextImporting(draftKey, false);
+      }
+      return;
+    }
+    if (importRef.current) return;
+    for (const key of pendingPullRequestLookupsRef.current) {
+      if (key.startsWith(`${pullRequestScope}:`)) continue;
+      pendingPullRequestLookupsRef.current.delete(key);
+    }
+    const unresolved = collectComposerContextReferences(draft.text).flatMap((reference) => {
+      const number = selfConsistentPastedPullRequestNumber(reference.label, reference.contextId);
+      if (number === null) return [];
+      const record = draft.context?.records.find(
+        (entry) => entry.contextId === reference.contextId,
+      );
+      return record?.kind === "review-comment" && "pullRequest" in record && !record.pullRequest
+        ? [{ number, contextId: reference.contextId }]
+        : [];
+    });
+    if (unresolved.length === 0) {
+      if (pendingPullRequestLookupsRef.current.size > 0) {
+        pendingPullRequestLookupsRef.current.clear();
+        setComposerContextImporting(draftKey, false);
+      }
+      return;
+    }
+    for (const { number } of unresolved) {
+      const lookupKey = `${pullRequestScope}:${number}`;
+      if (pendingPullRequestLookupsRef.current.has(lookupKey)) continue;
+      pendingPullRequestLookupsRef.current.add(lookupKey);
+      setComposerContextImporting(draftKey, true);
+      let deadline: ReturnType<typeof setTimeout>;
+      void Promise.race([
+        readPastedPullRequestDetail({
+          environmentId,
+          input: { projectId: pullRequestProjectId, repository: pullRequestRepository, number },
+        }),
+        new Promise<never>((_, reject) => {
+          deadline = setTimeout(() => reject(new Error("PR lookup timed out")), 30_000);
+        }),
+      ])
+        .then((result) => {
+          if (pullRequestScopeRef.current !== pullRequestScope) return;
+          if (result._tag !== "Success") throw new Error("PR lookup failed");
+          const latest = getComposerDraftSnapshot(draftKey);
+          const pendingIds = new Set(
+            collectComposerContextReferences(latest.text)
+              .filter(
+                (reference) =>
+                  selfConsistentPastedPullRequestNumber(reference.label, reference.contextId) ===
+                  number,
+              )
+              .map((reference) => reference.contextId),
+          );
+          if (!latest.context || pendingIds.size === 0) return;
+          setComposerDraftContext(draftKey, {
+            version: 1,
+            records: latest.context.records.map((record) =>
+              pendingIds.has(record.contextId) &&
+              record.kind === "review-comment" &&
+              "pullRequest" in record &&
+              !record.pullRequest
+                ? pullRequestComposerContext(result.value, record.contextId)
+                : record,
+            ),
+          });
+        })
+        .catch(() => {
+          if (pullRequestScopeRef.current !== pullRequestScope) return;
+          const latest = getComposerDraftSnapshot(draftKey);
+          const pendingIds = new Set(
+            collectComposerContextReferences(latest.text)
+              .filter(
+                (reference) =>
+                  selfConsistentPastedPullRequestNumber(reference.label, reference.contextId) ===
+                    number &&
+                  latest.context?.records.some(
+                    (record) =>
+                      record.contextId === reference.contextId &&
+                      record.kind === "review-comment" &&
+                      "pullRequest" in record &&
+                      !record.pullRequest,
+                  ),
+              )
+              .map((reference) => reference.contextId),
+          );
+          if (pendingIds.size === 0) return;
+          setComposerDraftText(
+            draftKey,
+            replaceComposerContextReferences(latest.text, (reference) =>
+              pendingIds.has(reference.contextId) ? reference.label : reference.source,
+            ),
+          );
+          Alert.alert(`Could not load PR #${number}`, "The number is still in your message.");
+        })
+        .finally(() => {
+          clearTimeout(deadline);
+          pendingPullRequestLookupsRef.current.delete(lookupKey);
+          if (
+            pullRequestScopeRef.current === pullRequestScope &&
+            pendingPullRequestLookupsRef.current.size === 0
+          ) {
+            setComposerContextImporting(draftKey, false);
+          }
+        });
+    }
+  }, [
+    draftKey,
+    draft.text,
+    draft.context,
+    environmentId,
+    pullRequestProjectId,
+    pullRequestRepository,
+    pullRequestScope,
+    importing,
+    readPastedPullRequestDetail,
+  ]);
   const clipboardFragment = useMemo(
     () =>
       environmentId && draft.context
@@ -173,6 +365,7 @@ export function ComposerEditor({
         clipboardFragment={clipboardFragment ?? undefined}
         onPasteContext={(clipboard) => void pasteContext(clipboard)}
         context={draft.context}
+        pendingPullRequestResolvable={pullRequestScope !== null}
         onContextPress={(selection) => {
           if (chipsInert) {
             onInertChipPress?.();

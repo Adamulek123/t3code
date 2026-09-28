@@ -110,6 +110,7 @@ export interface ComposerPromptEditorProps {
   richTextEnabled?: boolean;
   /** Draft records behind the prompt's context references, keyed by context id. */
   contextRecords: ComposerDraftContextRecords;
+  pendingPullRequestResolvable?: boolean;
   /** Structured clipboard payload for the given referenced ids, or null to skip. */
   buildContextClipboardFragment?:
     | ((contextIds: ReadonlyArray<string>) => string | null)
@@ -587,6 +588,7 @@ function ComposerPromptEditorTiptapInner(props: ComposerPromptEditorProps) {
     cursor,
     richTextEnabled,
     contextRecords,
+    pendingPullRequestResolvable = false,
     buildContextClipboardFragment,
     importContextFragment,
     skills,
@@ -1293,7 +1295,9 @@ function ComposerPromptEditorTiptapInner(props: ComposerPromptEditorProps) {
 
   return (
     <RichComposerSkillsContext value={skills}>
-      <ComposerContextRecordsContext value={contextRecords}>
+      <ComposerContextRecordsContext
+        value={{ records: contextRecords, pendingPullRequestResolvable }}
+      >
         <ComposerCitationCommentContext value={citationCommentActions}>
           <div
             className={cn(

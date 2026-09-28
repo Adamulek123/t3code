@@ -201,6 +201,7 @@ import {
   uploadedContextRecordFromDraft,
 } from "../composerContextPresentation";
 import { useOpenPrLink } from "~/lib/openPullRequestLink";
+import { runPastedPullRequestLookup } from "~/lib/pastedPullRequestLookup";
 import {
   collectInlineContextIds,
   stripInlineContextReferences,
@@ -213,11 +214,16 @@ import {
 } from "~/lib/composerContextReferences";
 import {
   asKnownContextRecord,
+  buildPendingPullRequestReferenceContext,
   composerContextImportLookupIds,
   isSameComposerContextPayload,
   uploadedAttachmentContextRecord,
   fileContextReference,
   imageContextReference,
+  pastedPullRequestReferenceScope,
+  restoreFailedPastedPullRequestText,
+  shouldBlockPastedPullRequestSend,
+  unresolvedPastedPullRequestReferences,
   previewAnnotationContextId,
   previewAnnotationContextRecord,
   previewAnnotationFromRecord,
@@ -230,6 +236,7 @@ import {
   terminalContextRecord,
 } from "~/lib/composerContextRecords";
 import { requestConfirmDialog } from "~/confirmDialog";
+import { collectComposerContextReferences } from "@t3tools/shared/composerContextReferences";
 import { encodeComposerContextFragment } from "@t3tools/shared/composerContextClipboard";
 import type { ComposerContextClipboardFragment, ComposerContextRecord } from "@t3tools/contracts";
 import { resolveAssetUrl } from "~/assets/assetUrls";
@@ -2342,6 +2349,124 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         }),
   );
 
+  const addComposerDraftReviewComment = useComposerDraftStore((store) => store.addReviewComment);
+  const readPastedPullRequestDetail = useAtomQueryRunner(pullRequestEnvironment.detail, {
+    reportFailure: false,
+    reportDefect: false,
+  });
+  const pastedPullRequestInFlightRef = useRef(new Set<string>());
+  // Updated during render (never in the passive effect) so a lookup settling
+  // between commit and effect already sees the new scope and is discarded.
+  const pastedPullRequestScopeRef = useRef("");
+  const pastedPullRequestScope =
+    pullRequestProjectId === null || pullRequestRepository === null
+      ? "unavailable"
+      : pastedPullRequestReferenceScope({
+          environmentId,
+          target: composerDraftTargetKeyRef.current,
+          projectId: pullRequestProjectId,
+          repository: pullRequestRepository,
+        });
+  pastedPullRequestScopeRef.current = pastedPullRequestScope;
+  // Keep the pasted number in the prompt when its context cannot be loaded.
+  const dropFailedPastedPullRequestReferences = useCallback(
+    (number: number) => {
+      const store = useComposerDraftStore.getState();
+      const latest = store.getComposerDraft(composerDraftTarget);
+      if (!latest) return;
+      const failed = unresolvedPastedPullRequestReferences(
+        latest.prompt,
+        latest.reviewComments,
+      ).filter((pending) => pending.number === number && pending.comment);
+      if (failed.length === 0) return;
+      store.setPrompt(
+        composerDraftTarget,
+        restoreFailedPastedPullRequestText(
+          latest.prompt,
+          new Set(failed.map((pending) => pending.contextId)),
+        ),
+      );
+      for (const pending of failed) {
+        if (!pending.comment) continue;
+        removeComposerDraftReviewComment(composerDraftTarget, pending.comment.id);
+      }
+      toastManager.add({
+        type: "info",
+        title: `Could not load PR #${number}.`,
+        description: "The number is still in your message. Check it or try pasting again.",
+      });
+    },
+    [composerDraftTarget, removeComposerDraftReviewComment],
+  );
+  useEffect(() => {
+    if (pullRequestProjectId === null || pullRequestRepository === null) return;
+    const unresolved = unresolvedPastedPullRequestReferences(prompt, composerReviewComments);
+    if (unresolved.length === 0) return;
+    for (const { number, contextId, comment } of unresolved) {
+      if (comment === undefined) {
+        addComposerDraftReviewComment(
+          composerDraftTarget,
+          {
+            ...buildPendingPullRequestReferenceContext(number),
+            id: contextId.slice("review-comment_".length),
+          },
+          { appendReference: false },
+        );
+      }
+    }
+    const requestProjectId = pullRequestProjectId;
+    const requestRepository = pullRequestRepository;
+    const requestTarget = composerDraftTargetKeyRef.current;
+    const requestEnvironmentId = environmentId;
+    const requestScope = pastedPullRequestScope;
+    // Ignore completions from an older scope (project/repository changed while
+    // the same draft target stayed active) so stale results never apply to or
+    // drop chips that belong to the current scope.
+    const isStaleCompletion = () =>
+      composerDraftTargetKeyRef.current !== requestTarget ||
+      pastedPullRequestScopeRef.current !== requestScope;
+    for (const { number } of unresolved) {
+      const inFlightKey = `${requestScope}:${number}`;
+      if (pastedPullRequestInFlightRef.current.has(inFlightKey)) continue;
+      pastedPullRequestInFlightRef.current.add(inFlightKey);
+      void runPastedPullRequestLookup({
+        read: () =>
+          readPastedPullRequestDetail({
+            environmentId: requestEnvironmentId,
+            input: { projectId: requestProjectId, repository: requestRepository, number },
+          }),
+        isStale: isStaleCompletion,
+        onSuccess: (pullRequest) => {
+          const latest = useComposerDraftStore.getState().getComposerDraft(composerDraftTarget);
+          if (!latest) return;
+          for (const pending of unresolvedPastedPullRequestReferences(
+            latest.prompt,
+            latest.reviewComments,
+          )) {
+            if (pending.number !== number || !pending.comment) continue;
+            addComposerDraftReviewComment(
+              composerDraftTarget,
+              { ...buildPullRequestReferenceContext(pullRequest), id: pending.comment.id },
+              { appendReference: false },
+            );
+          }
+        },
+        onFailure: () => dropFailedPastedPullRequestReferences(number),
+      }).finally(() => pastedPullRequestInFlightRef.current.delete(inFlightKey));
+    }
+  }, [
+    prompt,
+    composerReviewComments,
+    pullRequestProjectId,
+    pullRequestRepository,
+    environmentId,
+    composerDraftTarget,
+    addComposerDraftReviewComment,
+    readPastedPullRequestDetail,
+    dropFailedPastedPullRequestReferences,
+    pastedPullRequestScope,
+  ]);
+
   const composerMenuItems = useMemo<ComposerCommandItem[]>(() => {
     if (!composerTrigger) return [];
     if (composerTrigger.kind === "path") {
@@ -2768,7 +2893,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const addComposerDraftTerminalContexts = useComposerDraftStore(
     (store) => store.addTerminalContexts,
   );
-  const addComposerDraftReviewComment = useComposerDraftStore((store) => store.addReviewComment);
   const addComposerDraftPreviewAnnotation = useComposerDraftStore(
     (store) => store.addPreviewAnnotation,
   );
@@ -3817,6 +3941,27 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         });
         return;
       }
+      // Only gate when a lookup can actually resolve the chip; without a
+      // project and repository the pasted reference stays unresolved forever
+      // and must not block sending.
+      if (
+        shouldBlockPastedPullRequestSend({
+          prompt: promptRef.current,
+          reviewComments:
+            useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)
+              ?.reviewComments ?? [],
+          canResolve: pullRequestProjectId !== null && pullRequestRepository !== null,
+          answeringPendingInput: activePendingProgress !== null,
+        })
+      ) {
+        event?.preventDefault();
+        toastManager.add({
+          type: "info",
+          title: "Still resolving a pasted pull request.",
+          description: "Send again once its chip stops loading.",
+        });
+        return;
+      }
       const submission = submitComposerDraft({
         prompt: promptRef.current,
         submissionTarget: activePendingProgress ? "pending-user-input" : "provider-turn",
@@ -3840,10 +3985,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       activePendingProgress,
       attachmentTargetKey,
       blurMobileComposerAfterSend,
+      composerDraftTarget,
       isSendDisabled,
       noProviderAvailable,
       onSend,
       promptRef,
+      pullRequestProjectId,
+      pullRequestRepository,
       shouldBlurMobileComposerOnSubmit,
     ],
   );
@@ -6856,6 +7004,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     }
                     cursor={composerCursor}
                     contextRecords={composerContextRecords}
+                    pendingPullRequestResolvable={pastedPullRequestScope !== "unavailable"}
                     buildContextClipboardFragment={buildContextClipboardFragment}
                     importContextFragment={importContextFragment}
                     skills={selectedProviderSkills}

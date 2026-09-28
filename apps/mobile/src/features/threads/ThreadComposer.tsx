@@ -55,7 +55,9 @@ import { scopedThreadKey } from "../../lib/scopedEntities";
 import {
   composerContextImportsAtom,
   countComposerDraftAttachmentsAfterSelection,
+  getComposerDraftSnapshot,
 } from "../../state/use-composer-drafts";
+import { hasUnresolvedPastedPullRequest } from "../../lib/pastedPullRequestContext";
 import type { ComposerDocumentAttachment } from "../../lib/composerContext";
 import { useProject } from "../../state/entities";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
@@ -414,6 +416,13 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     states: uploadStates,
   });
   const contextImports = useAtomValue(composerContextImportsAtom);
+  const pastedPullRequestPending =
+    props.serverConfig?.environment.capabilities.pullRequests === true &&
+    project?.repositoryIdentity?.displayName != null &&
+    hasUnresolvedPastedPullRequest(
+      props.draftMessage,
+      getComposerDraftSnapshot(composerOwnerKey).context?.records ?? [],
+    );
   const sendBlockedReason =
     props.sendBlockedReason ??
     (pendingPastedTextAttachmentCount > 0 ? "Attaching pasted text" : null) ??
@@ -421,6 +430,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   const canSend =
     hasContent &&
     !contextImports[composerOwnerKey] &&
+    !pastedPullRequestPending &&
     !voiceInput.blocksSubmission &&
     sendBlockedReason === null &&
     !modelUnavailable;
@@ -474,6 +484,15 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   }, [onEditorFocusChange, onExpandedChange, settingsSheetPresentation.keepsComposerExpanded]);
   const handleSend = useCallback(async () => {
     if (voiceInput.blocksSubmission || pendingPastedTextAttachmentCountRef.current > 0) return;
+    if (
+      props.serverConfig?.environment.capabilities.pullRequests &&
+      project?.repositoryIdentity?.displayName &&
+      hasUnresolvedPastedPullRequest(
+        getComposerDraftSnapshot(composerOwnerKey).text,
+        getComposerDraftSnapshot(composerOwnerKey).context?.records ?? [],
+      )
+    )
+      return;
     // Typed out in full rather than picked from the menu. Attachments mean the
     // user is sending a prompt, so those go through as usual.
     if (
@@ -516,6 +535,9 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     props.selectedThread.id,
     props.selectedThread.title,
     voiceInput.blocksSubmission,
+    composerOwnerKey,
+    project?.repositoryIdentity?.displayName,
+    props.serverConfig?.environment.capabilities.pullRequests,
   ]);
 
   // ── Model menu ───────────────────────────────────────────
@@ -740,6 +762,12 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
               <ComposerEditor
                 draftKey={composerOwnerKey}
                 environmentId={props.environmentId}
+                pullRequestProjectId={
+                  props.serverConfig?.environment.capabilities.pullRequests
+                    ? (project?.id ?? null)
+                    : null
+                }
+                pullRequestRepository={project?.repositoryIdentity?.displayName ?? null}
                 onOpenMention={(path) => {
                   Keyboard.dismiss();
                   navigation.navigate("ThreadFile", {

@@ -21,7 +21,10 @@ import { upgradeLegacyContextMessage } from "@t3tools/shared/composerContextLega
 import { encodeComposerContextFragment } from "@t3tools/shared/composerContextClipboard";
 import {
   collectComposerContextReferences,
+  pullRequestNumberFromPastedContextId,
+  replaceComposerContextReferences,
   sanitizeComposerContextLabel,
+  selfConsistentPastedPullRequestNumber,
 } from "@t3tools/shared/composerContextReferences";
 
 import {
@@ -105,6 +108,100 @@ export function pullRequestContextKindLabel(comment: ReviewCommentPresentation):
   const state = pullRequestContextDisplayState(comment);
   if (state === null) return "Pull request";
   return `${state[0]!.toUpperCase()}${state.slice(1)} pull request`;
+}
+
+/** A pasted `pr-reference:<number>` chip before its summary loads. */
+export function buildPendingPullRequestReferenceContext(number: number): ReviewCommentContext {
+  return {
+    id: `pr-reference:${number}`,
+    sectionId: `pull-request:${number}`,
+    sectionTitle: `PR #${number}`,
+    filePath: `PR #${number}`,
+    startIndex: 0,
+    endIndex: 0,
+    rangeLabel: "",
+    text: "",
+    diff: "",
+  };
+}
+
+/** Whether this is a pasted PR reference still waiting for its summary. */
+export function isPendingPullRequestReferenceContext(comment: ReviewCommentPresentation): boolean {
+  const contextId = "id" in comment ? reviewCommentContextId(comment.id) : comment.contextId;
+  return (
+    comment.pullRequest === undefined &&
+    pullRequestNumberFromPastedContextId(contextId) !== null &&
+    isPullRequestSummaryContext(comment)
+  );
+}
+
+/** PR number behind a pending reference (parsed from its `PR #N` file path). */
+export function pendingPullRequestReferenceNumber(comment: ReviewCommentPresentation): number {
+  const match = /^PR #(\d+)$/u.exec(comment.filePath);
+  const number = match ? Number(match[1]) : NaN;
+  return Number.isSafeInteger(number) && number > 0 ? number : 0;
+}
+
+export function unresolvedPastedPullRequestReferences(
+  prompt: string,
+  comments: ReadonlyArray<ReviewCommentContext>,
+) {
+  const commentsByContextId = new Map(
+    comments.map((comment) => [reviewCommentContextId(comment.id), comment]),
+  );
+  const references = new Map<
+    string,
+    { contextId: string; number: number; comment: ReviewCommentContext | undefined }
+  >();
+  for (const occurrence of collectComposerContextReferences(prompt)) {
+    if (occurrence.kind !== "review-comment") continue;
+    const number = selfConsistentPastedPullRequestNumber(occurrence.label, occurrence.contextId);
+    if (number === null) continue;
+    const comment = commentsByContextId.get(occurrence.contextId);
+    if (comment !== undefined && !isPendingPullRequestReferenceContext(comment)) continue;
+    references.set(occurrence.contextId, {
+      contextId: occurrence.contextId,
+      number,
+      comment,
+    });
+  }
+  return [...references.values()];
+}
+
+export function restoreFailedPastedPullRequestText(
+  prompt: string,
+  contextIds: ReadonlySet<string>,
+) {
+  return replaceComposerContextReferences(prompt, (occurrence) =>
+    contextIds.has(occurrence.contextId) ? occurrence.label : occurrence.source,
+  );
+}
+
+export function shouldBlockPastedPullRequestSend(input: {
+  prompt: string;
+  reviewComments: ReadonlyArray<ReviewCommentContext>;
+  canResolve: boolean;
+  answeringPendingInput: boolean;
+}) {
+  return (
+    input.canResolve &&
+    !input.answeringPendingInput &&
+    unresolvedPastedPullRequestReferences(input.prompt, input.reviewComments).length > 0
+  );
+}
+
+export function pastedPullRequestReferenceScope(input: {
+  environmentId: string;
+  target: string;
+  projectId: string;
+  repository: string;
+}): string {
+  return JSON.stringify([
+    input.environmentId,
+    input.target,
+    input.projectId,
+    input.repository.trim().toLowerCase(),
+  ]);
 }
 
 export function previewAnnotationContextLabel(annotation: PreviewAnnotationPayload): string {
