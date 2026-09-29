@@ -102,7 +102,6 @@ import {
   type ComposerDraft,
   waitForComposerDraftsLoaded,
 } from "../../state/use-composer-drafts";
-import { hasUnresolvedPastedPullRequest } from "../../lib/pastedPullRequestContext";
 import { useEnvironmentServerConfig, useProjects } from "../../state/entities";
 import { useProjectClone } from "../../state/projectClones";
 import { projectEnvironment } from "../../state/projects";
@@ -1189,12 +1188,6 @@ export function NewTaskDraftScreen(props: {
     }
     const draft = getComposerDraftSnapshot(draftKey);
     if (appAtomRegistry.get(composerContextImportsAtom)[draftKey]) return;
-    if (
-      selectedEnvironmentServerConfig?.environment.capabilities.pullRequests &&
-      selectedProject?.repositoryIdentity?.displayName &&
-      hasUnresolvedPastedPullRequest(draft.text, draft.context?.records ?? [])
-    )
-      return;
     // Read the latest explicit pick. Antigravity selections stay unchanged
     // when setup or a catalog change makes them unavailable.
     const modelSelection =
@@ -1353,15 +1346,6 @@ export function NewTaskDraftScreen(props: {
   const isAndroid = Platform.OS === "android";
   const canStart =
     !isImportingContext &&
-    !(
-      selectedEnvironmentServerConfig?.environment.capabilities.pullRequests &&
-      selectedProject?.repositoryIdentity?.displayName &&
-      hasUnresolvedPastedPullRequest(
-        flow.prompt,
-        (flow.draftKey ? getComposerDraftSnapshot(flow.draftKey).context?.records : undefined) ??
-          [],
-      )
-    ) &&
     !cloneBlocksStart &&
     attachmentBlockReason === null &&
     !modelUnavailable &&
@@ -1397,12 +1381,6 @@ export function NewTaskDraftScreen(props: {
       <ComposerEditor
         draftKey={flow.draftKey}
         environmentId={selectedProject.environmentId}
-        pullRequestProjectId={
-          selectedEnvironmentServerConfig?.environment.capabilities.pullRequests
-            ? selectedProject.id
-            : null
-        }
-        pullRequestRepository={selectedProject.repositoryIdentity?.displayName ?? null}
         onOpenAttachment={openDraftDocument}
         onOpenMention={(path) => {
           if (!composerWorkspaceCwd) return;

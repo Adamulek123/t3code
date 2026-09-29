@@ -28,7 +28,6 @@ export interface ComposerEditorProps {
   readonly ref?: Ref<ComposerEditorHandle>;
   readonly value: string;
   readonly context?: OrchestrationMessageContext;
-  readonly pendingPullRequestResolvable?: boolean;
   readonly clipboardFragment?: string;
   readonly onPasteContext?: (
     clipboard: ComposerTextPaste & {

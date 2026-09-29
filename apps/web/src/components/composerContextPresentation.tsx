@@ -3,7 +3,10 @@ import { ReadOnlySourcePreview } from "./files/AttachmentFilePreview";
 import type { PreviewAnnotationPayload } from "@t3tools/contracts";
 import { formatAttachmentSize } from "@t3tools/client-runtime/state/attachments";
 import { videoMimeType } from "@t3tools/shared/video";
-import { selfConsistentPastedPullRequestNumber } from "@t3tools/shared/composerContextReferences";
+import {
+  pullRequestNumberFromPastedContextId,
+  selfConsistentPastedPullRequestNumber,
+} from "@t3tools/shared/composerContextReferences";
 import { LoaderCircleIcon, MessageCircleIcon, MousePointerClickIcon } from "lucide-react";
 import { observeVisibleAnimation } from "~/lib/visibleAnimation";
 import { createContext, type MouseEvent, type ReactElement, type ReactNode, use } from "react";
@@ -20,9 +23,7 @@ import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
 import {
   fileContextReference,
   imageContextReference,
-  isPendingPullRequestReferenceContext,
   isPullRequestSummaryContext,
-  pendingPullRequestReferenceNumber,
   pullRequestContextDisplayState,
   pullRequestContextKindLabel,
   previewAnnotationContextId,
@@ -397,11 +398,6 @@ const composerContextPresentationRegistry = createContextPresentationRegistry<
         if (entry.kind !== "review-comment") {
           return <UnresolvedContextChip label={context.label} />;
         }
-        if (isPendingPullRequestReferenceContext(entry.record)) {
-          return (
-            <PendingPullRequestChip number={pendingPullRequestReferenceNumber(entry.record)} />
-          );
-        }
         const isPullRequest = isPullRequestSummaryContext(entry.record);
         const pullRequestState = pullRequestContextDisplayState(entry.record) ?? "unknown";
         if (isPullRequest && entry.record.pullRequest !== undefined) {
@@ -453,22 +449,28 @@ export function ComposerContextReferenceChip(props: {
 }): ReactElement {
   const { records, pendingPullRequestResolvable } = use(ComposerContextRecordsContext);
   const record = records.get(props.contextId);
-  if (record?.kind === "review-comment" && isPendingPullRequestReferenceContext(record.record)) {
-    const pastedNumber = selfConsistentPastedPullRequestNumber(props.label, props.contextId);
-    if (
-      !pendingPullRequestResolvable ||
-      props.kind !== "review-comment" ||
-      pastedNumber !== pendingPullRequestReferenceNumber(record.record)
-    ) {
-      return <UnresolvedContextChip label={props.label} />;
-    }
+  const pastedNumber = pullRequestNumberFromPastedContextId(props.contextId);
+  if (
+    props.kind === "review-comment" &&
+    pastedNumber !== null &&
+    selfConsistentPastedPullRequestNumber(props.label, props.contextId) !== pastedNumber
+  ) {
+    return <UnresolvedContextChip label={props.label} />;
   }
-  // A pasted `pr-reference` link has no draft record until the resolver creates
-  // one. Show the loader immediately instead of flashing "unavailable".
-  // Malformed links (label disagrees with the ref) fall through to unresolved.
-  if (pendingPullRequestResolvable && props.kind === "review-comment" && record === undefined) {
-    const pastedNumber = selfConsistentPastedPullRequestNumber(props.label, props.contextId);
-    if (pastedNumber !== null) return <PendingPullRequestChip number={pastedNumber} />;
+  // References can also carry a legacy summary without PR metadata. Resolve it
+  // the same way as a reference with no clipboard record.
+  if (
+    props.kind === "review-comment" &&
+    pastedNumber !== null &&
+    (record === undefined ||
+      (record.kind === "review-comment" &&
+        record.record.pullRequest === undefined &&
+        isPullRequestSummaryContext(record.record)))
+  ) {
+    if (pendingPullRequestResolvable) {
+      return <PendingPullRequestChip number={pastedNumber} />;
+    }
+    return <UnresolvedContextChip label={props.label} />;
   }
   return composerContextPresentationRegistry.render(props.kind, record, {
     label: props.label,

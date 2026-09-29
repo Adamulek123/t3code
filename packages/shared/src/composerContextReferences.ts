@@ -338,7 +338,6 @@ export function selfConsistentPastedPullRequestNumber(
  * the existing `collectComposerContextReferences` path picks them up.
  */
 export function rewritePastedPullRequestMarkers(text: string): string {
-  if (!text.includes("; ref=review-comment_pr-reference-")) return text;
   return text.replace(
     PASTED_PR_PROVIDER_MARKER_PATTERN,
     (match, label: string, contextId: string) => {

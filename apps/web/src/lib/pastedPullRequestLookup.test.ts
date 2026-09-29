@@ -41,4 +41,23 @@ describe("runPastedPullRequestLookup", () => {
     await lookup;
     expect(onFailure).toHaveBeenCalledOnce();
   });
+
+  it.each([false, true])(
+    "handles query failures only in the active scope, stale=%s",
+    async (stale) => {
+      const onSuccess = vi.fn();
+      const onFailure = vi.fn();
+      for (const read of [
+        async () => ({ _tag: "Failure" as const }),
+        async () => {
+          throw new Error("Disconnected");
+        },
+      ]) {
+        onFailure.mockClear();
+        await runPastedPullRequestLookup({ read, isStale: () => stale, onSuccess, onFailure });
+        expect(onSuccess).not.toHaveBeenCalled();
+        expect(onFailure).toHaveBeenCalledTimes(stale ? 0 : 1);
+      }
+    },
+  );
 });

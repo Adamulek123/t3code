@@ -6,7 +6,7 @@ export async function runPastedPullRequestLookup<T>(input: {
   onFailure: () => void;
   timeoutMs?: number;
 }): Promise<void> {
-  let deadline: ReturnType<typeof setTimeout>;
+  let deadline: ReturnType<typeof setTimeout> | undefined;
   try {
     const result = await Promise.race([
       input.read(),
@@ -23,6 +23,6 @@ export async function runPastedPullRequestLookup<T>(input: {
   } catch {
     if (!input.isStale()) input.onFailure();
   } finally {
-    clearTimeout(deadline!);
+    clearTimeout(deadline);
   }
 }

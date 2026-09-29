@@ -1,7 +1,6 @@
 import { PASTED_TEXT_ATTACHMENT_THRESHOLD_BYTES } from "@t3tools/client-runtime/text-paste";
 import { PROVIDER_SEND_TURN_MAX_INPUT_CHARS } from "@t3tools/contracts";
 import { collectComposerInlineTokens } from "@t3tools/shared/composerInlineTokens";
-import { pullRequestNumberFromPastedContextId } from "@t3tools/shared/composerContextReferences";
 import { composerContextEditorTokens } from "../lib/composerContext";
 import { requireNativeView } from "expo";
 import {
@@ -179,7 +178,7 @@ export function ComposerEditor({
             token.type === "skill"
               ? (skillLabels.get(token.value) ?? token.value)
               : token.type === "context"
-                ? `${token.label}${record?.kind === "review-comment" && "pullRequest" in record && !record.pullRequest && pullRequestNumberFromPastedContextId(record.contextId) !== null ? (props.pendingPullRequestResolvable ? " · resolving" : " · unavailable") : record ? "" : " · unavailable"}`
+                ? `${token.label}${props.context?.records.some((record) => record.contextId === token.contextId) ? "" : " · unavailable"}`
                 : basename(token.value),
           detail: token.type === "context" ? composerChipSizeSuffix(record) : "",
           // Only a mention wears per-filetype artwork. An attachment chip keeps the tinted
@@ -194,7 +193,7 @@ export function ComposerEditor({
         };
       }),
     );
-  }, [props.value, props.context, props.pendingPullRequestResolvable, skillLabels]);
+  }, [props.value, props.context, skillLabels]);
   // Every render resolves against the snapshot history, so a render whose
   // (value, selection) lags the acknowledged native state is stamped behind
   // the native revision and rejected by the editor instead of re-applying a

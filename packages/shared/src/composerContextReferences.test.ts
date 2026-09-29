@@ -305,6 +305,16 @@ describe("pasted pull-request references", () => {
     expect(rewritePastedPullRequestMarkers(image)).toBe(image);
   });
 
+  it.each([";ref=", ";\tref=", ";  ref="])(
+    "rewrites marker spacing supported by the parser: %s",
+    (separator) => {
+      const marker = `[Review comment: #7${separator}review-comment_pr-reference-7-abcdef12]`;
+      expect(rewritePastedPullRequestMarkers(marker)).toBe(
+        "[#7](t3-context://v1/review-comment/review-comment_pr-reference-7-abcdef12)",
+      );
+    },
+  );
+
   it("leaves malformed markers (label disagrees with the ref) as plain text", () => {
     const malformed =
       "[Review comment: #11410; ref=review-comment_pr-reference-11430-c3ac9552f23277bd]";

@@ -21,7 +21,6 @@ import { upgradeLegacyContextMessage } from "@t3tools/shared/composerContextLega
 import { encodeComposerContextFragment } from "@t3tools/shared/composerContextClipboard";
 import {
   collectComposerContextReferences,
-  pullRequestNumberFromPastedContextId,
   replaceComposerContextReferences,
   sanitizeComposerContextLabel,
   selfConsistentPastedPullRequestNumber,
@@ -110,38 +109,6 @@ export function pullRequestContextKindLabel(comment: ReviewCommentPresentation):
   return `${state[0]!.toUpperCase()}${state.slice(1)} pull request`;
 }
 
-/** A pasted `pr-reference:<number>` chip before its summary loads. */
-export function buildPendingPullRequestReferenceContext(number: number): ReviewCommentContext {
-  return {
-    id: `pr-reference:${number}`,
-    sectionId: `pull-request:${number}`,
-    sectionTitle: `PR #${number}`,
-    filePath: `PR #${number}`,
-    startIndex: 0,
-    endIndex: 0,
-    rangeLabel: "",
-    text: "",
-    diff: "",
-  };
-}
-
-/** Whether this is a pasted PR reference still waiting for its summary. */
-export function isPendingPullRequestReferenceContext(comment: ReviewCommentPresentation): boolean {
-  const contextId = "id" in comment ? reviewCommentContextId(comment.id) : comment.contextId;
-  return (
-    comment.pullRequest === undefined &&
-    pullRequestNumberFromPastedContextId(contextId) !== null &&
-    isPullRequestSummaryContext(comment)
-  );
-}
-
-/** PR number behind a pending reference (parsed from its `PR #N` file path). */
-export function pendingPullRequestReferenceNumber(comment: ReviewCommentPresentation): number {
-  const match = /^PR #(\d+)$/u.exec(comment.filePath);
-  const number = match ? Number(match[1]) : NaN;
-  return Number.isSafeInteger(number) && number > 0 ? number : 0;
-}
-
 export function unresolvedPastedPullRequestReferences(
   prompt: string,
   comments: ReadonlyArray<ReviewCommentContext>,
@@ -158,7 +125,11 @@ export function unresolvedPastedPullRequestReferences(
     const number = selfConsistentPastedPullRequestNumber(occurrence.label, occurrence.contextId);
     if (number === null) continue;
     const comment = commentsByContextId.get(occurrence.contextId);
-    if (comment !== undefined && !isPendingPullRequestReferenceContext(comment)) continue;
+    if (
+      comment !== undefined &&
+      (comment.pullRequest !== undefined || !isPullRequestSummaryContext(comment))
+    )
+      continue;
     references.set(occurrence.contextId, {
       contextId: occurrence.contextId,
       number,

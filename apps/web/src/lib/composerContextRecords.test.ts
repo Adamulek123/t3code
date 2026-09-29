@@ -19,9 +19,7 @@ import {
   asKnownContextRecord,
   attachmentContextRecord,
   buildMessageContext,
-  buildPendingPullRequestReferenceContext,
   composerContextImportLookupIds,
-  isPendingPullRequestReferenceContext,
   isPullRequestSummaryContext,
   isSameComposerContextPayload,
   pastedPullRequestReferenceScope,
@@ -46,6 +44,20 @@ import {
 } from "./composerContextRecords";
 
 const decodeMessageContext = Schema.decodeUnknownSync(OrchestrationMessageContext);
+
+function legacyPullRequestSummary(number: number) {
+  return {
+    id: `pr-reference:${number}`,
+    sectionId: `pull-request:${number}`,
+    sectionTitle: `PR #${number}`,
+    filePath: `PR #${number}`,
+    startIndex: 0,
+    endIndex: 0,
+    rangeLabel: "",
+    text: "",
+    diff: "",
+  };
+}
 
 const annotation: PreviewAnnotationPayload = {
   id: "ann_1",
@@ -360,38 +372,11 @@ describe("composerContextRecords", () => {
     ).toBe(false);
   });
 
-  it("treats a folded pasted PR reference id as pending, and a resolved one as not", () => {
-    const pending = buildPendingPullRequestReferenceContext(11420);
-    expect(isPendingPullRequestReferenceContext(pending)).toBe(true);
-
-    const imported = reviewCommentFromRecord(
-      reviewCommentContextRecord({ ...pending, id: "pr-reference:11420" }),
-    );
-    expect(imported.id).not.toBe("pr-reference:11420");
-    expect(isPendingPullRequestReferenceContext(imported)).toBe(true);
-
-    const resolved = reviewCommentFromRecord(
-      reviewCommentContextRecord({
-        ...pending,
-        pullRequest: {
-          number: 11420,
-          title: "Fix the loader",
-          url: "https://github.com/t3code/t3/pull/11420",
-          headBranch: "fix/loader",
-          baseBranch: "main",
-          state: "open" as const,
-          isDraft: false,
-        },
-      }),
-    );
-    expect(isPendingPullRequestReferenceContext(resolved)).toBe(false);
-  });
-
   it("collects unresolved pasted PR references by folded id, ignoring loaded clipboard records", () => {
-    const pending = buildPendingPullRequestReferenceContext(7);
+    const pending = legacyPullRequestSummary(7);
     const loaded = reviewCommentFromRecord(
       reviewCommentContextRecord({
-        ...buildPendingPullRequestReferenceContext(9),
+        ...legacyPullRequestSummary(9),
         pullRequest: {
           number: 9,
           title: "Loaded record",
@@ -422,7 +407,7 @@ describe("composerContextRecords", () => {
   });
 
   it("does not resolve a missing reference from an unrelated chip with the same number", () => {
-    const pending = buildPendingPullRequestReferenceContext(7);
+    const pending = legacyPullRequestSummary(7);
     const prompt = formatInlineContextReference(reviewCommentContextReference(pending));
     const unrelated = { ...pending, id: "unrelated", text: "A legacy summary" };
     expect(unresolvedPastedPullRequestReferences(prompt, [unrelated])).toHaveLength(1);
@@ -431,10 +416,10 @@ describe("composerContextRecords", () => {
   });
 
   it("keeps the pasted PR number as text after a failed lookup without changing other chips", () => {
-    const pending = buildPendingPullRequestReferenceContext(7);
+    const pending = legacyPullRequestSummary(7);
     const reference = reviewCommentContextReference(pending);
     const prompt = `Review ${formatInlineContextReference(reference)} and [file](t3-context://v1/file/file_1)`;
-    const unresolved = unresolvedPastedPullRequestReferences(prompt, [pending]);
+    const unresolved = unresolvedPastedPullRequestReferences(prompt, []);
     const restored = restoreFailedPastedPullRequestText(
       prompt,
       new Set(unresolved.map((entry) => entry.contextId)),
@@ -444,11 +429,11 @@ describe("composerContextRecords", () => {
   });
 
   it("blocks send only until the pasted PR resolves or becomes plain text", () => {
-    const pending = buildPendingPullRequestReferenceContext(7);
+    const pending = legacyPullRequestSummary(7);
     const prompt = formatInlineContextReference(reviewCommentContextReference(pending));
     const input = {
       prompt,
-      reviewComments: [pending],
+      reviewComments: [],
       canResolve: true,
       answeringPendingInput: false,
     };
@@ -471,15 +456,6 @@ describe("composerContextRecords", () => {
     expect(shouldBlockPastedPullRequestSend({ ...input, prompt: "#7", reviewComments: [] })).toBe(
       false,
     );
-  });
-
-  it("rejects a pending record whose id only resembles a pasted PR reference", () => {
-    expect(
-      isPendingPullRequestReferenceContext({
-        ...buildPendingPullRequestReferenceContext(7),
-        id: "other_pr-reference-7-abcdef12",
-      }),
-    ).toBe(false);
   });
 
   it("keys the single-flight scope on environment, target, project, and repository", () => {

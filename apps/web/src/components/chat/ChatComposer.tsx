@@ -214,7 +214,6 @@ import {
 } from "~/lib/composerContextReferences";
 import {
   asKnownContextRecord,
-  buildPendingPullRequestReferenceContext,
   composerContextImportLookupIds,
   isSameComposerContextPayload,
   uploadedAttachmentContextRecord,
@@ -236,7 +235,6 @@ import {
   terminalContextRecord,
 } from "~/lib/composerContextRecords";
 import { requestConfirmDialog } from "~/confirmDialog";
-import { collectComposerContextReferences } from "@t3tools/shared/composerContextReferences";
 import { encodeComposerContextFragment } from "@t3tools/shared/composerContextClipboard";
 import type { ComposerContextClipboardFragment, ComposerContextRecord } from "@t3tools/contracts";
 import { resolveAssetUrl } from "~/assets/assetUrls";
@@ -2355,19 +2353,24 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     reportDefect: false,
   });
   const pastedPullRequestInFlightRef = useRef(new Set<string>());
-  // Updated during render (never in the passive effect) so a lookup settling
-  // between commit and effect already sees the new scope and is discarded.
-  const pastedPullRequestScopeRef = useRef("");
+  const pastedPullRequestScopeRef = useRef<string | null>(null);
   const pastedPullRequestScope =
     pullRequestProjectId === null || pullRequestRepository === null
       ? "unavailable"
       : pastedPullRequestReferenceScope({
           environmentId,
-          target: composerDraftTargetKeyRef.current,
+          target: composerDraftTargetKey,
           projectId: pullRequestProjectId,
           repository: pullRequestRepository,
         });
-  pastedPullRequestScopeRef.current = pastedPullRequestScope;
+  // Update before passive effects so a settling lookup sees the committed
+  // scope. Clearing it also prevents updates after unmount.
+  useLayoutEffect(() => {
+    pastedPullRequestScopeRef.current = pastedPullRequestScope;
+    return () => {
+      pastedPullRequestScopeRef.current = null;
+    };
+  }, [pastedPullRequestScope]);
   // Keep the pasted number in the prompt when its context cannot be loaded.
   const dropFailedPastedPullRequestReferences = useCallback(
     (number: number) => {
@@ -2377,7 +2380,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       const failed = unresolvedPastedPullRequestReferences(
         latest.prompt,
         latest.reviewComments,
-      ).filter((pending) => pending.number === number && pending.comment);
+      ).filter((pending) => pending.number === number);
       if (failed.length === 0) return;
       store.setPrompt(
         composerDraftTarget,
@@ -2402,29 +2405,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     if (pullRequestProjectId === null || pullRequestRepository === null) return;
     const unresolved = unresolvedPastedPullRequestReferences(prompt, composerReviewComments);
     if (unresolved.length === 0) return;
-    for (const { number, contextId, comment } of unresolved) {
-      if (comment === undefined) {
-        addComposerDraftReviewComment(
-          composerDraftTarget,
-          {
-            ...buildPendingPullRequestReferenceContext(number),
-            id: contextId.slice("review-comment_".length),
-          },
-          { appendReference: false },
-        );
-      }
-    }
-    const requestProjectId = pullRequestProjectId;
-    const requestRepository = pullRequestRepository;
-    const requestTarget = composerDraftTargetKeyRef.current;
-    const requestEnvironmentId = environmentId;
     const requestScope = pastedPullRequestScope;
-    // Ignore completions from an older scope (project/repository changed while
-    // the same draft target stayed active) so stale results never apply to or
-    // drop chips that belong to the current scope.
-    const isStaleCompletion = () =>
-      composerDraftTargetKeyRef.current !== requestTarget ||
-      pastedPullRequestScopeRef.current !== requestScope;
+    const isStaleCompletion = () => pastedPullRequestScopeRef.current !== requestScope;
     for (const { number } of unresolved) {
       const inFlightKey = `${requestScope}:${number}`;
       if (pastedPullRequestInFlightRef.current.has(inFlightKey)) continue;
@@ -2432,8 +2414,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       void runPastedPullRequestLookup({
         read: () =>
           readPastedPullRequestDetail({
-            environmentId: requestEnvironmentId,
-            input: { projectId: requestProjectId, repository: requestRepository, number },
+            environmentId,
+            input: { projectId: pullRequestProjectId, repository: pullRequestRepository, number },
           }),
         isStale: isStaleCompletion,
         onSuccess: (pullRequest) => {
@@ -2443,10 +2425,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
             latest.prompt,
             latest.reviewComments,
           )) {
-            if (pending.number !== number || !pending.comment) continue;
+            if (pending.number !== number) continue;
             addComposerDraftReviewComment(
               composerDraftTarget,
-              { ...buildPullRequestReferenceContext(pullRequest), id: pending.comment.id },
+              {
+                ...buildPullRequestReferenceContext(pullRequest),
+                id: pending.contextId.slice("review-comment_".length),
+              },
               { appendReference: false },
             );
           }
