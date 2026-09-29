@@ -1571,16 +1571,19 @@ export const make = Effect.gen(function* () {
     if (exactRemotes.length > 1) return null;
     let remoteName = exactRemotes[0]?.name;
     if (remoteName === undefined) {
-      const ancestorRemotes = yield* Effect.forEach(remoteRefs, (remote) =>
-        gitCore
-          .execute({
-            operation: "GitManager.findPublishedBranchRemote.ancestor",
-            cwd,
-            args: ["merge-base", "--is-ancestor", remote.oid, localOid],
-            allowNonZeroExit: true,
-            timeoutMs: 5_000,
-          })
-          .pipe(Effect.map((result) => (result.exitCode === 0 ? remote.name : null))),
+      const ancestorRemotes = yield* Effect.forEach(
+        remoteRefs,
+        (remote) =>
+          gitCore
+            .execute({
+              operation: "GitManager.findPublishedBranchRemote.ancestor",
+              cwd,
+              args: ["merge-base", "--is-ancestor", remote.oid, localOid],
+              allowNonZeroExit: true,
+              timeoutMs: 5_000,
+            })
+            .pipe(Effect.map((result) => (result.exitCode === 0 ? remote.name : null))),
+        { concurrency: "unbounded" },
       );
       const matches = ancestorRemotes.filter((name) => name !== null);
       if (matches.length !== 1) return null;
