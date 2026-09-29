@@ -55,6 +55,9 @@ it("loads a pasted reference without a placeholder record, then displays its res
     await renderChip("#11420");
     expect(loadingChip()).not.toBeNull();
 
+    await renderChip("#11410");
+    expect(unavailableChip()?.getAttribute("aria-label")).toBe("Unavailable context, #11410");
+
     await renderChip("#11420", [], false);
     expect(loadingChip()).toBeNull();
     expect(unavailableChip()).not.toBeNull();
@@ -71,8 +74,12 @@ it("loads a pasted reference without a placeholder record, then displays its res
     expect(unavailableChip()).toBeNull();
     expect(container.textContent).toContain("#11420");
 
-    await renderChip("#11410", [resolved]);
-    expect(unavailableChip()?.getAttribute("aria-label")).toBe("Unavailable context, #11410");
+    for (const label of ["Release notes", "#11410"]) {
+      await renderChip(label, [resolved]);
+      expect(unavailableChip()).toBeNull();
+      expect(loadingChip()).toBeNull();
+      expect(container.textContent).toContain("#11420");
+    }
   } finally {
     await act(async () => root.unmount());
     container.remove();
