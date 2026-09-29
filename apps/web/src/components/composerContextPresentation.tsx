@@ -7,8 +7,8 @@ import {
   pullRequestNumberFromPastedContextId,
   selfConsistentPastedPullRequestNumber,
 } from "@t3tools/shared/composerContextReferences";
-import { LoaderCircleIcon, MessageCircleIcon, MousePointerClickIcon } from "lucide-react";
-import { observeVisibleAnimation } from "~/lib/visibleAnimation";
+import { MessageCircleIcon, MousePointerClickIcon } from "lucide-react";
+import { Spinner } from "~/components/ui/spinner";
 import { createContext, type MouseEvent, type ReactElement, type ReactNode, use } from "react";
 import type { EnvironmentId } from "@t3tools/contracts";
 
@@ -332,11 +332,9 @@ function PendingPullRequestChip(props: { number: number }) {
   return (
     <ContextChipShell
       icon={
-        <LoaderCircleIcon
-          ref={observeVisibleAnimation}
-          className="opacity-80 motion-safe:visible-animate-spin"
-          aria-hidden
-        />
+        <span className="opacity-80">
+          <Spinner aria-hidden />
+        </span>
       }
       label={`#${props.number}`}
       kind="neutral"
