@@ -100,10 +100,11 @@ migrate on hydration: placeholders bind to the terminal contexts in array order,
 the prompt does not mention is prepended as a link.
 
 Records stay in the draft store's typed arrays for now. The editor builds a `Map` keyed by
-`contextId` from them (`composerContextRecordsFromDraft`) and provides it through
-`ComposerContextRecordsContext`. `ComposerContextReferenceChip` looks the record up and renders
-the kind's chip; an unknown kind or a missing record renders the unresolved chip instead of
-vanishing. Removing a chip removes only that occurrence; the composer's change handler compares
+`contextId` from them (`composerContextRecordsFromDraft`) and provides it as `records` through
+`ComposerContextRecordsContext`, alongside `pendingPullRequestResolvable`.
+`ComposerContextReferenceChip` renders the record's chip, shows a loading chip for a resolvable
+pasted PR reference, and otherwise renders an unresolved chip instead of vanishing. Removing a chip
+removes only that occurrence; the composer's change handler compares
 the referenced ids against the draft array and drops records no chip points at.
 
 Version 1 deliberately keeps kind presentation explicit in each client instead of exposing a
