@@ -148,6 +148,13 @@ status tone from that snapshot. Hover shows the snapshot details; activation res
 against the current environment and opens the pull request in the thread's right panel. Records
 written before the metadata was added retain their legacy details and neutral pull-request tone.
 
+Pasted neutral `pr-reference` markers resolve in web and desktop against the current project's
+repository. Their IDs encode the PR number, not its source repository, so a plain-text marker
+cannot identify a PR in another repository. Structured clipboard records retain the copied PR's
+metadata and are imported before deciding whether a lookup is needed. Handoff, finding, and
+selection markers carry content a PR number cannot reconstruct and are left intact. Mobile keeps
+its existing readable-label rendering and does not rewrite provider markers or run these lookups.
+
 ## Attachments
 
 Image and file records use the draft attachment's local id as `contextId` and carry an
