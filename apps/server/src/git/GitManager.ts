@@ -1596,7 +1596,7 @@ export const make = Effect.gen(function* () {
                   command: "git merge-base --is-ancestor",
                   cwd,
                   exitCode: result.exitCode,
-                  detail: `Ancestry probe for remote "${remote.name}" failed with exit code ${result.exitCode}; rejecting ancestry inference.`,
+                  detail: "Ancestry probe failed; rejecting ancestry inference.",
                 });
               }),
             ),
