@@ -282,6 +282,10 @@ describe("pasted pull-request references", () => {
     "prefix_review-comment_pr-reference-11420-c3ac9552f23277bd",
     "review-comment_pr-reference-11420-c3ac9552f23277bd_suffix",
     "review-comment_pr-reference-11420-c3ac9552f23277bdz",
+    "REVIEW-COMMENT_PR-REFERENCE-11420-C3AC9552F23277BD",
+    "Review-Comment_pr-reference-11420-c3ac9552f23277bd",
+    "review-comment_PR-REFERENCE-11420-c3ac9552f23277bd",
+    "review-comment_pr-reference-11420-C3AC9552F23277BD",
   ])("rejects a noncanonical PR reference ID: %s", (contextId) => {
     expect(pullRequestNumberFromPastedContextId(contextId)).toBeNull();
     expect(selfConsistentPastedPullRequestNumber("#11420", contextId)).toBeNull();
@@ -297,6 +301,15 @@ describe("pasted pull-request references", () => {
       "See [#11420](t3-context://v1/review-comment/review-comment_pr-reference-11420-c3ac9552f23277bd) please",
     );
     expect(collectComposerContextReferences(rewritten)).toHaveLength(1);
+  });
+
+  it.each(["7", "007"])("keeps harmless leading zeros in labels and IDs: %s", (idNumber) => {
+    const contextId = `review-comment_pr-reference-${idNumber}-abcdef12`;
+    expect(pullRequestNumberFromPastedContextId(contextId)).toBe(7);
+    expect(selfConsistentPastedPullRequestNumber("#007", contextId)).toBe(7);
+    expect(rewritePastedPullRequestMarkers(`[Review comment: #007; ref=${contextId}]`)).toBe(
+      `[#007](t3-context://v1/review-comment/${contextId})`,
+    );
   });
 
   it("leaves prose and non-PR markers alone", () => {
