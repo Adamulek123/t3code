@@ -3,6 +3,7 @@ import { projectComposerContextForProvider } from "@t3tools/shared/composerConte
 
 import { buildPullRequestReferenceContext } from "../components/pullRequest/pullRequestDetail.logic";
 import { DraftId, useComposerDraftStore } from "../composerDraftStore";
+import type { ReviewCommentContext } from "../reviewCommentContext";
 import { formatInlineContextReference } from "./composerContextReferences";
 import {
   buildMessageContext,
@@ -24,6 +25,15 @@ const resolved = buildPullRequestReferenceContext({
 });
 const prompt = `Review ${formatInlineContextReference(reviewCommentContextReference(resolved))}`;
 
+function providerInput(text: string, reviewComments: ReviewCommentContext[]) {
+  const context = buildMessageContext({
+    terminalContexts: [],
+    previewAnnotations: [],
+    reviewComments,
+  });
+  return projectComposerContextForProvider({ text, records: context?.records ?? [] });
+}
+
 afterEach(() => useComposerDraftStore.setState({ draftsByThreadKey: {} }));
 
 describe("pasted PR provider send context", () => {
@@ -40,97 +50,47 @@ describe("pasted PR provider send context", () => {
       const draft = useComposerDraftStore.getState().getComposerDraft(target)!;
       expect(draft.reviewComments).toHaveLength(1);
       if (!allowDuplicateReference) expect(draft.prompt).toBe(prompt);
-      const context = buildMessageContext({
-        terminalContexts: [],
-        previewAnnotations: [],
-        reviewComments: draft.reviewComments,
-      });
-      const providerInput = projectComposerContextForProvider({
-        text: draft.prompt,
-        records: context?.records ?? [],
-      });
-      expect(context?.records).toHaveLength(1);
-      expect(providerInput).toContain("Resolve pasted PRs");
-      expect(providerInput).not.toContain('unavailable="true"');
+      const input = providerInput(draft.prompt, draft.reviewComments);
+      expect(input.match(/<context kind="review-comment"/gu)).toHaveLength(1);
+      expect(input).toContain("Resolve pasted PRs");
+      expect(input).not.toContain('unavailable="true"');
     },
   );
-  it.each([false, true])(
-    "resolves through the draft store without duplicate wire IDs, legacy=%s",
-    (hasLegacy) => {
-      const target = DraftId.make("pasted-pr-send-test");
-      const store = useComposerDraftStore.getState();
-      store.setPrompt(target, prompt);
-      if (hasLegacy) {
-        store.addReviewComment(
-          target,
-          { ...resolved, pullRequest: undefined, text: "Legacy summary" },
-          { appendReference: false },
-        );
-      }
-      const before = store.getComposerDraft(target)!;
-      expect(
-        shouldBlockPastedPullRequestSend({
-          prompt: before.prompt,
-          reviewComments: before.reviewComments,
-          canResolve: true,
-          answeringPendingInput: false,
-        }),
-      ).toBe(true);
-      for (const comment of resolvePastedPullRequestReferences(
-        before.prompt,
-        before.reviewComments,
-        resolved,
-      )) {
-        store.addReviewComment(target, comment, { appendReference: false });
-      }
-      const after = useComposerDraftStore.getState().getComposerDraft(target)!;
-      expect(after.reviewComments).toHaveLength(1);
-      expect(after.prompt).toBe(prompt);
-      expect(
-        shouldBlockPastedPullRequestSend({
-          prompt: after.prompt,
-          reviewComments: after.reviewComments,
-          canResolve: true,
-          answeringPendingInput: false,
-        }),
-      ).toBe(false);
-      const context = buildMessageContext({
-        terminalContexts: [],
-        previewAnnotations: [],
+  it("blocks send until the missing record is resolved through the draft store", () => {
+    const target = DraftId.make("pasted-pr-send-test");
+    const store = useComposerDraftStore.getState();
+    store.setPrompt(target, prompt);
+    const before = store.getComposerDraft(target)!;
+    expect(
+      shouldBlockPastedPullRequestSend({
+        prompt: before.prompt,
+        reviewComments: before.reviewComments,
+        canResolve: true,
+        answeringPendingInput: false,
+      }),
+    ).toBe(true);
+    for (const comment of resolvePastedPullRequestReferences(
+      before.prompt,
+      before.reviewComments,
+      resolved,
+    )) {
+      store.addReviewComment(target, comment, { appendReference: false });
+    }
+    const after = useComposerDraftStore.getState().getComposerDraft(target)!;
+    expect(after.reviewComments).toHaveLength(1);
+    expect(after.prompt).toBe(prompt);
+    expect(
+      shouldBlockPastedPullRequestSend({
+        prompt: after.prompt,
         reviewComments: after.reviewComments,
-      });
-      const providerInput = projectComposerContextForProvider({
-        text: after.prompt,
-        records: context?.records ?? [],
-      });
-      expect(providerInput).toContain("Resolve pasted PRs");
-      expect(providerInput).toContain("https://github.com/t3code/t3/pull/7");
-      expect(providerInput).not.toContain('unavailable="true"');
-      expect(context?.records).toHaveLength(1);
-    },
-  );
-  it("blocks a resolvable reference until its provider context contains the summary", () => {
-    const send = { prompt, reviewComments: [], canResolve: true, answeringPendingInput: false };
-    expect(shouldBlockPastedPullRequestSend(send)).toBe(true);
-
-    const ready = { ...send, reviewComments: [resolved] };
-    expect(shouldBlockPastedPullRequestSend(ready)).toBe(false);
-    expect(unresolvedPastedPullRequestReferences(ready.prompt, ready.reviewComments)).toEqual([]);
-    const context = buildMessageContext({
-      terminalContexts: [],
-      previewAnnotations: [],
-      reviewComments: ready.reviewComments,
-    });
-    const providerInput = projectComposerContextForProvider({
-      text: ready.prompt,
-      records: context?.records ?? [],
-    });
-    expect(providerInput).toContain("Resolve pasted PRs");
-    expect(providerInput).toContain("https://github.com/t3code/t3/pull/7");
-    expect(providerInput).not.toContain('unavailable="true"');
-    expect(context?.records).toMatchObject([
-      { kind: "review-comment", pullRequest: { number: 7 } },
-    ]);
+        canResolve: true,
+        answeringPendingInput: false,
+      }),
+    ).toBe(false);
+    const input = providerInput(after.prompt, after.reviewComments);
+    expect(input).toContain("Resolve pasted PRs");
+    expect(input).toContain("https://github.com/t3code/t3/pull/7");
+    expect(input).not.toContain('unavailable="true"');
   });
 
   it("sends the restored number without a summary-free context record after lookup failure", () => {
@@ -146,15 +106,7 @@ describe("pasted PR provider send context", () => {
         answeringPendingInput: false,
       }),
     ).toBe(false);
-    const context = buildMessageContext({
-      terminalContexts: [],
-      previewAnnotations: [],
-      reviewComments: [],
-    });
-    expect(context).toBeUndefined();
-    expect(
-      projectComposerContextForProvider({ text: failedPrompt, records: context?.records ?? [] }),
-    ).toBe("Review #7");
+    expect(providerInput(failedPrompt, [])).toBe("Review #7");
   });
 
   it("marks a missing record unavailable when no repository can resolve it", () => {
@@ -166,8 +118,8 @@ describe("pasted PR provider send context", () => {
         answeringPendingInput: false,
       }),
     ).toBe(false);
-    const providerInput = projectComposerContextForProvider({ text: prompt, records: [] });
-    expect(providerInput).toContain('unavailable="true"');
-    expect(providerInput).not.toContain("\ncomment:");
+    const input = providerInput(prompt, []);
+    expect(input).toContain('unavailable="true"');
+    expect(input).not.toContain("\ncomment:");
   });
 });

@@ -113,27 +113,16 @@ export function unresolvedPastedPullRequestReferences(
   prompt: string,
   comments: ReadonlyArray<ReviewCommentContext>,
 ) {
-  const commentsByContextId = new Map(
-    comments.map((comment) => [reviewCommentContextId(comment.id), comment]),
-  );
-  const references = new Map<
-    string,
-    { contextId: string; number: number; comment: ReviewCommentContext | undefined }
-  >();
+  const existingContextIds = new Set(comments.map((comment) => reviewCommentContextId(comment.id)));
+  const references = new Map<string, { contextId: string; number: number }>();
   for (const occurrence of collectComposerContextReferences(prompt)) {
     if (occurrence.kind !== "review-comment") continue;
     const number = selfConsistentPastedPullRequestNumber(occurrence.label, occurrence.contextId);
     if (number === null) continue;
-    const comment = commentsByContextId.get(occurrence.contextId);
-    if (
-      comment !== undefined &&
-      (comment.pullRequest !== undefined || !isPullRequestSummaryContext(comment))
-    )
-      continue;
+    if (existingContextIds.has(occurrence.contextId)) continue;
     references.set(occurrence.contextId, {
       contextId: occurrence.contextId,
       number,
-      comment,
     });
   }
   return [...references.values()];
@@ -148,7 +137,7 @@ export function restoreFailedPastedPullRequestText(
   );
 }
 
-/** Upgrade every occurrence of this PR while retaining its draft record identity. */
+/** Add the missing records for references to the resolved PR. */
 export function resolvePastedPullRequestReferences(
   prompt: string,
   comments: ReadonlyArray<ReviewCommentContext>,
@@ -158,8 +147,7 @@ export function resolvePastedPullRequestReferences(
     .filter((pending) => pending.number === resolved.pullRequest?.number)
     .map((pending) => ({
       ...resolved,
-      id:
-        pending.comment?.id ?? producerIdFromComposerContextId("review-comment", pending.contextId),
+      id: producerIdFromComposerContextId("review-comment", pending.contextId),
     }));
 }
 

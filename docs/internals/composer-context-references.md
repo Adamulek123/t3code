@@ -154,6 +154,8 @@ cannot identify a PR in another repository. Structured clipboard records retain 
 metadata and are imported before deciding whether a lookup is needed. Handoff, finding, and
 selection markers carry content a PR number cannot reconstruct and are left intact. Mobile keeps
 its existing readable-label rendering and does not rewrite provider markers or run these lookups.
+Only missing records trigger a lookup; existing summaries without PR metadata retain their stored
+details and neutral tone without being upgraded or blocking sends.
 
 Only the canonical `[Review comment: #N; ref=review-comment_pr-reference-N-<hash>]` provider marker
 is rewritten. Alternate labels, casing, and spacing remain plain text. Typing `#N` still uses the

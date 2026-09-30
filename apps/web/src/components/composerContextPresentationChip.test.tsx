@@ -84,23 +84,20 @@ it("loads a pasted reference without a placeholder record, then displays its res
     expect(unavailableChip()).not.toBeNull();
 
     const legacy = { ...resolved, pullRequest: undefined };
-    await renderChip("#11410", [legacy]);
-    expect(unavailableChip()?.getAttribute("aria-label")).toBe("Unavailable context, #11410");
-
     await renderChip("#11420", [legacy]);
-    expect(loadingChip()).not.toBeNull();
+    expect(loadingChip()).toBeNull();
+    expect(unavailableChip()).toBeNull();
+    expect(container.textContent).toContain("#11420");
 
     await renderChip("#11420", [resolved]);
     expect(loadingChip()).toBeNull();
     expect(unavailableChip()).toBeNull();
     expect(container.textContent).toContain("#11420");
 
-    for (const label of ["Release notes", "Release notes for #11420", "Fixes #5 and #11420"]) {
-      await renderChip(label, [resolved]);
-      expect(unavailableChip()).toBeNull();
-      expect(loadingChip()).toBeNull();
-      expect(container.textContent).toContain("#11420");
-    }
+    await renderChip("Fixes #5 and #11420", [resolved]);
+    expect(unavailableChip()).toBeNull();
+    expect(loadingChip()).toBeNull();
+    expect(container.textContent).toContain("#11420");
 
     await renderChip("#11410", [resolved]);
     expect(unavailableChip()?.getAttribute("aria-label")).toBe("Unavailable context, #11410");

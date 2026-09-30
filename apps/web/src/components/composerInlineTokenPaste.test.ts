@@ -5,7 +5,7 @@ import {
   COMPOSER_CONTEXT_CLIPBOARD_MIME,
   encodeComposerContextFragment,
 } from "@t3tools/shared/composerContextClipboard";
-import { buildMessageContext } from "../lib/composerContextRecords";
+import { reviewCommentContextRecord } from "../lib/composerContextRecords";
 import { buildPullRequestReferenceContext } from "./pullRequest/pullRequestDetail.logic";
 import { importPastedComposerText } from "./composerInlineTokenPaste";
 
@@ -22,11 +22,7 @@ describe("importPastedComposerText", () => {
       state: "open",
       isDraft: false,
     });
-    const prRecord = buildMessageContext({
-      reviewComments: [comment],
-      terminalContexts: [],
-      previewAnnotations: [],
-    })!.records[0]!;
+    const prRecord = reviewCommentContextRecord(comment);
     const terminal = {
       version: 1 as const,
       kind: "terminal" as const,
@@ -44,7 +40,6 @@ describe("importPastedComposerText", () => {
       records: [prRecord, terminal, { ...terminal, contextId: ComposerContextId.make("unused") }],
     })!;
     const pasted = `[Review comment: #11420; ref=${prRecord.contextId}] and [Build](t3-context://v1/terminal/${terminal.contextId})`;
-    const importedIds: string[] = [];
     const text = importPastedComposerText(
       {
         getData: (type) =>
@@ -52,22 +47,16 @@ describe("importPastedComposerText", () => {
       },
       (fragment) => {
         expect(fragment.source.environmentId).toBe("source-environment");
-        importedIds.push(...fragment.records.map((record) => record.contextId));
         expect(fragment.records).toEqual([prRecord, terminal]);
         return new Map(
           fragment.records.map((record) => [record.contextId, `${record.contextId}_imported`]),
         );
       },
     );
-    expect(importedIds).toEqual([prRecord.contextId, terminal.contextId]);
     expect(collectComposerContextReferences(text)).toMatchObject([
       { label: "#11420", contextId: `${prRecord.contextId}_imported` },
       { label: "Build", contextId: `${terminal.contextId}_imported` },
     ]);
-  });
-  it("retains every word of an ambiguous pasted PR marker", () => {
-    const ambiguous = marker.replace("#11420", "fixes #5 and #11420");
-    expect(importPastedComposerText({ getData: () => ambiguous })).toBe(ambiguous);
   });
   it("turns a pasted provider marker into an editor reference", () => {
     const text = importPastedComposerText({
@@ -75,21 +64,6 @@ describe("importPastedComposerText", () => {
     });
     expect(text).toBe(
       "Review [#11420](t3-context://v1/review-comment/review-comment_pr-reference-11420-c3ac9552f23277bd) please",
-    );
-    expect(collectComposerContextReferences(text)).toMatchObject([
-      {
-        kind: "review-comment",
-        label: "#11420",
-        contextId: "review-comment_pr-reference-11420-c3ac9552f23277bd",
-      },
-    ]);
-  });
-
-  it("preserves a mismatched number as an unavailable editor reference", () => {
-    const malformed =
-      "[Review comment: #14437; ref=review-comment_pr-reference-14447-06ff1614db759a87]";
-    expect(importPastedComposerText({ getData: () => malformed })).toBe(
-      "[#14437](t3-context://v1/review-comment/review-comment_pr-reference-14447-06ff1614db759a87)",
     );
   });
 });

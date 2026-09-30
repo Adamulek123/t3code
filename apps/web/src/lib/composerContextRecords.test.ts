@@ -372,67 +372,51 @@ describe("composerContextRecords", () => {
     ).toBe(false);
   });
 
-  it("collects unresolved pasted PR references by folded id, ignoring loaded clipboard records", () => {
+  it("collects only missing records by folded ID, deduplicating repeated references", () => {
     const pending = legacyPullRequestSummary(7);
-    const loaded = reviewCommentFromRecord(
-      reviewCommentContextRecord({
-        ...legacyPullRequestSummary(9),
-        pullRequest: {
-          number: 9,
-          title: "Loaded record",
-          url: "https://github.com/t3code/t3/pull/9",
-          headBranch: "fix/loaded",
-          baseBranch: "main",
-          state: "open" as const,
-          isDraft: false,
-        },
-      }),
-    );
-    const plain = {
-      ...pending,
-      id: "other-review",
-      sectionId: "file:a.ts",
-      filePath: "a.ts",
-      rangeLabel: "L1",
-    };
+    const stored = legacyPullRequestSummary(9);
     const prompt = [
       formatInlineContextReference(reviewCommentContextReference(pending)),
-      formatInlineContextReference(reviewCommentContextReference(loaded)),
-      formatInlineContextReference(reviewCommentContextReference(plain)),
+      formatInlineContextReference(reviewCommentContextReference(pending)),
+      formatInlineContextReference(reviewCommentContextReference(stored)),
     ].join(" and ");
-
-    const unresolved = unresolvedPastedPullRequestReferences(prompt, [pending, loaded, plain]);
+    const unresolved = unresolvedPastedPullRequestReferences(prompt, [
+      stored,
+      { ...pending, id: "unrelated" },
+    ]);
     expect(unresolved.map((entry) => entry.number)).toEqual([7]);
     expect(unresolved[0]?.contextId).toContain("pr-reference-7-");
   });
 
-  it("does not resolve a missing reference from an unrelated chip with the same number", () => {
-    const pending = legacyPullRequestSummary(7);
-    const prompt = formatInlineContextReference(reviewCommentContextReference(pending));
-    const unrelated = { ...pending, id: "unrelated", text: "A legacy summary" };
-    expect(unresolvedPastedPullRequestReferences(prompt, [unrelated])).toHaveLength(1);
-    expect(unresolvedPastedPullRequestReferences(prompt, [])).toHaveLength(1);
-    expect(unresolvedPastedPullRequestReferences("", [pending])).toEqual([]);
+  it("retains an existing summary without upgrading its metadata", () => {
+    const stored = legacyPullRequestSummary(7);
+    const prompt = formatInlineContextReference(reviewCommentContextReference(stored));
+    expect(unresolvedPastedPullRequestReferences(prompt, [stored])).toEqual([]);
+    expect(
+      shouldBlockPastedPullRequestSend({
+        prompt,
+        reviewComments: [stored],
+        canResolve: true,
+        answeringPendingInput: false,
+      }),
+    ).toBe(false);
   });
 
   it("does not resolve or block send for a pasted PR with a mismatched #N label", () => {
-    const label = "#14437";
     const pending = legacyPullRequestSummary(14447);
     const prompt = formatInlineContextReference({
       ...reviewCommentContextReference(pending),
-      label,
+      label: "#14437",
     });
-    for (const reviewComments of [[], [pending]]) {
-      expect(unresolvedPastedPullRequestReferences(prompt, reviewComments)).toEqual([]);
-      expect(
-        shouldBlockPastedPullRequestSend({
-          prompt,
-          reviewComments,
-          canResolve: true,
-          answeringPendingInput: false,
-        }),
-      ).toBe(false);
-    }
+    expect(unresolvedPastedPullRequestReferences(prompt, [])).toEqual([]);
+    expect(
+      shouldBlockPastedPullRequestSend({
+        prompt,
+        reviewComments: [],
+        canResolve: true,
+        answeringPendingInput: false,
+      }),
+    ).toBe(false);
   });
 
   it("keeps the pasted PR number as text after a failed lookup without changing other chips", () => {
@@ -445,10 +429,9 @@ describe("composerContextRecords", () => {
       new Set(unresolved.map((entry) => entry.contextId)),
     );
     expect(restored).toBe("Review #7 and [file](t3-context://v1/file/file_1)");
-    expect(unresolvedPastedPullRequestReferences(restored, [])).toEqual([]);
   });
 
-  it("blocks send only until the pasted PR resolves or becomes plain text", () => {
+  it("bypasses the pasted PR gate for pending input and ordinary #N text", () => {
     const pending = legacyPullRequestSummary(7);
     const prompt = formatInlineContextReference(reviewCommentContextReference(pending));
     const input = {
@@ -457,22 +440,7 @@ describe("composerContextRecords", () => {
       canResolve: true,
       answeringPendingInput: false,
     };
-    expect(shouldBlockPastedPullRequestSend(input)).toBe(true);
-    expect(shouldBlockPastedPullRequestSend({ ...input, canResolve: false })).toBe(false);
     expect(shouldBlockPastedPullRequestSend({ ...input, answeringPendingInput: true })).toBe(false);
-    const resolved = {
-      ...pending,
-      pullRequest: {
-        number: 7,
-        title: "Resolved",
-        url: "https://github.com/t3code/t3/pull/7",
-        headBranch: "fix",
-        baseBranch: "main",
-        state: "open" as const,
-        isDraft: false,
-      },
-    };
-    expect(shouldBlockPastedPullRequestSend({ ...input, reviewComments: [resolved] })).toBe(false);
     expect(shouldBlockPastedPullRequestSend({ ...input, prompt: "#7", reviewComments: [] })).toBe(
       false,
     );

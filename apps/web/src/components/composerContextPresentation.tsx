@@ -459,16 +459,7 @@ export function ComposerContextReferenceChip(props: {
       />
     );
   }
-  // References can also carry a legacy summary without PR metadata. Resolve it
-  // the same way as a reference with no clipboard record.
-  if (
-    props.kind === "review-comment" &&
-    pastedNumber !== null &&
-    (record === undefined ||
-      (record.kind === "review-comment" &&
-        record.record.pullRequest === undefined &&
-        isPullRequestSummaryContext(record.record)))
-  ) {
+  if (props.kind === "review-comment" && pastedNumber !== null && record === undefined) {
     if (
       pendingPullRequestResolvable &&
       selfConsistentPastedPullRequestNumber(props.label, props.contextId) === pastedNumber

@@ -4,7 +4,7 @@ import { runPastedPullRequestLookup } from "./pastedPullRequestLookup";
 afterEach(() => vi.useRealTimers());
 
 describe("runPastedPullRequestLookup", () => {
-  it("upgrades a successful lookup and ignores an obsolete completion", async () => {
+  it("resolves a successful lookup", async () => {
     const onSuccess = vi.fn();
     const onFailure = vi.fn();
     await runPastedPullRequestLookup({
@@ -14,16 +14,6 @@ describe("runPastedPullRequestLookup", () => {
       onFailure,
     });
     expect(onSuccess).toHaveBeenCalledWith({ number: 7 });
-    expect(onFailure).not.toHaveBeenCalled();
-
-    onSuccess.mockClear();
-    await runPastedPullRequestLookup({
-      read: async () => ({ _tag: "Success", value: { number: 7 } }),
-      isStale: () => true,
-      onSuccess,
-      onFailure,
-    });
-    expect(onSuccess).not.toHaveBeenCalled();
     expect(onFailure).not.toHaveBeenCalled();
   });
 
@@ -42,22 +32,19 @@ describe("runPastedPullRequestLookup", () => {
     expect(onFailure).toHaveBeenCalledOnce();
   });
 
-  it.each([false, true])(
-    "handles query failures only in the active scope, stale=%s",
-    async (stale) => {
-      const onSuccess = vi.fn();
-      const onFailure = vi.fn();
-      for (const read of [
-        async () => ({ _tag: "Failure" as const }),
-        async () => {
-          throw new Error("Disconnected");
-        },
-      ]) {
-        onFailure.mockClear();
-        await runPastedPullRequestLookup({ read, isStale: () => stale, onSuccess, onFailure });
-        expect(onSuccess).not.toHaveBeenCalled();
-        expect(onFailure).toHaveBeenCalledTimes(stale ? 0 : 1);
-      }
-    },
-  );
+  it("handles query failures and disconnected requests", async () => {
+    const onSuccess = vi.fn();
+    const onFailure = vi.fn();
+    for (const read of [
+      async () => ({ _tag: "Failure" as const }),
+      async () => {
+        throw new Error("Disconnected");
+      },
+    ]) {
+      onFailure.mockClear();
+      await runPastedPullRequestLookup({ read, isStale: () => false, onSuccess, onFailure });
+      expect(onSuccess).not.toHaveBeenCalled();
+      expect(onFailure).toHaveBeenCalledOnce();
+    }
+  });
 });

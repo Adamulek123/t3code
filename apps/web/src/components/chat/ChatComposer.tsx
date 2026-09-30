@@ -2383,17 +2383,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           new Set(failed.map((pending) => pending.contextId)),
         ),
       );
-      for (const pending of failed) {
-        if (!pending.comment) continue;
-        removeComposerDraftReviewComment(composerDraftTarget, pending.comment.id);
-      }
       toastManager.add({
         type: "info",
         title: `Could not load PR #${number}.`,
         description: "The number is still in your message. Check it or try pasting again.",
       });
     },
-    [composerDraftTarget, removeComposerDraftReviewComment],
+    [composerDraftTarget],
   );
   useEffect(() => {
     if (pullRequestProjectId === null || pullRequestRepository === null) return;
