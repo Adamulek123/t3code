@@ -5,6 +5,7 @@ import { formatAttachmentSize } from "@t3tools/client-runtime/state/attachments"
 import { videoMimeType } from "@t3tools/shared/video";
 import {
   pullRequestNumberFromPastedContextId,
+  pullRequestNumberFromPastedLabel,
   selfConsistentPastedPullRequestNumber,
 } from "@t3tools/shared/composerContextReferences";
 import { MessageCircleIcon, MousePointerClickIcon } from "lucide-react";
@@ -453,7 +454,7 @@ export function ComposerContextReferenceChip(props: {
   if (
     props.kind === "review-comment" &&
     pastedNumber !== null &&
-    /^#\d+$/u.test(props.label.trim()) &&
+    pullRequestNumberFromPastedLabel(props.label) !== null &&
     selfConsistentPastedPullRequestNumber(props.label, props.contextId) !== pastedNumber
   ) {
     return (

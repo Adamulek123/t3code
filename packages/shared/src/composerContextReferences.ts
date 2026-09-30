@@ -301,7 +301,7 @@ export function projectComposerContextForProvider(input: {
  */
 const PASTED_PR_REFERENCE_ID_PATTERN = /^review-comment_pr-reference-(\d+)-[0-9a-f]+$/u;
 const PASTED_PR_PROVIDER_MARKER_PATTERN =
-  /\[([^\]\n]{0,512}?);\s*ref=(review-comment_pr-reference-\d+-[0-9a-f]+)\]/gu;
+  /\[([^\]\r\n]{0,512}?);[ \t]*ref[ \t]*=[ \t]*(review-comment_pr-reference-\d+-[0-9a-f]+)[ \t]*\]/gu;
 
 /** Pull request number behind a pasted `pr-reference` context id, if any. */
 export function pullRequestNumberFromPastedContextId(contextId: string): number | null {
@@ -312,7 +312,14 @@ export function pullRequestNumberFromPastedContextId(contextId: string): number 
   return Number.isSafeInteger(number) && number > 0 ? number : null;
 }
 
-const PASTED_PR_LABEL_NUMBER_PATTERN = /^(?:Review comment:\s*)?#(\d+)$/u;
+const PASTED_PR_LABEL_NUMBER_PATTERN =
+  /^(?:review[ \t]+comment[ \t]*:[ \t]*)?(?:pr[ \t]*:?[ \t]*)?#(\d+)$/iu;
+
+/** A numeric-only pasted PR label, including optional review-comment and PR prefixes. */
+export function pullRequestNumberFromPastedLabel(label: string): number | null {
+  const number = Number(PASTED_PR_LABEL_NUMBER_PATTERN.exec(label.trim())?.[1]);
+  return Number.isSafeInteger(number) && number > 0 ? number : null;
+}
 
 /**
  * The number a pasted `pr-reference` chip stands for, but only when the
@@ -326,8 +333,8 @@ export function selfConsistentPastedPullRequestNumber(
 ): number | null {
   const refNumber = pullRequestNumberFromPastedContextId(contextId);
   if (refNumber === null) return null;
-  const labelNumber = Number(PASTED_PR_LABEL_NUMBER_PATTERN.exec(label.trim())?.[1]);
-  if (!Number.isSafeInteger(labelNumber) || labelNumber <= 0 || labelNumber !== refNumber) {
+  const labelNumber = pullRequestNumberFromPastedLabel(label);
+  if (labelNumber !== refNumber) {
     return null;
   }
   return refNumber;
@@ -341,6 +348,7 @@ export function selfConsistentPastedPullRequestNumber(
  * cannot reconstruct, so leave those markers intact.
  */
 export function rewritePastedPullRequestMarkers(text: string): string {
+  if (!text.includes("review-comment_pr-reference-")) return text;
   return text.replace(
     PASTED_PR_PROVIDER_MARKER_PATTERN,
     (match, label: string, contextId: string) => {

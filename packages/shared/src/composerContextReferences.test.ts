@@ -268,6 +268,25 @@ describe("provider projection", () => {
 });
 
 describe("pasted pull-request references", () => {
+  it.each([
+    "#7",
+    "PR #7",
+    "PR#7",
+    "PR: #7",
+    "Review comment: #7",
+    "Review comment: PR #7",
+    "review comment: #7",
+    "Review Comment: #7",
+    "Review  comment: #7",
+    "Review comment : #7",
+  ])("resolves numeric-only PR label variants without relaxing identity grammar: %s", (label) => {
+    const contextId = "review-comment_pr-reference-7-abcdef12";
+    expect(selfConsistentPastedPullRequestNumber(label, contextId)).toBe(7);
+    expect(selfConsistentPastedPullRequestNumber(label.replace("#7", "#8"), contextId)).toBeNull();
+    expect(rewritePastedPullRequestMarkers(`[${label}; ref=${contextId}]`)).toBe(
+      `[#7](t3-context://v1/review-comment/${contextId})`,
+    );
+  });
   it.each([128, 129, 256])("only rewrites IDs within the canonical length limit: %s", (length) => {
     const prefix = "review-comment_pr-reference-7-";
     const contextId = prefix + "a".repeat(length - prefix.length);
@@ -353,7 +372,7 @@ describe("pasted pull-request references", () => {
     },
   );
 
-  it.each([";ref=", ";\tref=", ";  ref="])(
+  it.each([";ref=", ";\tref=", ";  ref=", "; ref= ", "; ref = ", ";\tref\t=\t"])(
     "rewrites marker spacing supported by the parser: %s",
     (separator) => {
       const marker = `[Review comment: #7${separator}review-comment_pr-reference-7-abcdef12]`;
@@ -362,6 +381,13 @@ describe("pasted pull-request references", () => {
       );
     },
   );
+
+  it.each([
+    "[Review comment: #7;\nref=review-comment_pr-reference-7-abcdef12]",
+    "[Review comment: #7; ref=\nreview-comment_pr-reference-7-abcdef12]",
+  ])("does not combine separate lines into a PR marker: %s", (marker) => {
+    expect(rewritePastedPullRequestMarkers(marker)).toBe(marker);
+  });
 
   it("preserves mismatched marker numbers without making them resolvable", () => {
     const malformed =
