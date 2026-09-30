@@ -375,7 +375,11 @@ export function rewritePastedPullRequestMarkers(text: string): string {
       // Preserve the pasted number even when it disagrees with the reference.
       // The chip stays unavailable and the resolver ignores the mismatch.
       const number = PASTED_PR_LABEL_NUMBER_PATTERN.exec(label.trim())?.[1];
-      if (number === undefined || pullRequestNumberFromPastedContextId(contextId) === null) {
+      if (
+        number === undefined ||
+        number.length + 1 > COMPOSER_CONTEXT_LABEL_MAX_CHARS ||
+        pullRequestNumberFromPastedContextId(contextId) === null
+      ) {
         return match;
       }
       return `[#${number}](${COMPOSER_CONTEXT_HREF_PREFIX}review-comment/${contextId})`;

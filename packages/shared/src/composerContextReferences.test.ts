@@ -285,6 +285,30 @@ describe("pasted pull-request references", () => {
   const prLink = (label: string) =>
     `[${label}](t3-context://v1/review-comment/${prRecord.contextId})`;
 
+  it.each([201, 207])(
+    "preserves an overlong mismatched marker without sending its imported PR payload: %i chars",
+    (length) => {
+      const label = `#${"0".repeat(length - 6)}14437`;
+      const marker = `[Review comment: ${label}; ref=${prRecord.contextId}]`;
+      const pasted = rewritePastedPullRequestMarkers(marker);
+      expect(pasted).toBe(marker);
+      expect(collectComposerContextReferences(pasted)).toEqual([]);
+      expect(projectComposerContextForProvider({ text: pasted, records: [prRecord] })).toBe(marker);
+    },
+  );
+
+  it("rewrites a numeric label at the 200-character limit without truncating it", () => {
+    const label = `#${"0".repeat(194)}14447`;
+    const marker = `[Review comment: ${label}; ref=${prRecord.contextId}]`;
+    const pasted = rewritePastedPullRequestMarkers(marker);
+    expect(pasted).toBe(prLink(label));
+    expect(collectComposerContextReferences(pasted)).toMatchObject([{ label }]);
+    expect(selfConsistentPastedPullRequestNumber(label, prRecord.contextId)).toBe(14447);
+    expect(projectComposerContextForProvider({ text: pasted, records: [prRecord] })).toContain(
+      "Summary of PR #14447",
+    );
+  });
+
   it.each(["#14437", "PR #14437", "Review comment: #14437", "Review comment: PR #14437"])(
     "does not send a loaded PR payload for a mismatched numeric label: %s",
     (label) => {
