@@ -14,8 +14,8 @@ import {
 /** Clipboard records referenced by the copied text, including dependent screenshots. */
 export function readPastedComposerContext(
   clipboardData: Pick<DataTransfer, "getData">,
+  pastedText = rewritePastedPullRequestMarkers(clipboardData.getData("text/plain")),
 ): ComposerContextClipboardFragment | null {
-  const pastedText = clipboardData.getData("text/plain");
   // Only records whose links are in the pasted text get imported; a fragment may carry
   // more (it was built for a larger copy) and must not start transfers for those.
   const decodedFragment =
@@ -53,7 +53,9 @@ export function importPastedComposerText(
   // back on their own. Rewrite pasted `pr-reference` markers into canonical
   // links first so they become chips; the resolver upgrades them in place.
   const pastedWithPullRequests = rewritePastedPullRequestMarkers(pastedText);
-  const fragment = importContextFragment ? readPastedComposerContext(clipboardData) : null;
+  const fragment = importContextFragment
+    ? readPastedComposerContext(clipboardData, pastedWithPullRequests)
+    : null;
   const rewrittenIds =
     fragment && fragment.records.length > 0 ? importContextFragment!(fragment) : null;
   const text =
