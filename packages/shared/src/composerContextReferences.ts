@@ -306,9 +306,9 @@ export function projectComposerContextForProvider(input: {
  * `review-comment_pr-reference-<number>-<hash>`. The number stays in plaintext,
  * so a pasted provider marker can be resolved without its original record.
  */
-const PASTED_PR_REFERENCE_ID_PATTERN = /^review-comment_pr-reference-(\d+)-[0-9a-f]+$/u;
+const PASTED_PR_REFERENCE_ID_PATTERN = /^review-comment_pr-reference-([1-9]\d*)-[0-9a-f]+$/u;
 const PASTED_PR_PROVIDER_MARKER_PATTERN =
-  /\[([^\]\r\n]{0,512}?);[ \t]*ref[ \t]*=[ \t]*(review-comment_pr-reference-\d+-[0-9a-f]+)[ \t]*\]/gu;
+  /\[Review comment: #([1-9]\d*); ref=(review-comment_pr-reference-[1-9]\d*-[0-9a-f]+)\]/gu;
 
 /** Pull request number behind a pasted `pr-reference` context id, if any. */
 export function pullRequestNumberFromPastedContextId(contextId: string): number | null {
@@ -319,12 +319,9 @@ export function pullRequestNumberFromPastedContextId(contextId: string): number 
   return Number.isSafeInteger(number) && number > 0 ? number : null;
 }
 
-const PASTED_PR_LABEL_NUMBER_PATTERN =
-  /^(?:review[ \t]+comment[ \t]*:[ \t]*)?(?:pr[ \t]*:?[ \t]*)?#(\d+)$/iu;
-
-/** A numeric-only pasted PR label, including optional review-comment and PR prefixes. */
+/** Only the canonical `#N` link label can start a lookup or indicate a mismatch. */
 function pullRequestNumberFromPastedLabel(label: string): number | null {
-  const number = Number(PASTED_PR_LABEL_NUMBER_PATTERN.exec(label.trim())?.[1]);
+  const number = Number(/^#([1-9]\d*)$/u.exec(label)?.[1]);
   return Number.isSafeInteger(number) && number > 0 ? number : null;
 }
 
@@ -371,12 +368,10 @@ export function rewritePastedPullRequestMarkers(text: string): string {
   if (!text.includes("review-comment_pr-reference-")) return text;
   return text.replace(
     PASTED_PR_PROVIDER_MARKER_PATTERN,
-    (match, label: string, contextId: string) => {
+    (match, number: string, contextId: string) => {
       // Preserve the pasted number even when it disagrees with the reference.
       // The chip stays unavailable and the resolver ignores the mismatch.
-      const number = PASTED_PR_LABEL_NUMBER_PATTERN.exec(label.trim())?.[1];
       if (
-        number === undefined ||
         number.length + 1 > COMPOSER_CONTEXT_LABEL_MAX_CHARS ||
         pullRequestNumberFromPastedContextId(contextId) === null
       ) {

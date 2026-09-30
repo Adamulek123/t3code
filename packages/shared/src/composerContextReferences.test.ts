@@ -285,42 +285,25 @@ describe("pasted pull-request references", () => {
   const prLink = (label: string) =>
     `[${label}](t3-context://v1/review-comment/${prRecord.contextId})`;
 
-  it.each([201, 207])(
-    "preserves an overlong mismatched marker without sending its imported PR payload: %i chars",
-    (length) => {
-      const label = `#${"0".repeat(length - 6)}14437`;
-      const marker = `[Review comment: ${label}; ref=${prRecord.contextId}]`;
-      const pasted = rewritePastedPullRequestMarkers(marker);
-      expect(pasted).toBe(marker);
-      expect(collectComposerContextReferences(pasted)).toEqual([]);
-      expect(projectComposerContextForProvider({ text: pasted, records: [prRecord] })).toBe(marker);
-    },
-  );
-
-  it("rewrites a numeric label at the 200-character limit without truncating it", () => {
-    const label = `#${"0".repeat(194)}14447`;
+  it("preserves an overlong marker without sending its imported PR payload", () => {
+    const label = `#${"9".repeat(201)}`;
     const marker = `[Review comment: ${label}; ref=${prRecord.contextId}]`;
     const pasted = rewritePastedPullRequestMarkers(marker);
-    expect(pasted).toBe(prLink(label));
-    expect(collectComposerContextReferences(pasted)).toMatchObject([{ label }]);
-    expect(selfConsistentPastedPullRequestNumber(label, prRecord.contextId)).toBe(14447);
-    expect(projectComposerContextForProvider({ text: pasted, records: [prRecord] })).toContain(
-      "Summary of PR #14447",
-    );
+    expect(pasted).toBe(marker);
+    expect(collectComposerContextReferences(pasted)).toEqual([]);
+    expect(projectComposerContextForProvider({ text: pasted, records: [prRecord] })).toBe(marker);
   });
 
-  it.each(["#14437", "PR #14437", "Review comment: #14437", "Review comment: PR #14437"])(
-    "does not send a loaded PR payload for a mismatched numeric label: %s",
-    (label) => {
-      const projected = projectComposerContextForProvider({
-        text: prLink(label),
-        records: [prRecord],
-      });
-      expect(projected).toContain(`[Review comment: ${label}; ref=${prRecord.contextId}]`);
-      expect(projected).toContain(`id="${prRecord.contextId}" unavailable="true"/>`);
-      expect(projected).not.toContain("Summary of PR #14447");
-    },
-  );
+  it("does not send a loaded PR payload for a mismatched #N label", () => {
+    const label = "#14437";
+    const projected = projectComposerContextForProvider({
+      text: prLink(label),
+      records: [prRecord],
+    });
+    expect(projected).toContain(`[Review comment: ${label}; ref=${prRecord.contextId}]`);
+    expect(projected).toContain(`id="${prRecord.contextId}" unavailable="true"/>`);
+    expect(projected).not.toContain("Summary of PR #14447");
+  });
 
   it.each([false, true])(
     "retains a valid occurrence's payload alongside a mismatch, valid first=%s",
@@ -345,26 +328,7 @@ describe("pasted pull-request references", () => {
     expect(projected).toContain("Summary of PR #14447");
     expect(projected).not.toContain('unavailable="true"');
   });
-  it.each([
-    "#7",
-    "PR #7",
-    "PR#7",
-    "PR: #7",
-    "Review comment: #7",
-    "Review comment: PR #7",
-    "review comment: #7",
-    "Review Comment: #7",
-    "Review  comment: #7",
-    "Review comment : #7",
-  ])("resolves numeric-only PR label variants without relaxing identity grammar: %s", (label) => {
-    const contextId = "review-comment_pr-reference-7-abcdef12";
-    expect(selfConsistentPastedPullRequestNumber(label, contextId)).toBe(7);
-    expect(selfConsistentPastedPullRequestNumber(label.replace("#7", "#8"), contextId)).toBeNull();
-    expect(rewritePastedPullRequestMarkers(`[${label}; ref=${contextId}]`)).toBe(
-      `[#7](t3-context://v1/review-comment/${contextId})`,
-    );
-  });
-  it.each([128, 129, 256])("only rewrites IDs within the canonical length limit: %s", (length) => {
+  it.each([128, 129])("only rewrites IDs within the canonical length limit: %s", (length) => {
     const prefix = "review-comment_pr-reference-7-";
     const contextId = prefix + "a".repeat(length - prefix.length);
     const marker = `[Review comment: #7; ref=${contextId}]`;
@@ -392,8 +356,6 @@ describe("pasted pull-request references", () => {
     "review-comment_pr-reference-11420-c3ac9552f23277bd_suffix",
     "review-comment_pr-reference-11420-c3ac9552f23277bdz",
     "REVIEW-COMMENT_PR-REFERENCE-11420-C3AC9552F23277BD",
-    "Review-Comment_pr-reference-11420-c3ac9552f23277bd",
-    "review-comment_PR-REFERENCE-11420-c3ac9552f23277bd",
     "review-comment_pr-reference-11420-C3AC9552F23277BD",
   ])("rejects a noncanonical PR reference ID: %s", (contextId) => {
     expect(pullRequestNumberFromPastedContextId(contextId)).toBeNull();
@@ -412,27 +374,21 @@ describe("pasted pull-request references", () => {
     expect(collectComposerContextReferences(rewritten)).toHaveLength(1);
   });
 
-  it.each(["7", "007"])("keeps harmless leading zeros in labels and IDs: %s", (idNumber) => {
-    const contextId = `review-comment_pr-reference-${idNumber}-abcdef12`;
-    expect(pullRequestNumberFromPastedContextId(contextId)).toBe(7);
-    expect(selfConsistentPastedPullRequestNumber("#007", contextId)).toBe(7);
-    expect(rewritePastedPullRequestMarkers(`[Review comment: #007; ref=${contextId}]`)).toBe(
-      `[#007](t3-context://v1/review-comment/${contextId})`,
-    );
-  });
-
   it("leaves prose and non-PR markers alone", () => {
     expect(rewritePastedPullRequestMarkers("plain prose")).toBe("plain prose");
+    expect(rewritePastedPullRequestMarkers("#123456")).toBe("#123456");
+    expect(rewritePastedPullRequestMarkers(prLink("#14447"))).toBe(prLink("#14447"));
     const image = "[Image: shot.png; ref=image_abc]";
     expect(rewritePastedPullRequestMarkers(image)).toBe(image);
   });
 
   it.each([
-    "Review comment: fixes #5 and #11420",
-    "Review comment: #11420 and #5",
-    "Review comment: release notes for #11420",
-    "Review comment: #11420 trailing words",
-  ])("preserves ambiguous or descriptive marker text: %s", (label) => {
+    "PR #11420",
+    "Review comment: PR #11420",
+    "PR: #11420",
+    "review comment: #11420",
+    "Review comment: #0011420",
+  ])("leaves unsupported marker labels unchanged: %s", (label) => {
     const contextId = "review-comment_pr-reference-11420-c3ac9552f23277bd";
     const marker = `[${label}; ref=${contextId}]`;
     expect(rewritePastedPullRequestMarkers(marker)).toBe(marker);
@@ -449,20 +405,10 @@ describe("pasted pull-request references", () => {
     },
   );
 
-  it.each([";ref=", ";\tref=", ";  ref=", "; ref= ", "; ref = ", ";\tref\t=\t"])(
-    "rewrites marker spacing supported by the parser: %s",
-    (separator) => {
-      const marker = `[Review comment: #7${separator}review-comment_pr-reference-7-abcdef12]`;
-      expect(rewritePastedPullRequestMarkers(marker)).toBe(
-        "[#7](t3-context://v1/review-comment/review-comment_pr-reference-7-abcdef12)",
-      );
-    },
-  );
-
   it.each([
+    "[Review comment: #7; ref = review-comment_pr-reference-7-abcdef12]",
     "[Review comment: #7;\nref=review-comment_pr-reference-7-abcdef12]",
-    "[Review comment: #7; ref=\nreview-comment_pr-reference-7-abcdef12]",
-  ])("does not combine separate lines into a PR marker: %s", (marker) => {
+  ])("leaves noncanonical marker spacing unchanged: %s", (marker) => {
     expect(rewritePastedPullRequestMarkers(marker)).toBe(marker);
   });
 

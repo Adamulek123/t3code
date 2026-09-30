@@ -85,23 +85,11 @@ describe("importPastedComposerText", () => {
     ]);
   });
 
-  it.each([
-    [
-      marker.replace("#11420", "#11421"),
-      "#11421",
-      "review-comment_pr-reference-11420-c3ac9552f23277bd",
-    ],
-    [
-      "[Review comment: #14437; ref=review-comment_pr-reference-14447-06ff1614db759a87]",
-      "#14437",
-      "review-comment_pr-reference-14447-06ff1614db759a87",
-    ],
-  ])(
-    "preserves a mismatched number as an unavailable editor reference: %s",
-    (malformed, label, id) => {
-      expect(importPastedComposerText({ getData: () => malformed })).toBe(
-        `[${label}](t3-context://v1/review-comment/${id})`,
-      );
-    },
-  );
+  it("preserves a mismatched number as an unavailable editor reference", () => {
+    const malformed =
+      "[Review comment: #14437; ref=review-comment_pr-reference-14447-06ff1614db759a87]";
+    expect(importPastedComposerText({ getData: () => malformed })).toBe(
+      "[#14437](t3-context://v1/review-comment/review-comment_pr-reference-14447-06ff1614db759a87)",
+    );
+  });
 });

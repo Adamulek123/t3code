@@ -415,27 +415,25 @@ describe("composerContextRecords", () => {
     expect(unresolvedPastedPullRequestReferences("", [pending])).toEqual([]);
   });
 
-  it.each(["#14437", "PR #14437", "Review comment: #14437", "Review comment: PR #14437"])(
-    "does not resolve or block send for a pasted PR with a mismatched label: %s",
-    (label) => {
-      const pending = legacyPullRequestSummary(14447);
-      const prompt = formatInlineContextReference({
-        ...reviewCommentContextReference(pending),
-        label,
-      });
-      for (const reviewComments of [[], [pending]]) {
-        expect(unresolvedPastedPullRequestReferences(prompt, reviewComments)).toEqual([]);
-        expect(
-          shouldBlockPastedPullRequestSend({
-            prompt,
-            reviewComments,
-            canResolve: true,
-            answeringPendingInput: false,
-          }),
-        ).toBe(false);
-      }
-    },
-  );
+  it("does not resolve or block send for a pasted PR with a mismatched #N label", () => {
+    const label = "#14437";
+    const pending = legacyPullRequestSummary(14447);
+    const prompt = formatInlineContextReference({
+      ...reviewCommentContextReference(pending),
+      label,
+    });
+    for (const reviewComments of [[], [pending]]) {
+      expect(unresolvedPastedPullRequestReferences(prompt, reviewComments)).toEqual([]);
+      expect(
+        shouldBlockPastedPullRequestSend({
+          prompt,
+          reviewComments,
+          canResolve: true,
+          answeringPendingInput: false,
+        }),
+      ).toBe(false);
+    }
+  });
 
   it("keeps the pasted PR number as text after a failed lookup without changing other chips", () => {
     const pending = legacyPullRequestSummary(7);

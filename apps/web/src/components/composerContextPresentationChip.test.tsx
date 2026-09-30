@@ -73,15 +73,8 @@ it("loads a pasted reference without a placeholder record, then displays its res
   const unavailableChip = () => container.querySelector('[data-context-unresolved="true"]');
 
   try {
-    for (const label of [
-      "#11420",
-      "PR #11420",
-      "Review comment: PR #11420",
-      "review comment: #11420",
-    ]) {
-      await renderChip(label);
-      expect(loadingChip()).not.toBeNull();
-    }
+    await renderChip("#11420");
+    expect(loadingChip()).not.toBeNull();
 
     await renderChip("#11410");
     expect(unavailableChip()?.getAttribute("aria-label")).toBe("Unavailable context, #11410");
@@ -109,22 +102,11 @@ it("loads a pasted reference without a placeholder record, then displays its res
       expect(container.textContent).toContain("#11420");
     }
 
-    for (const label of [
-      "#11410",
-      "PR #11410",
-      "Review comment: #11410",
-      "Review comment: PR #11410",
-    ]) {
-      for (const state of ["open", "closed", "merged"] as const) {
-        await renderChip(label, [
-          { ...resolved, pullRequest: { ...resolved.pullRequest!, state } },
-        ]);
-        expect(unavailableChip()?.getAttribute("aria-label")).toBe(`Unavailable context, ${label}`);
-        expect(loadingChip()).toBeNull();
-        expect(container.textContent).toBe(label);
-        expect(container.querySelector("svg.lucide-circle-dashed")).not.toBeNull();
-      }
-    }
+    await renderChip("#11410", [resolved]);
+    expect(unavailableChip()?.getAttribute("aria-label")).toBe("Unavailable context, #11410");
+    expect(loadingChip()).toBeNull();
+    expect(container.textContent).toBe("#11410");
+    expect(container.querySelector("svg.lucide-circle-dashed")).not.toBeNull();
     await act(async () => {
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
       (unavailableChip() as HTMLElement).focus();

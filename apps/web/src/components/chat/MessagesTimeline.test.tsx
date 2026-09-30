@@ -2065,9 +2065,6 @@ describe("MessagesTimeline", () => {
 
   it.each([
     ["#14437", true],
-    ["PR #14437", true],
-    ["Review comment: #14437", true],
-    ["Review comment: PR #14437", true],
     ["#14447", false],
     ["Release notes for #14437", false],
   ])("preserves numeric mismatches in sent PR chips: %s", (label, unavailable) => {
