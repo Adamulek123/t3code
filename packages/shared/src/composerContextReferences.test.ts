@@ -268,6 +268,59 @@ describe("provider projection", () => {
 });
 
 describe("pasted pull-request references", () => {
+  const prRecord: ComposerContextRecord = {
+    version: 1,
+    kind: "review-comment",
+    contextId: ctx("review-comment_pr-reference-14447-06ff1614db759a87"),
+    label: "#14447",
+    sectionId: "pull-request:14447",
+    sectionTitle: "PR #14447",
+    filePath: "PR #14447",
+    startIndex: 0,
+    endIndex: 0,
+    rangeLabel: "Loaded summary",
+    text: "Summary of PR #14447",
+    diff: "",
+  };
+  const prLink = (label: string) =>
+    `[${label}](t3-context://v1/review-comment/${prRecord.contextId})`;
+
+  it.each(["#14437", "PR #14437", "Review comment: #14437", "Review comment: PR #14437"])(
+    "does not send a loaded PR payload for a mismatched numeric label: %s",
+    (label) => {
+      const projected = projectComposerContextForProvider({
+        text: prLink(label),
+        records: [prRecord],
+      });
+      expect(projected).toContain(`[Review comment: ${label}; ref=${prRecord.contextId}]`);
+      expect(projected).toContain(`id="${prRecord.contextId}" unavailable="true"/>`);
+      expect(projected).not.toContain("Summary of PR #14447");
+    },
+  );
+
+  it.each([false, true])(
+    "retains a valid occurrence's payload alongside a mismatch, valid first=%s",
+    (validFirst) => {
+      const links = [prLink("#14437"), prLink("#14447")];
+      if (validFirst) links.reverse();
+      const projected = projectComposerContextForProvider({
+        text: links.join(" and "),
+        records: [prRecord],
+      });
+      expect(projected).toContain("Summary of PR #14447");
+      expect(projected).not.toContain('unavailable="true"');
+      expect(projected.match(/<context kind="review-comment"/gu)).toHaveLength(1);
+    },
+  );
+
+  it("retains loaded PR context with descriptive labels", () => {
+    const projected = projectComposerContextForProvider({
+      text: prLink("Release notes for #14437"),
+      records: [prRecord],
+    });
+    expect(projected).toContain("Summary of PR #14447");
+    expect(projected).not.toContain('unavailable="true"');
+  });
   it.each([
     "#7",
     "PR #7",

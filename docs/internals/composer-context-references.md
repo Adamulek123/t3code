@@ -155,6 +155,10 @@ metadata and are imported before deciding whether a lookup is needed. Handoff, f
 selection markers carry content a PR number cannot reconstruct and are left intact. Mobile keeps
 its existing readable-label rendering and does not rewrite provider markers or run these lookups.
 
+Numeric-only PR labels that disagree with their reference ID stay unavailable in the composer and
+sent transcript, even if a record with that ID exists. Provider projection preserves the label but
+does not emit that record's payload unless another occurrence with the same ID is valid.
+
 ## Attachments
 
 Image and file records use the draft attachment's local id as `contextId` and carry an

@@ -4,8 +4,8 @@ import type { PreviewAnnotationPayload } from "@t3tools/contracts";
 import { formatAttachmentSize } from "@t3tools/client-runtime/state/attachments";
 import { videoMimeType } from "@t3tools/shared/video";
 import {
+  isMismatchedPastedPullRequestReference,
   pullRequestNumberFromPastedContextId,
-  pullRequestNumberFromPastedLabel,
   selfConsistentPastedPullRequestNumber,
 } from "@t3tools/shared/composerContextReferences";
 import { MessageCircleIcon, MousePointerClickIcon } from "lucide-react";
@@ -451,12 +451,7 @@ export function ComposerContextReferenceChip(props: {
   const { records, pendingPullRequestResolvable } = use(ComposerContextRecordsContext);
   const record = records.get(props.contextId);
   const pastedNumber = pullRequestNumberFromPastedContextId(props.contextId);
-  if (
-    props.kind === "review-comment" &&
-    pastedNumber !== null &&
-    pullRequestNumberFromPastedLabel(props.label) !== null &&
-    selfConsistentPastedPullRequestNumber(props.label, props.contextId) !== pastedNumber
-  ) {
+  if (isMismatchedPastedPullRequestReference(props)) {
     return (
       <UnresolvedContextChip
         label={props.label}

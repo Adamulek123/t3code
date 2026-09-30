@@ -13,6 +13,8 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 import type { LegendListRef, MaintainScrollAtEndOptions } from "@legendapp/list/react";
 import { shouldUseRestingComposerLayout } from "../composerFooterLayout";
 import { useComposerFocusState } from "./useComposerFocusState";
+import { buildMessageContext } from "../../lib/composerContextRecords";
+import { buildPullRequestReferenceContext } from "../pullRequest/pullRequestDetail.logic";
 
 vi.mock("@legendapp/list/react", async () => {
   const legendListTestId = "legend-list";
@@ -2059,6 +2061,49 @@ describe("MessagesTimeline", () => {
         annotationRecordIds: ["annotation-1"],
       }),
     ).toBeNull();
+  });
+
+  it.each([
+    ["#14437", true],
+    ["PR #14437", true],
+    ["Review comment: #14437", true],
+    ["Review comment: PR #14437", true],
+    ["#14447", false],
+    ["Release notes for #14437", false],
+  ])("preserves numeric mismatches in sent PR chips: %s", (label, unavailable) => {
+    const context = buildMessageContext({
+      terminalContexts: [],
+      previewAnnotations: [],
+      reviewComments: [
+        buildPullRequestReferenceContext({
+          number: 14447,
+          title: "Clear the persisted active turn",
+          url: "https://github.com/pingdotgg/t3code/pull/14447",
+          state: "open",
+          isDraft: false,
+          headBranch: "fix/clear-settled-active-turn",
+          baseBranch: "main",
+        }),
+      ],
+    })!;
+    const entry = buildUserTimelineEntry(
+      `[${label}](t3-context://v1/review-comment/${context.records[0]!.contextId})`,
+    );
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[{ ...entry, message: { ...entry.message, context } }]}
+      />,
+    );
+    if (unavailable) {
+      expect(markup).toContain(`aria-label="Unavailable context, ${label}"`);
+      expect(markup).toContain('data-context-unresolved="true"');
+      expect(markup).toContain(`>${label}<`);
+      expect(markup).not.toContain("Open Open pull request");
+    } else {
+      expect(markup).not.toContain('data-context-unresolved="true"');
+      expect(markup).toContain("Clear the persisted active turn");
+    }
   });
 
   it("renders structured context records as chips without reparsing text", () => {

@@ -230,6 +230,7 @@ import {
 import {
   collectComposerContextReferences,
   formatComposerContextReference,
+  isMismatchedPastedPullRequestReference,
 } from "@t3tools/shared/composerContextReferences";
 import {
   COMPOSER_CONTEXT_CLIPBOARD_MIME,
@@ -3908,6 +3909,15 @@ function UserMessageContextReferenceChip(props: {
     contextId: props.reference.contextId as ComposerContextId,
     label: props.reference.label,
   });
+  if (isMismatchedPastedPullRequestReference(props.reference)) {
+    return (
+      <UnresolvedChip
+        label={props.reference.label}
+        copyMarkdown={copyMarkdown}
+        tooltip="This pasted PR number doesn't match its reference."
+      />
+    );
+  }
   return userMessageContextPresentationRegistry.render(props.reference.kind, props.record, {
     reference: props.reference,
     annotationImage: props.annotationImage,

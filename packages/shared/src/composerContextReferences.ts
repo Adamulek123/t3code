@@ -266,6 +266,11 @@ export function projectComposerContextForProvider(input: {
     // Even callers that bypass the wire schema must not silently select an ambiguous payload.
     recordsById.set(record.contextId, recordsById.has(record.contextId) ? undefined : record);
   }
+  const validReferenceIds = new Set(
+    occurrences
+      .filter((occurrence) => !isMismatchedPastedPullRequestReference(occurrence))
+      .map((occurrence) => occurrence.contextId),
+  );
   const body = replaceComposerContextReferences(input.text, (occurrence) =>
     formatComposerContextProviderMarker(
       recordsById.get(occurrence.contextId)?.kind ?? occurrence.kind,
@@ -278,7 +283,9 @@ export function projectComposerContextForProvider(input: {
   for (const occurrence of occurrences) {
     if (seen.has(occurrence.contextId)) continue;
     seen.add(occurrence.contextId);
-    const record = recordsById.get(occurrence.contextId);
+    const record = validReferenceIds.has(occurrence.contextId)
+      ? recordsById.get(occurrence.contextId)
+      : undefined;
     const entry = formatEnvelopeEntry(
       record?.kind ?? occurrence.kind,
       occurrence.contextId,
@@ -338,6 +345,19 @@ export function selfConsistentPastedPullRequestNumber(
     return null;
   }
   return refNumber;
+}
+
+/** Numeric PR labels must agree with their reference even when the record already exists. */
+export function isMismatchedPastedPullRequestReference(reference: {
+  kind: string;
+  contextId: string;
+  label: string;
+}): boolean {
+  if (reference.kind !== "review-comment") return false;
+  const refNumber = pullRequestNumberFromPastedContextId(reference.contextId);
+  if (refNumber === null) return false;
+  const labelNumber = pullRequestNumberFromPastedLabel(reference.label);
+  return labelNumber !== null && labelNumber !== refNumber;
 }
 
 /**
