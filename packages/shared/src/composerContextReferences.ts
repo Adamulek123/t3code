@@ -317,7 +317,7 @@ const PASTED_PR_LABEL_NUMBER_PATTERN = /#(\d+)\b/;
  * The number a pasted `pr-reference` chip stands for, but only when the
  * pasted label and the context id agree. A marker like
  * `[Review comment: #11410; ref=...pr-reference-11430-...]` is malformed and
- * must stay plain text rather than enter the resolving flow.
+ * must stay unavailable rather than enter the resolving flow.
  */
 export function selfConsistentPastedPullRequestNumber(
   label: string,
@@ -341,8 +341,12 @@ export function rewritePastedPullRequestMarkers(text: string): string {
   return text.replace(
     PASTED_PR_PROVIDER_MARKER_PATTERN,
     (match, label: string, contextId: string) => {
-      const number = selfConsistentPastedPullRequestNumber(label, contextId);
-      if (number === null) return match;
+      // Preserve the pasted number even when it disagrees with the reference.
+      // The chip stays unavailable and the resolver ignores the mismatch.
+      const number = PASTED_PR_LABEL_NUMBER_PATTERN.exec(label)?.[1];
+      if (number === undefined || pullRequestNumberFromPastedContextId(contextId) === null) {
+        return match;
+      }
       return `[#${number}](${COMPOSER_CONTEXT_HREF_PREFIX}review-comment/${contextId})`;
     },
   );

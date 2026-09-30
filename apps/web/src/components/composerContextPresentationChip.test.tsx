@@ -74,11 +74,19 @@ it("loads a pasted reference without a placeholder record, then displays its res
     expect(unavailableChip()).toBeNull();
     expect(container.textContent).toContain("#11420");
 
-    for (const label of ["Release notes", "#11410"]) {
-      await renderChip(label, [resolved]);
-      expect(unavailableChip()).toBeNull();
+    await renderChip("Release notes", [resolved]);
+    expect(unavailableChip()).toBeNull();
+    expect(loadingChip()).toBeNull();
+    expect(container.textContent).toContain("#11420");
+
+    for (const state of ["open", "closed", "merged"] as const) {
+      await renderChip("#11410", [
+        { ...resolved, pullRequest: { ...resolved.pullRequest!, state } },
+      ]);
+      expect(unavailableChip()?.getAttribute("aria-label")).toBe("Unavailable context, #11410");
       expect(loadingChip()).toBeNull();
-      expect(container.textContent).toContain("#11420");
+      expect(container.textContent).toBe("#11410");
+      expect(container.querySelector("svg.lucide-circle-dashed")).not.toBeNull();
     }
   } finally {
     await act(async () => root.unmount());

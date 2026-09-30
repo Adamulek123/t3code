@@ -415,6 +415,25 @@ describe("composerContextRecords", () => {
     expect(unresolvedPastedPullRequestReferences("", [pending])).toEqual([]);
   });
 
+  it("does not resolve or block send for a pasted PR with a mismatched number", () => {
+    const pending = legacyPullRequestSummary(14447);
+    const prompt = formatInlineContextReference({
+      ...reviewCommentContextReference(pending),
+      label: "#14437",
+    });
+    for (const reviewComments of [[], [pending]]) {
+      expect(unresolvedPastedPullRequestReferences(prompt, reviewComments)).toEqual([]);
+      expect(
+        shouldBlockPastedPullRequestSend({
+          prompt,
+          reviewComments,
+          canResolve: true,
+          answeringPendingInput: false,
+        }),
+      ).toBe(false);
+    }
+  });
+
   it("keeps the pasted PR number as text after a failed lookup without changing other chips", () => {
     const pending = legacyPullRequestSummary(7);
     const reference = reviewCommentContextReference(pending);

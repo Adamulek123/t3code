@@ -315,10 +315,12 @@ describe("pasted pull-request references", () => {
     },
   );
 
-  it("leaves malformed markers (label disagrees with the ref) as plain text", () => {
+  it("preserves mismatched marker numbers without making them resolvable", () => {
     const malformed =
       "[Review comment: #11410; ref=review-comment_pr-reference-11430-c3ac9552f23277bd]";
-    expect(rewritePastedPullRequestMarkers(malformed)).toBe(malformed);
+    expect(rewritePastedPullRequestMarkers(malformed)).toBe(
+      "[#11410](t3-context://v1/review-comment/review-comment_pr-reference-11430-c3ac9552f23277bd)",
+    );
     expect(
       selfConsistentPastedPullRequestNumber(
         "#11410",

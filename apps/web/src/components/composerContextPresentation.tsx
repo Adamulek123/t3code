@@ -448,6 +448,14 @@ export function ComposerContextReferenceChip(props: {
   const { records, pendingPullRequestResolvable } = use(ComposerContextRecordsContext);
   const record = records.get(props.contextId);
   const pastedNumber = pullRequestNumberFromPastedContextId(props.contextId);
+  if (
+    props.kind === "review-comment" &&
+    pastedNumber !== null &&
+    /#\d+\b/u.test(props.label) &&
+    selfConsistentPastedPullRequestNumber(props.label, props.contextId) !== pastedNumber
+  ) {
+    return <UnresolvedContextChip label={props.label} />;
+  }
   // References can also carry a legacy summary without PR metadata. Resolve it
   // the same way as a reference with no clipboard record.
   if (
