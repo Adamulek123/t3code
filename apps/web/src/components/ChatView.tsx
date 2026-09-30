@@ -7402,6 +7402,17 @@ export default function ChatView(props: ChatViewProps) {
       notifyDirectAnnotationAttached();
       return;
     }
+    // Direct annotation sends and automatic resends bypass submitComposer.
+    // Check before either queueing or snapshotting the draft for a turn.
+    if (sendCtx.pendingPullRequest) {
+      toastManager.add({
+        type: "info",
+        title: "Still resolving a pasted pull request.",
+        description: "Send again once its chip stops loading.",
+      });
+      notifyDirectAnnotationAttached();
+      return;
+    }
     const multipleModelSelections = sendCtx.multipleModelSelections;
     if (
       multipleModelSelections !== null &&
