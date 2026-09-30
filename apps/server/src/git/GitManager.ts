@@ -1582,7 +1582,24 @@ export const make = Effect.gen(function* () {
               allowNonZeroExit: true,
               timeoutMs: 5_000,
             })
-            .pipe(Effect.map((result) => (result.exitCode === 0 ? remote.name : null))),
+            .pipe(
+              Effect.flatMap((result) => {
+                // `merge-base --is-ancestor` reports 0 for ancestor and 1
+                // for not-ancestor; any other non-zero exit is a failed
+                // probe, not a negative result. A failed probe rejects the
+                // whole inference instead of letting a surviving probe win
+                // by default and attach the wrong fork's PR.
+                if (result.exitCode === 0) return Effect.succeed(remote.name);
+                if (result.exitCode === 1) return Effect.succeed(null);
+                return new GitCommandError({
+                  operation: "GitManager.findPublishedBranchRemote.ancestor",
+                  command: "git merge-base --is-ancestor",
+                  cwd,
+                  exitCode: result.exitCode,
+                  detail: `Ancestry probe for remote "${remote.name}" failed with exit code ${result.exitCode}; rejecting ancestry inference.`,
+                });
+              }),
+            ),
         { concurrency: "unbounded" },
       );
       const matches = ancestorRemotes.filter((name) => name !== null);

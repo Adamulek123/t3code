@@ -1566,6 +1566,79 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
     }),
   );
 
+  it.effect("does not guess a fork when an ancestry probe fails", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      const originDir = yield* createBareRemote();
+      const forkDir = yield* createBareRemote();
+      yield* runGit(repoDir, ["remote", "add", "origin", originDir]);
+      yield* runGit(repoDir, ["push", "-u", "origin", "main"]);
+      yield* runGit(repoDir, ["remote", "add", "fork", forkDir]);
+      yield* runGit(repoDir, ["checkout", "-b", "feature/failed-probe"]);
+      yield* runGit(repoDir, ["push", "fork", "feature/failed-probe"]);
+      yield* runGit(repoDir, ["push", "origin", "feature/failed-probe"]);
+      // Local work past both tips, so no exact ref matches and the ancestor
+      // tier decides.
+      yield* runGit(repoDir, ["commit", "--allow-empty", "-m", "Local work"]);
+      // Simulate a failed ancestry probe: point origin's tracking ref at a
+      // non-commit object so `merge-base --is-ancestor` exits 128 — neither
+      // a match (0) nor a negative result (1).
+      const treeOid = (yield* runGit(repoDir, ["rev-parse", "HEAD^{tree}"])).stdout.trim();
+      yield* runGit(repoDir, ["update-ref", "refs/remotes/origin/feature/failed-probe", treeOid]);
+      const forkProbe = yield* runGit(
+        repoDir,
+        ["merge-base", "--is-ancestor", "refs/remotes/fork/feature/failed-probe", "HEAD"],
+        true,
+      );
+      expect(forkProbe.exitCode).toBe(0);
+      const originProbe = yield* runGit(
+        repoDir,
+        ["merge-base", "--is-ancestor", "refs/remotes/origin/feature/failed-probe", "HEAD"],
+        true,
+      );
+      expect(originProbe.exitCode).not.toBe(0);
+      expect(originProbe.exitCode).not.toBe(1);
+      yield* configureVisibleRemoteUrlWithLocalRewrite(
+        repoDir,
+        "origin",
+        "git@github.com:pingdotgg/codething-mvp.git",
+        originDir,
+      );
+      yield* configureVisibleRemoteUrlWithLocalRewrite(
+        repoDir,
+        "fork",
+        "git@github.com:contributor/codething-mvp.git",
+        forkDir,
+      );
+
+      const ghScenario = {
+        prListByHeadSelector: {
+          // @effect-diagnostics-next-line preferSchemaOverJson:off
+          "feature/failed-probe": JSON.stringify([
+            {
+              number: 43,
+              title: "Failed probe PR",
+              url: "https://github.com/pingdotgg/codething-mvp/pull/43",
+              baseRefName: "main",
+              headRefName: "feature/failed-probe",
+              state: "OPEN",
+              isCrossRepository: true,
+              headRepository: { nameWithOwner: "contributor/codething-mvp" },
+              headRepositoryOwner: { login: "contributor" },
+            },
+          ]),
+        },
+      };
+      const { manager } = yield* makeManager({ ghScenario });
+      // The fork probe matches, but the failed origin probe rejects the
+      // whole inference: unknown, invisible rather than wrong.
+      expect(
+        yield* manager.branchPullRequest({ cwd: repoDir, branch: "feature/failed-probe" }),
+      ).toBeNull();
+    }),
+  );
+
   it.effect("finds a fork PR when the remote name contains a slash", () =>
     Effect.gen(function* () {
       const repoDir = yield* makeTempDir("t3code-git-manager-");
