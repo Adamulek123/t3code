@@ -324,6 +324,7 @@ import {
   suppressActiveComposerScrollGesture,
 } from "./composerScrollGesture";
 import { prepareVideoFirstFrame } from "../../lib/videoFirstFrame";
+import { usePastedPullRequestScope } from "./usePastedPullRequestScope";
 
 function ComposerVideoThumbnail({ file }: { file: File }) {
   const setVideo = useCallback(
@@ -2352,8 +2353,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     reportFailure: false,
     reportDefect: false,
   });
-  const pastedPullRequestInFlightRef = useRef(new Set<string>());
-  const pastedPullRequestScopeRef = useRef<string | null>(null);
   const pastedPullRequestScope =
     pullRequestProjectId === null || pullRequestRepository === null
       ? "unavailable"
@@ -2363,14 +2362,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           projectId: pullRequestProjectId,
           repository: pullRequestRepository,
         });
-  // Update before passive effects so a settling lookup sees the committed
-  // scope. Clearing it also prevents updates after unmount.
-  useLayoutEffect(() => {
-    pastedPullRequestScopeRef.current = pastedPullRequestScope;
-    return () => {
-      pastedPullRequestScopeRef.current = null;
-    };
-  }, [pastedPullRequestScope]);
+  const pastedPullRequestScopeRef = usePastedPullRequestScope(pastedPullRequestScope);
   // Keep the pasted number in the prompt when its context cannot be loaded.
   const dropFailedPastedPullRequestReferences = useCallback(
     (number: number) => {
@@ -2405,12 +2397,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     if (pullRequestProjectId === null || pullRequestRepository === null) return;
     const unresolved = unresolvedPastedPullRequestReferences(prompt, composerReviewComments);
     if (unresolved.length === 0) return;
-    const requestScope = pastedPullRequestScope;
-    const isStaleCompletion = () => pastedPullRequestScopeRef.current !== requestScope;
+    const requestScope = pastedPullRequestScopeRef.current;
+    if (requestScope === null || requestScope.scope !== pastedPullRequestScope) return;
+    const isStaleCompletion = () => !requestScope.active;
     for (const { number } of unresolved) {
-      const inFlightKey = `${requestScope}:${number}`;
-      if (pastedPullRequestInFlightRef.current.has(inFlightKey)) continue;
-      pastedPullRequestInFlightRef.current.add(inFlightKey);
+      if (requestScope.inFlight.has(number)) continue;
+      requestScope.inFlight.add(number);
       void runPastedPullRequestLookup({
         read: () =>
           readPastedPullRequestDetail({
@@ -2437,7 +2429,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           }
         },
         onFailure: () => dropFailedPastedPullRequestReferences(number),
-      }).finally(() => pastedPullRequestInFlightRef.current.delete(inFlightKey));
+      }).finally(() => requestScope.inFlight.delete(number));
     }
   }, [
     prompt,
@@ -2450,6 +2442,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     readPastedPullRequestDetail,
     dropFailedPastedPullRequestReferences,
     pastedPullRequestScope,
+    pastedPullRequestScopeRef,
   ]);
 
   const composerMenuItems = useMemo<ComposerCommandItem[]>(() => {
