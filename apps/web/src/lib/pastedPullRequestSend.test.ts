@@ -1,10 +1,12 @@
-import { describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 
 import { buildPullRequestReferenceContext } from "../components/pullRequest/pullRequestDetail.logic";
+import { DraftId, useComposerDraftStore } from "../composerDraftStore";
 import { formatInlineContextReference } from "./composerContextReferences";
 import {
   buildMessageContext,
+  resolvePastedPullRequestReferences,
   restoreFailedPastedPullRequestText,
   reviewCommentContextReference,
   shouldBlockPastedPullRequestSend,
@@ -22,7 +24,64 @@ const resolved = buildPullRequestReferenceContext({
 });
 const prompt = `Review ${formatInlineContextReference(reviewCommentContextReference(resolved))}`;
 
+afterEach(() => useComposerDraftStore.setState({ draftsByThreadKey: {} }));
+
 describe("pasted PR provider send context", () => {
+  it.each([false, true])(
+    "resolves through the draft store without duplicate wire IDs, legacy=%s",
+    (hasLegacy) => {
+      const target = DraftId.make("pasted-pr-send-test");
+      const store = useComposerDraftStore.getState();
+      store.setPrompt(target, prompt);
+      if (hasLegacy) {
+        store.addReviewComment(
+          target,
+          { ...resolved, pullRequest: undefined, text: "Legacy summary" },
+          { appendReference: false },
+        );
+      }
+      const before = store.getComposerDraft(target)!;
+      expect(
+        shouldBlockPastedPullRequestSend({
+          prompt: before.prompt,
+          reviewComments: before.reviewComments,
+          canResolve: true,
+          answeringPendingInput: false,
+        }),
+      ).toBe(true);
+      for (const comment of resolvePastedPullRequestReferences(
+        before.prompt,
+        before.reviewComments,
+        resolved,
+      )) {
+        store.addReviewComment(target, comment, { appendReference: false });
+      }
+      const after = useComposerDraftStore.getState().getComposerDraft(target)!;
+      expect(after.reviewComments).toHaveLength(1);
+      expect(after.prompt).toBe(prompt);
+      expect(
+        shouldBlockPastedPullRequestSend({
+          prompt: after.prompt,
+          reviewComments: after.reviewComments,
+          canResolve: true,
+          answeringPendingInput: false,
+        }),
+      ).toBe(false);
+      const context = buildMessageContext({
+        terminalContexts: [],
+        previewAnnotations: [],
+        reviewComments: after.reviewComments,
+      });
+      const providerInput = projectComposerContextForProvider({
+        text: after.prompt,
+        records: context?.records ?? [],
+      });
+      expect(providerInput).toContain("Resolve pasted PRs");
+      expect(providerInput).toContain("https://github.com/t3code/t3/pull/7");
+      expect(providerInput).not.toContain('unavailable="true"');
+      expect(context?.records).toHaveLength(1);
+    },
+  );
   it("blocks a resolvable reference until its provider context contains the summary", () => {
     const send = { prompt, reviewComments: [], canResolve: true, answeringPendingInput: false };
     expect(shouldBlockPastedPullRequestSend(send)).toBe(true);

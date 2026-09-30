@@ -148,6 +148,21 @@ export function restoreFailedPastedPullRequestText(
   );
 }
 
+/** Upgrade every occurrence of this PR while retaining its draft record identity. */
+export function resolvePastedPullRequestReferences(
+  prompt: string,
+  comments: ReadonlyArray<ReviewCommentContext>,
+  resolved: ReviewCommentContext,
+) {
+  return unresolvedPastedPullRequestReferences(prompt, comments)
+    .filter((pending) => pending.number === resolved.pullRequest?.number)
+    .map((pending) => ({
+      ...resolved,
+      id:
+        pending.comment?.id ?? producerIdFromComposerContextId("review-comment", pending.contextId),
+    }));
+}
+
 export function shouldBlockPastedPullRequestSend(input: {
   prompt: string;
   reviewComments: ReadonlyArray<ReviewCommentContext>;

@@ -220,6 +220,7 @@ import {
   fileContextReference,
   imageContextReference,
   pastedPullRequestReferenceScope,
+  resolvePastedPullRequestReferences,
   restoreFailedPastedPullRequestText,
   shouldBlockPastedPullRequestSend,
   unresolvedPastedPullRequestReferences,
@@ -2414,19 +2415,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         onSuccess: (pullRequest) => {
           const latest = useComposerDraftStore.getState().getComposerDraft(composerDraftTarget);
           if (!latest) return;
-          for (const pending of unresolvedPastedPullRequestReferences(
+          for (const comment of resolvePastedPullRequestReferences(
             latest.prompt,
             latest.reviewComments,
+            buildPullRequestReferenceContext(pullRequest),
           )) {
-            if (pending.number !== number) continue;
-            addComposerDraftReviewComment(
-              composerDraftTarget,
-              {
-                ...buildPullRequestReferenceContext(pullRequest),
-                id: pending.contextId.slice("review-comment_".length),
-              },
-              { appendReference: false },
-            );
+            addComposerDraftReviewComment(composerDraftTarget, comment, { appendReference: false });
           }
         },
         onFailure: () => dropFailedPastedPullRequestReferences(number),
