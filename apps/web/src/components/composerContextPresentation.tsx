@@ -315,11 +315,13 @@ function ComposerPreviewAnnotationDetails({
   );
 }
 
-function UnresolvedContextChip(props: { label: string }) {
+function UnresolvedContextChip(props: { label: string; tooltip?: string }) {
   return (
     <UnresolvedChip
       label={props.label}
-      tooltip="This context is no longer available. Remove it or attach it again."
+      tooltip={
+        props.tooltip ?? "This context is no longer available. Remove it or attach it again."
+      }
     />
   );
 }
@@ -454,7 +456,12 @@ export function ComposerContextReferenceChip(props: {
     /^#\d+$/u.test(props.label.trim()) &&
     selfConsistentPastedPullRequestNumber(props.label, props.contextId) !== pastedNumber
   ) {
-    return <UnresolvedContextChip label={props.label} />;
+    return (
+      <UnresolvedContextChip
+        label={props.label}
+        tooltip="This pasted PR number doesn't match its reference. Remove it and paste the correct PR reference."
+      />
+    );
   }
   // References can also carry a legacy summary without PR metadata. Resolve it
   // the same way as a reference with no clipboard record.
