@@ -311,7 +311,7 @@ export function pullRequestNumberFromPastedContextId(contextId: string): number 
   return Number.isSafeInteger(number) && number > 0 ? number : null;
 }
 
-const PASTED_PR_LABEL_NUMBER_PATTERN = /#(\d+)\b/;
+const PASTED_PR_LABEL_NUMBER_PATTERN = /^(?:Review comment:\s*)?#(\d+)$/u;
 
 /**
  * The number a pasted `pr-reference` chip stands for, but only when the
@@ -325,7 +325,7 @@ export function selfConsistentPastedPullRequestNumber(
 ): number | null {
   const refNumber = pullRequestNumberFromPastedContextId(contextId);
   if (refNumber === null) return null;
-  const labelNumber = Number(PASTED_PR_LABEL_NUMBER_PATTERN.exec(label)?.[1]);
+  const labelNumber = Number(PASTED_PR_LABEL_NUMBER_PATTERN.exec(label.trim())?.[1]);
   if (!Number.isSafeInteger(labelNumber) || labelNumber <= 0 || labelNumber !== refNumber) {
     return null;
   }
@@ -336,6 +336,8 @@ export function selfConsistentPastedPullRequestNumber(
  * Plain-text provider markers (`[Review comment: ...; ref=...]`) never parse
  * back as chips. Rewrite pasted `pr-reference` markers into canonical links so
  * the existing `collectComposerContextReferences` path picks them up.
+ * Handoff and finding IDs carry instructions or excerpts that a PR number
+ * cannot reconstruct, so leave those markers intact.
  */
 export function rewritePastedPullRequestMarkers(text: string): string {
   return text.replace(
@@ -343,7 +345,7 @@ export function rewritePastedPullRequestMarkers(text: string): string {
     (match, label: string, contextId: string) => {
       // Preserve the pasted number even when it disagrees with the reference.
       // The chip stays unavailable and the resolver ignores the mismatch.
-      const number = PASTED_PR_LABEL_NUMBER_PATTERN.exec(label)?.[1];
+      const number = PASTED_PR_LABEL_NUMBER_PATTERN.exec(label.trim())?.[1];
       if (number === undefined || pullRequestNumberFromPastedContextId(contextId) === null) {
         return match;
       }

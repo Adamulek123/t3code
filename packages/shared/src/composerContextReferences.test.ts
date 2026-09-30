@@ -318,6 +318,28 @@ describe("pasted pull-request references", () => {
     expect(rewritePastedPullRequestMarkers(image)).toBe(image);
   });
 
+  it.each([
+    "Review comment: fixes #5 and #11420",
+    "Review comment: #11420 and #5",
+    "Review comment: release notes for #11420",
+    "Review comment: #11420 trailing words",
+  ])("preserves ambiguous or descriptive marker text: %s", (label) => {
+    const contextId = "review-comment_pr-reference-11420-c3ac9552f23277bd";
+    const marker = `[${label}; ref=${contextId}]`;
+    expect(rewritePastedPullRequestMarkers(marker)).toBe(marker);
+    expect(selfConsistentPastedPullRequestNumber(label, contextId)).toBeNull();
+  });
+
+  it.each(["pull-request-context", "pull-request-finding", "pull-request-selection"])(
+    "does not reconstruct handoff content from the %s namespace",
+    (namespace) => {
+      const contextId = `review-comment_${namespace}-11420-c3ac9552f23277bd`;
+      const marker = `[Review comment: #11420; ref=${contextId}]`;
+      expect(rewritePastedPullRequestMarkers(marker)).toBe(marker);
+      expect(pullRequestNumberFromPastedContextId(contextId)).toBeNull();
+    },
+  );
+
   it.each([";ref=", ";\tref=", ";  ref="])(
     "rewrites marker spacing supported by the parser: %s",
     (separator) => {

@@ -451,7 +451,7 @@ export function ComposerContextReferenceChip(props: {
   if (
     props.kind === "review-comment" &&
     pastedNumber !== null &&
-    /#\d+\b/u.test(props.label) &&
+    /^#\d+$/u.test(props.label.trim()) &&
     selfConsistentPastedPullRequestNumber(props.label, props.contextId) !== pastedNumber
   ) {
     return <UnresolvedContextChip label={props.label} />;

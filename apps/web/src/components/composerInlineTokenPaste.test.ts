@@ -5,6 +5,10 @@ import { importPastedComposerText } from "./composerInlineTokenPaste";
 const marker = "[Review comment: #11420; ref=review-comment_pr-reference-11420-c3ac9552f23277bd]";
 
 describe("importPastedComposerText", () => {
+  it("retains every word of an ambiguous pasted PR marker", () => {
+    const ambiguous = marker.replace("#11420", "fixes #5 and #11420");
+    expect(importPastedComposerText({ getData: () => ambiguous })).toBe(ambiguous);
+  });
   it("turns a pasted provider marker into an editor reference", () => {
     const text = importPastedComposerText({
       getData: (type) => (type === "text/plain" ? `Review ${marker} please` : ""),
