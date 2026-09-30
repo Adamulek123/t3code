@@ -28,6 +28,33 @@ afterEach(() => useComposerDraftStore.setState({ draftsByThreadKey: {} }));
 
 describe("pasted PR provider send context", () => {
   it.each([false, true])(
+    "keeps one payload when inserting a menu reference after paste resolution, duplicate link=%s",
+    (allowDuplicateReference) => {
+      const target = DraftId.make("pasted-pr-menu-test");
+      const store = useComposerDraftStore.getState();
+      store.setPrompt(target, prompt);
+      for (const comment of resolvePastedPullRequestReferences(prompt, [], resolved)) {
+        store.addReviewComment(target, comment, { appendReference: false });
+      }
+      store.addReviewComment(target, resolved, { allowDuplicateReference });
+      const draft = useComposerDraftStore.getState().getComposerDraft(target)!;
+      expect(draft.reviewComments).toHaveLength(1);
+      if (!allowDuplicateReference) expect(draft.prompt).toBe(prompt);
+      const context = buildMessageContext({
+        terminalContexts: [],
+        previewAnnotations: [],
+        reviewComments: draft.reviewComments,
+      });
+      const providerInput = projectComposerContextForProvider({
+        text: draft.prompt,
+        records: context?.records ?? [],
+      });
+      expect(context?.records).toHaveLength(1);
+      expect(providerInput).toContain("Resolve pasted PRs");
+      expect(providerInput).not.toContain('unavailable="true"');
+    },
+  );
+  it.each([false, true])(
     "resolves through the draft store without duplicate wire IDs, legacy=%s",
     (hasLegacy) => {
       const target = DraftId.make("pasted-pr-send-test");

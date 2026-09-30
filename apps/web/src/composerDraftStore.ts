@@ -3837,7 +3837,9 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
           const reference = reviewCommentContextReference(comment);
           const current = get().draftsByThreadKey[threadKey];
           const alreadyPresent =
-            current?.reviewComments.some((entry) => entry.id === comment.id) ?? false;
+            current?.reviewComments.some(
+              (entry) => reviewCommentContextId(entry.id) === reference.contextId,
+            ) ?? false;
           const shouldPlaceReference =
             options?.appendReference !== false &&
             (!alreadyPresent || options?.allowDuplicateReference === true);
@@ -3850,7 +3852,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
           set((state) => {
             const existing = state.draftsByThreadKey[threadKey] ?? createEmptyThreadDraft();
             const reviewComments = existing.reviewComments.filter(
-              (entry) => entry.id !== comment.id,
+              (entry) => reviewCommentContextId(entry.id) !== reference.contextId,
             );
             return {
               draftsByThreadKey: {
