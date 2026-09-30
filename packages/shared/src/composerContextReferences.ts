@@ -323,7 +323,7 @@ const PASTED_PR_LABEL_NUMBER_PATTERN =
   /^(?:review[ \t]+comment[ \t]*:[ \t]*)?(?:pr[ \t]*:?[ \t]*)?#(\d+)$/iu;
 
 /** A numeric-only pasted PR label, including optional review-comment and PR prefixes. */
-export function pullRequestNumberFromPastedLabel(label: string): number | null {
+function pullRequestNumberFromPastedLabel(label: string): number | null {
   const number = Number(PASTED_PR_LABEL_NUMBER_PATTERN.exec(label.trim())?.[1]);
   return Number.isSafeInteger(number) && number > 0 ? number : null;
 }
