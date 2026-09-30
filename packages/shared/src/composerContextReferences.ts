@@ -305,6 +305,7 @@ const PASTED_PR_PROVIDER_MARKER_PATTERN =
 
 /** Pull request number behind a pasted `pr-reference` context id, if any. */
 export function pullRequestNumberFromPastedContextId(contextId: string): number | null {
+  if (!CONTEXT_ID_PATTERN.test(contextId)) return null;
   const match = PASTED_PR_REFERENCE_ID_PATTERN.exec(contextId);
   if (!match) return null;
   const number = Number(match[1]);

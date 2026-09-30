@@ -268,6 +268,19 @@ describe("provider projection", () => {
 });
 
 describe("pasted pull-request references", () => {
+  it.each([128, 129, 256])("only rewrites IDs within the canonical length limit: %s", (length) => {
+    const prefix = "review-comment_pr-reference-7-";
+    const contextId = prefix + "a".repeat(length - prefix.length);
+    const marker = `[Review comment: #7; ref=${contextId}]`;
+    const rewritten = rewritePastedPullRequestMarkers(marker);
+    if (length === 128) {
+      expect(pullRequestNumberFromPastedContextId(contextId)).toBe(7);
+      expect(collectComposerContextReferences(rewritten)).toMatchObject([{ contextId }]);
+    } else {
+      expect(pullRequestNumberFromPastedContextId(contextId)).toBeNull();
+      expect(rewritten).toBe(marker);
+    }
+  });
   it("extracts the number from a folded pr-reference context id", () => {
     expect(
       pullRequestNumberFromPastedContextId("review-comment_pr-reference-11420-c3ac9552f23277bd"),
