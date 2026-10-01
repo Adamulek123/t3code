@@ -317,6 +317,8 @@ export const discoverPairTarget = Effect.fn("pair.discoverPairTarget")(function*
   }
 
   const checkedStatePaths: Array<string> = [];
+  // Probe concurrently, but keep state-file precedence when choosing a hit:
+  // a later success must wait for every earlier candidate to finish.
   const candidates: Array<{
     readonly baseDir: string;
     readonly variant: PairStateVariant;
