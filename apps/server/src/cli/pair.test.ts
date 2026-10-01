@@ -130,6 +130,60 @@ const testDescriptor = {
   capabilities: { repositoryIdentity: true },
 };
 
+const withProbeServer = <A, E, R>(
+  { status, contentType, body }: { status: number; contentType: string; body: string },
+  run: (baseDir: string, origin: string) => Effect.Effect<A, E, R>,
+) =>
+  Effect.scoped(
+    Effect.acquireUseRelease(
+      Effect.callback<NodeHttp.Server>((resume) => {
+        const server = NodeHttp.createServer((request, response) => {
+          if (request.url === "/.well-known/t3/environment") {
+            response.writeHead(status, { "content-type": contentType });
+            response.end(body);
+            return;
+          }
+          response.writeHead(404);
+          response.end();
+        });
+        server.listen(0, "127.0.0.1", () => resume(Effect.succeed(server)));
+      }),
+      (server) =>
+        Effect.gen(function* () {
+          const address = server.address();
+          if (address === null || typeof address === "string") {
+            return yield* Effect.die(new Error("Expected a TCP address"));
+          }
+          const fs = yield* FileSystem.FileSystem;
+          const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-pair-probe-test-" });
+          yield* persistServerRuntimeState({
+            path: NodePath.join(baseDir, "userdata", "server-runtime.json"),
+            state: yield* makePersistedServerRuntimeState({
+              config: { host: "127.0.0.1", devUrl: undefined },
+              port: address.port,
+            }),
+          });
+          return yield* run(baseDir, `http://127.0.0.1:${String(address.port)}`);
+        }),
+      (server) =>
+        Effect.sync(() => {
+          server.closeAllConnections();
+          server.close();
+        }),
+    ),
+  );
+
+const assertPairRejected = (baseDir: string) =>
+  Effect.gen(function* () {
+    const error = yield* provideCliTestLayers(
+      runCli(["pair", "--base-dir", baseDir]).pipe(Effect.flip),
+    );
+    const rendered = String(
+      typeof error === "object" && error !== null && "cause" in error ? error.cause : error,
+    );
+    assert.include(rendered, "No running T3 Code server found.");
+  });
+
 const withDescriptorServer = <A, E, R>(run: (origin: string) => Effect.Effect<A, E, R>) =>
   Effect.acquireUseRelease(
     Effect.callback<NodeHttp.Server>((resume) => {
@@ -320,232 +374,59 @@ describe("t3 pair", () => {
   );
 
   it.effect("does not decode an oversized stranger body as a server descriptor", () =>
-    Effect.acquireUseRelease(
-      Effect.callback<NodeHttp.Server>((resume) => {
-        const server = NodeHttp.createServer((request, response) => {
-          if (request.url === "/.well-known/t3/environment") {
-            response.writeHead(200, { "content-type": "application/json" });
-            // A schema-valid descriptor padded far beyond any real one:
-            // discovery must reject it on size without a Schema decode
-            // (without the cap this decodes fine and pairs), not pair with it.
-            response.end(JSON.stringify({ ...testDescriptor, padding: "x".repeat(128 * 1024) }));
-            return;
-          }
-          response.writeHead(404);
-          response.end();
-        });
-        server.listen(0, "127.0.0.1", () => resume(Effect.succeed(server)));
-      }),
-      (server) =>
-        Effect.gen(function* () {
-          const address = server.address();
-          if (address === null || typeof address === "string") {
-            return Effect.die(new Error("Expected a TCP address"));
-          }
-          const baseDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-pair-big-test-"));
-          const statePath = NodePath.join(baseDir, "userdata", "server-runtime.json");
-          yield* persistServerRuntimeState({
-            path: statePath,
-            state: yield* makePersistedServerRuntimeState({
-              config: { host: "127.0.0.1", devUrl: undefined },
-              port: address.port,
-            }),
-          });
-
-          const error = yield* provideCliTestLayers(
-            runCli(["pair", "--base-dir", baseDir]).pipe(Effect.flip),
-          );
-
-          const rendered = String(
-            typeof error === "object" && error !== null && "cause" in error ? error.cause : error,
-          );
-          assert.include(rendered, "No running T3 Code server found.");
-        }),
-      (server) => Effect.sync(() => server.close()),
+    withProbeServer(
+      {
+        status: 200,
+        contentType: "application/json",
+        // Schema-valid JSON that would pair without the byte cap.
+        body: JSON.stringify({ ...testDescriptor, padding: "x".repeat(128 * 1024) }),
+      },
+      assertPairRejected,
     ).pipe(Effect.provide(NodeServices.layer)),
   );
 
   it.effect("rejects a descriptor that exceeds the cap in UTF-8 bytes only", () =>
-    Effect.acquireUseRelease(
-      Effect.callback<NodeHttp.Server>((resume) => {
-        const server = NodeHttp.createServer((request, response) => {
-          if (request.url === "/.well-known/t3/environment") {
-            response.writeHead(200, { "content-type": "application/json" });
-            // "é" is two bytes in UTF-8 but one UTF-16 code unit: this body
-            // is ~80 KiB on the wire yet under 64 KiB in string length, so a
-            // string-length check would accept and pair with it. The probe
-            // must enforce the cap in bytes, before decoding.
-            response.end(JSON.stringify({ ...testDescriptor, label: "é".repeat(40 * 1024) }));
-            return;
-          }
-          response.writeHead(404);
-          response.end();
-        });
-        server.listen(0, "127.0.0.1", () => resume(Effect.succeed(server)));
-      }),
-      (server) =>
-        Effect.gen(function* () {
-          const address = server.address();
-          if (address === null || typeof address === "string") {
-            return Effect.die(new Error("Expected a TCP address"));
-          }
-          const baseDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-pair-utf8-test-"));
-          const statePath = NodePath.join(baseDir, "userdata", "server-runtime.json");
-          yield* persistServerRuntimeState({
-            path: statePath,
-            state: yield* makePersistedServerRuntimeState({
-              config: { host: "127.0.0.1", devUrl: undefined },
-              port: address.port,
-            }),
-          });
-
-          const error = yield* provideCliTestLayers(
-            runCli(["pair", "--base-dir", baseDir]).pipe(Effect.flip),
-          );
-
-          const rendered = String(
-            typeof error === "object" && error !== null && "cause" in error ? error.cause : error,
-          );
-          assert.include(rendered, "No running T3 Code server found.");
-        }),
-      (server) => Effect.sync(() => server.close()),
+    withProbeServer(
+      {
+        status: 200,
+        contentType: "application/json",
+        // Two UTF-8 bytes per character: below 64 KiB in string length,
+        // above it on the wire. A string-length cap would accept this.
+        body: JSON.stringify({ ...testDescriptor, label: "é".repeat(40 * 1024) }),
+      },
+      assertPairRejected,
     ).pipe(Effect.provide(NodeServices.layer)),
   );
 
   it.effect("does not pair when a valid descriptor arrives as non-JSON", () =>
-    Effect.acquireUseRelease(
-      Effect.callback<NodeHttp.Server>((resume) => {
-        const server = NodeHttp.createServer((request, response) => {
-          if (request.url === "/.well-known/t3/environment") {
-            // Schema-valid JSON served as HTML: the probe must classify it
-            // as a stranger (and drain the body for connection reuse)
-            // instead of decoding and pairing with it.
-            response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-            response.end(JSON.stringify(testDescriptor));
-            return;
-          }
-          response.writeHead(404);
-          response.end();
-        });
-        server.listen(0, "127.0.0.1", () => resume(Effect.succeed(server)));
-      }),
-      (server) =>
-        Effect.gen(function* () {
-          const address = server.address();
-          if (address === null || typeof address === "string") {
-            return Effect.die(new Error("Expected a TCP address"));
-          }
-          const baseDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-pair-ctype-test-"));
-          const statePath = NodePath.join(baseDir, "userdata", "server-runtime.json");
-          yield* persistServerRuntimeState({
-            path: statePath,
-            state: yield* makePersistedServerRuntimeState({
-              config: { host: "127.0.0.1", devUrl: undefined },
-              port: address.port,
-            }),
-          });
-
-          const error = yield* provideCliTestLayers(
-            runCli(["pair", "--base-dir", baseDir]).pipe(Effect.flip),
-          );
-
-          const rendered = String(
-            typeof error === "object" && error !== null && "cause" in error ? error.cause : error,
-          );
-          assert.include(rendered, "No running T3 Code server found.");
-        }),
-      (server) => Effect.sync(() => server.close()),
+    withProbeServer(
+      {
+        status: 200,
+        contentType: "text/html; charset=utf-8",
+        body: JSON.stringify(testDescriptor),
+      },
+      assertPairRejected,
     ).pipe(Effect.provide(NodeServices.layer)),
   );
 
   it.effect("does not pair when a valid descriptor arrives with an error status", () =>
-    Effect.acquireUseRelease(
-      Effect.callback<NodeHttp.Server>((resume) => {
-        const server = NodeHttp.createServer((request, response) => {
-          if (request.url === "/.well-known/t3/environment") {
-            // A 500 carrying a schema-valid descriptor body: the probe must
-            // classify it as a stranger (draining the body for connection
-            // reuse) instead of decoding and pairing with it.
-            response.writeHead(500, { "content-type": "application/json" });
-            response.end(JSON.stringify(testDescriptor));
-            return;
-          }
-          response.writeHead(404);
-          response.end();
-        });
-        server.listen(0, "127.0.0.1", () => resume(Effect.succeed(server)));
-      }),
-      (server) =>
-        Effect.gen(function* () {
-          const address = server.address();
-          if (address === null || typeof address === "string") {
-            return Effect.die(new Error("Expected a TCP address"));
-          }
-          const baseDir = NodeFS.mkdtempSync(
-            NodePath.join(NodeOS.tmpdir(), "t3-pair-status-test-"),
-          );
-          const statePath = NodePath.join(baseDir, "userdata", "server-runtime.json");
-          yield* persistServerRuntimeState({
-            path: statePath,
-            state: yield* makePersistedServerRuntimeState({
-              config: { host: "127.0.0.1", devUrl: undefined },
-              port: address.port,
-            }),
-          });
-
-          const error = yield* provideCliTestLayers(
-            runCli(["pair", "--base-dir", baseDir]).pipe(Effect.flip),
-          );
-
-          const rendered = String(
-            typeof error === "object" && error !== null && "cause" in error ? error.cause : error,
-          );
-          assert.include(rendered, "No running T3 Code server found.");
-        }),
-      (server) => Effect.sync(() => server.close()),
+    withProbeServer(
+      { status: 500, contentType: "application/json", body: JSON.stringify(testDescriptor) },
+      assertPairRejected,
     ).pipe(Effect.provide(NodeServices.layer)),
   );
 
   it.effect.each(["Application/JSON; charset=utf-8", "application/vnd.t3+json"])(
     "pairs when the descriptor arrives with content type %s",
     (contentType) =>
-      Effect.acquireUseRelease(
-        Effect.callback<NodeHttp.Server>((resume) => {
-          const server = NodeHttp.createServer((request, response) => {
-            if (request.url === "/.well-known/t3/environment") {
-              response.writeHead(200, { "content-type": contentType });
-              response.end(JSON.stringify(testDescriptor));
-              return;
-            }
-            response.writeHead(404);
-            response.end();
-          });
-          server.listen(0, "127.0.0.1", () => resume(Effect.succeed(server)));
-        }),
-        (server) =>
+      withProbeServer(
+        { status: 200, contentType, body: JSON.stringify(testDescriptor) },
+        (baseDir) =>
           Effect.gen(function* () {
-            const address = server.address();
-            if (address === null || typeof address === "string") {
-              return Effect.die(new Error("Expected a TCP address"));
-            }
-            const baseDir = NodeFS.mkdtempSync(
-              NodePath.join(NodeOS.tmpdir(), "t3-pair-ctype-test-"),
-            );
-            const statePath = NodePath.join(baseDir, "userdata", "server-runtime.json");
-            yield* persistServerRuntimeState({
-              path: statePath,
-              state: yield* makePersistedServerRuntimeState({
-                config: { host: "127.0.0.1", devUrl: undefined },
-                port: address.port,
-              }),
-            });
-
             const output = yield* captureStdout(runCli(["pair", "--base-dir", baseDir]));
-
             assert.include(output, "Pairing with pair-test (");
             assert.include(output, "/pair#token=");
           }),
-        (server) => Effect.sync(() => server.close()),
       ).pipe(Effect.provide(NodeServices.layer)),
   );
 
@@ -581,7 +462,7 @@ describe("t3 pair", () => {
           Effect.gen(function* () {
             const address = server.address();
             if (address === null || typeof address === "string") {
-              return Effect.die(new Error("Expected a TCP address"));
+              return yield* Effect.die(new Error("Expected a TCP address"));
             }
             const baseDir = NodeFS.mkdtempSync(
               NodePath.join(NodeOS.tmpdir(), "t3-pair-drip-test-"),
