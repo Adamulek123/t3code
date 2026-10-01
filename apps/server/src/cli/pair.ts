@@ -215,9 +215,9 @@ type EnvironmentProbeResult =
   | { readonly _tag: "unreachable" }
   | { readonly _tag: "not-a-t3-server" };
 
-const readBoundedProbeBody = (ok: HttpClientResponse.HttpClientResponse, deadline: number) =>
+const readBoundedProbeBody = (ok: HttpClientResponse.HttpClientResponse, deadline: bigint) =>
   Effect.gen(function* () {
-    const remaining = Math.max(0, deadline - (yield* Clock.currentTimeMillis));
+    const remaining = deadline - (yield* Clock.monotonicTimeNanos);
     return yield* ok.stream.pipe(
       Stream.runFoldEffect(
         () => ({ bytes: 0, chunks: [] as Array<Uint8Array> }),
@@ -239,7 +239,7 @@ const readBoundedProbeBody = (ok: HttpClientResponse.HttpClientResponse, deadlin
         }
         return new TextDecoder().decode(merged);
       }),
-      Effect.timeout(Duration.millis(remaining)),
+      Effect.timeout(Duration.nanos(remaining > 0n ? remaining : 0n)),
     );
   });
 
@@ -249,7 +249,7 @@ const probeEnvironmentDescriptor = (
   Effect.gen(function* () {
     const client = yield* HttpClient.HttpClient;
     const request = HttpClientRequest.get(new URL(WELL_KNOWN_ENVIRONMENT_PATH, baseUrl).toString());
-    const deadline = (yield* Clock.currentTimeMillis) + Duration.toMillis(PAIR_PROBE_TIMEOUT);
+    const deadline = (yield* Clock.monotonicTimeNanos) + Duration.toNanosUnsafe(PAIR_PROBE_TIMEOUT);
     const response = yield* client.execute(request).pipe(
       Effect.timeout(PAIR_PROBE_TIMEOUT),
       // Transport failure or timeout: nothing (reachable) is listening there.
