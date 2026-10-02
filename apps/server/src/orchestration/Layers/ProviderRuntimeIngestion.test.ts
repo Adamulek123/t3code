@@ -1509,6 +1509,114 @@ describe("ProviderRuntimeIngestion", () => {
     },
   );
 
+  it.each(
+    (["token", "paragraph"] as const).flatMap((mode) =>
+      (["approval", "question", "message"] as const).map((boundary) => ({ mode, boundary })),
+    ),
+  )(
+    "settles OpenCode progress at a $boundary boundary in $mode mode",
+    async ({ mode, boundary }) => {
+      const harness = await createHarness({ serverSettings: { responseStreamingMode: mode } });
+      const threadId = asThreadId("thread-1");
+      const turnId = asTurnId("turn-progress-pause");
+      const base = {
+        provider: ProviderDriverKind.make("opencode"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        threadId,
+        turnId,
+      };
+      const delta = (id: string, text: string, eventId = id) => ({
+        ...base,
+        type: "content.delta" as const,
+        eventId: asEventId(`evt-${eventId}`),
+        itemId: asItemId(id),
+        payload: { streamKind: "assistant_progress_text" as const, delta: text },
+      });
+      const readMessages = async () =>
+        (await harness.readModel()).threads.find((entry) => entry.id === threadId)!.messages;
+      await harness.emitAndDrain([
+        { ...base, type: "turn.started", eventId: asEventId("evt-progress-pause-started") },
+        delta("buffered-progress", "Checking "),
+        delta("projected-progress", "Waiting.\n\n"),
+      ]);
+      expect(await readMessages()).toMatchObject([
+        {
+          id: "assistant:projected-progress",
+          role: "reasoning",
+          text: "Waiting.\n\n",
+          streaming: true,
+        },
+      ]);
+      const request =
+        boundary === "approval"
+          ? {
+              ...base,
+              type: "request.opened" as const,
+              eventId: asEventId("evt-progress-pause-approval"),
+              requestId: RuntimeRequestId.make("progress-pause-approval"),
+              payload: { requestType: "command_execution_approval" as const, detail: "pwd" },
+            }
+          : {
+              ...base,
+              type: "user-input.requested" as const,
+              eventId: asEventId("evt-progress-pause-question"),
+              requestId: RuntimeRequestId.make("progress-pause-question"),
+              payload: {
+                ...(boundary === "message" ? { responseMode: "message" as const } : {}),
+                questions: [{ id: "choice", header: "Choice", question: "Continue?", options: [] }],
+              },
+            };
+      await harness.emitAndDrain([request]);
+      if (boundary === "message") {
+        expect(await readMessages()).toMatchObject([
+          { id: "assistant:projected-progress", streaming: true },
+        ]);
+      } else {
+        expect(await readMessages()).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              id: "assistant:buffered-progress",
+              role: "reasoning",
+              text: "Checking ",
+              streaming: false,
+            }),
+            expect.objectContaining({
+              id: "assistant:projected-progress",
+              role: "reasoning",
+              text: "Waiting.\n\n",
+              streaming: false,
+            }),
+          ]),
+        );
+      }
+      await harness.emitAndDrain([
+        delta("buffered-progress", "again.", "progress-resumed"),
+        {
+          ...base,
+          type: "turn.completed",
+          eventId: asEventId("evt-progress-pause-completed"),
+          payload: { state: "completed" },
+        },
+      ]);
+      expect(await readMessages()).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: "assistant:buffered-progress",
+            role: "reasoning",
+            text: "Checking again.",
+            streaming: false,
+          }),
+          expect.objectContaining({
+            id: "assistant:projected-progress",
+            role: "reasoning",
+            text: "Waiting.\n\n",
+            streaming: false,
+          }),
+        ]),
+      );
+    },
+  );
+
   it("keeps a completed OpenCode turn with reasoning but no answer visible", async () => {
     const harness = await createHarness();
     const threadId = asThreadId("thread-1");

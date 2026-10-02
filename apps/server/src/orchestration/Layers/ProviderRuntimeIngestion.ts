@@ -2241,6 +2241,28 @@ const make = Effect.gen(function* () {
           hasProjectedMessage,
           flushedMessageIds,
         });
+        const progressMessageIdsForTurn = yield* getAssistantMessageIdsForTurn(
+          thread.id,
+          pauseForUserTurnId,
+        );
+        for (const messageId of progressMessageIdsForTurn) {
+          if (Option.isNone(yield* Cache.getOption(progressMessageIds, messageId))) {
+            continue;
+          }
+          const projectedMessage = yield* getThreadMessageById(thread.id, messageId);
+          yield* finalizeAssistantMessage({
+            event,
+            threadId: thread.id,
+            messageId,
+            turnId: pauseForUserTurnId,
+            createdAt: now,
+            commandTag: "assistant-progress-complete-on-pause",
+            finalDeltaCommandTag: "assistant-progress-delta-finalize-on-pause",
+            hasProjectedMessage: projectedMessage !== undefined,
+            presentation: "progress",
+          });
+          yield* forgetAssistantMessageId(thread.id, pauseForUserTurnId, messageId);
+        }
       }
 
       if (proposedPlanDelta && proposedPlanDelta.length > 0) {
