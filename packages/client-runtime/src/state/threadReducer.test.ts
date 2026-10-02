@@ -615,6 +615,136 @@ describe("applyThreadDetailEvent", () => {
       }
     });
 
+    it("updates a streamed assistant message to a progress summary", () => {
+      const messageId = MessageId.make("assistant:progress-part");
+      const thread = {
+        ...baseThread,
+        latestTurn: {
+          turnId: TurnId.make("turn-progress"),
+          state: "running" as const,
+          requestedAt: baseThread.createdAt,
+          startedAt: baseThread.createdAt,
+          completedAt: null,
+          assistantMessageId: messageId,
+        },
+        checkpoints: [
+          {
+            turnId: TurnId.make("turn-progress"),
+            checkpointTurnCount: 1,
+            checkpointRef: CheckpointRef.make("ref-progress"),
+            status: "ready" as const,
+            files: [],
+            assistantMessageId: messageId,
+            completedAt: baseThread.updatedAt,
+          },
+        ],
+        messages: [
+          {
+            id: messageId,
+            role: "assistant" as const,
+            text: "Checking the reviews.",
+            turnId: TurnId.make("turn-progress"),
+            streaming: false,
+            createdAt: baseThread.createdAt,
+            updatedAt: baseThread.updatedAt,
+          },
+        ],
+      };
+      const reclassificationEvent = {
+        ...baseEventFields,
+        sequence: 6,
+        occurredAt: baseThread.updatedAt,
+        aggregateKind: "thread",
+        aggregateId: baseThread.id,
+        type: "thread.message-sent",
+        payload: {
+          threadId: baseThread.id,
+          messageId,
+          role: "reasoning",
+          text: "",
+          turnId: TurnId.make("turn-progress"),
+          streaming: false,
+          createdAt: baseThread.createdAt,
+          updatedAt: baseThread.updatedAt,
+        },
+      } as const;
+      const turnlessResult = applyThreadDetailEvent(thread, {
+        ...reclassificationEvent,
+        payload: { ...reclassificationEvent.payload, turnId: null },
+      });
+      expect(turnlessResult.kind).toBe("updated");
+      if (turnlessResult.kind === "updated") {
+        expect(turnlessResult.thread.latestTurn?.assistantMessageId).toBe(messageId);
+        expect(turnlessResult.thread.checkpoints[0]?.assistantMessageId).toBe(messageId);
+      }
+      const result = applyThreadDetailEvent(thread, reclassificationEvent);
+
+      expect(result.kind).toBe("updated");
+      if (result.kind !== "updated") return;
+      expect(result.thread.messages[0]).toMatchObject({
+        id: messageId,
+        role: "reasoning",
+        text: "Checking the reviews.",
+      });
+      expect(result.thread.latestTurn?.assistantMessageId).toBeNull();
+      expect(result.thread.checkpoints[0]?.assistantMessageId).toBeNull();
+    });
+
+    it("does not rebind a reclassified answer to a message beyond the server cap", () => {
+      const turnId = TurnId.make("turn-capped");
+      const oldAnswerId = MessageId.make("old-answer");
+      const currentAnswerId = MessageId.make("current-answer");
+      const message = (id: MessageId, role: "user" | "assistant") => ({
+        id,
+        role,
+        text: "text",
+        turnId: role === "assistant" ? turnId : null,
+        streaming: false,
+        createdAt: baseThread.createdAt,
+        updatedAt: baseThread.updatedAt,
+      });
+      const thread: OrchestrationThread = {
+        ...baseThread,
+        latestTurn: {
+          turnId,
+          state: "completed",
+          requestedAt: baseThread.createdAt,
+          startedAt: baseThread.createdAt,
+          completedAt: baseThread.updatedAt,
+          assistantMessageId: currentAnswerId,
+        },
+        messages: [
+          message(oldAnswerId, "assistant"),
+          ...Array.from({ length: 1_999 }, (_, index) =>
+            message(MessageId.make(`filler-${index}`), "user"),
+          ),
+          message(currentAnswerId, "assistant"),
+        ],
+      };
+      const result = applyThreadDetailEvent(thread, {
+        ...baseEventFields,
+        sequence: 6,
+        occurredAt: baseThread.updatedAt,
+        aggregateKind: "thread",
+        aggregateId: baseThread.id,
+        type: "thread.message-sent",
+        payload: {
+          threadId: baseThread.id,
+          messageId: currentAnswerId,
+          role: "reasoning",
+          text: "",
+          turnId,
+          streaming: false,
+          createdAt: baseThread.createdAt,
+          updatedAt: baseThread.updatedAt,
+        },
+      });
+      expect(result.kind).toBe("updated");
+      if (result.kind !== "updated") return;
+      expect(result.thread.messages).toHaveLength(2_000);
+      expect(result.thread.latestTurn?.assistantMessageId).toBeNull();
+    });
+
     it("appends a new message", () => {
       const result = applyThreadDetailEvent(baseThread, {
         ...baseEventFields,

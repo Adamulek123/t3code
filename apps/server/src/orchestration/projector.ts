@@ -9,6 +9,7 @@ import type {
 } from "@t3tools/contracts";
 import {
   isImportedAgentSessionMessageId,
+  MAX_THREAD_MESSAGES,
   OrchestrationCheckpointSummary,
   OrchestrationMessage,
   OrchestrationSession,
@@ -57,7 +58,6 @@ import {
 } from "./Schemas.ts";
 
 type ThreadPatch = Partial<Omit<OrchestrationThread, "id" | "projectId">>;
-const MAX_THREAD_MESSAGES = 2_000;
 const MAX_THREAD_CHECKPOINTS = 500;
 
 // Async questions can stay open while the agent produces more activity.
@@ -810,6 +810,7 @@ export function projectEvent(
               entry.id === message.id
                 ? {
                     ...entry,
+                    role: message.role,
                     text: message.streaming
                       ? `${entry.text}${message.text}`
                       : message.text.length > 0
@@ -827,11 +828,33 @@ export function projectEvent(
             )
           : [...thread.messages, message];
         const cappedMessages = messages.slice(-MAX_THREAD_MESSAGES);
+        const reclassifiedAssistant =
+          existingMessage?.role === "assistant" &&
+          message.role === "reasoning" &&
+          message.turnId !== null;
+        const replacementAssistantMessageId = reclassifiedAssistant
+          ? (cappedMessages.findLast(
+              (entry) => entry.role === "assistant" && entry.turnId === message.turnId,
+            )?.id ?? null)
+          : null;
+        const latestTurn =
+          reclassifiedAssistant && thread.latestTurn?.assistantMessageId === message.id
+            ? { ...thread.latestTurn, assistantMessageId: replacementAssistantMessageId }
+            : thread.latestTurn;
+        const checkpoints = reclassifiedAssistant
+          ? thread.checkpoints.map((entry) =>
+              entry.assistantMessageId === message.id
+                ? { ...entry, assistantMessageId: replacementAssistantMessageId }
+                : entry,
+            )
+          : thread.checkpoints;
 
         return {
           ...nextBase,
           threads: patchThreadAt(nextBase.threads, threadIndex, {
             messages: cappedMessages,
+            latestTurn,
+            checkpoints,
             updatedAt: event.occurredAt,
           }),
         };

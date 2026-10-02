@@ -62,6 +62,8 @@ type MessageEntry = {
   info: {
     id: string;
     role: "user" | "assistant";
+    parentID?: string;
+    finish?: string;
   };
   parts: Array<unknown>;
 };
@@ -102,6 +104,7 @@ const runtimeMock = {
     promptEchoEvents: [] as Array<unknown>,
     closeError: null as Error | null,
     messages: [] as MessageEntry[],
+    sessionMessagesCalls: 0,
     forkMessagesBySession: new Map<string, MessageEntry[]>(),
     forkPreservesBoundary: true,
     subscribedEvents: [] as Array<unknown | Promise<unknown>>,
@@ -166,6 +169,7 @@ const runtimeMock = {
     this.state.promptEchoEvents.length = 0;
     this.state.closeError = null;
     this.state.messages = [];
+    this.state.sessionMessagesCalls = 0;
     this.state.forkMessagesBySession.clear();
     this.state.forkPreservesBoundary = true;
     this.state.subscribedEvents = [];
@@ -406,10 +410,13 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
           runtimeMock.state.summarizeCalls.push(input);
           return { data: true };
         },
-        messages: async ({ sessionID }: { sessionID: string }) => ({
-          data:
-            runtimeMock.state.forkMessagesBySession.get(sessionID) ?? runtimeMock.state.messages,
-        }),
+        messages: async ({ sessionID }: { sessionID: string }) => {
+          runtimeMock.state.sessionMessagesCalls += 1;
+          return {
+            data:
+              runtimeMock.state.forkMessagesBySession.get(sessionID) ?? runtimeMock.state.messages,
+          };
+        },
         message: async ({ sessionID, messageID }: { sessionID: string; messageID: string }) => {
           runtimeMock.state.messageCalls.push({ sessionID, messageID });
           if (runtimeMock.state.messageFailures > 0) {
@@ -2194,10 +2201,15 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       const threadId = asThreadId("thread-steer-reconnect-before-acceptance");
       const firstUserMessageEvent = promiseWithResolvers<unknown>();
       const reconnectEvent = promiseWithResolvers<unknown>();
+      const assistantEvent = promiseWithResolvers<unknown>();
       const steerStarted = promiseWithResolvers<void>();
       const steerRelease = promiseWithResolvers<void>();
       runtimeMock.state.autoPromptEcho = false;
-      runtimeMock.state.subscribedEvents = [firstUserMessageEvent.promise, reconnectEvent.promise];
+      runtimeMock.state.subscribedEvents = [
+        firstUserMessageEvent.promise,
+        reconnectEvent.promise,
+        assistantEvent.promise,
+      ];
       runtimeMock.state.promptAsyncImplementation = async () => {
         if (runtimeMock.state.promptCalls.length === 2) {
           steerStarted.resolve(undefined);
@@ -2262,6 +2274,19 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       steerRelease.resolve(undefined);
       yield* Fiber.join(steerFiber);
       yield* advanceTestClock(250);
+      assistantEvent.resolve({
+        id: "evt-assistant-after-reconnect-steer",
+        type: "message.updated",
+        properties: {
+          sessionID: "http://127.0.0.1:9999/session",
+          info: {
+            id: "msg-assistant-after-reconnect-steer",
+            role: "assistant",
+            parentID: steerMessageId,
+            finish: "stop",
+          },
+        },
+      });
 
       const completed = Option.getOrUndefined(
         yield* Fiber.join(completedFiber).pipe(Effect.timeout("1 second")),
@@ -3027,13 +3052,18 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       const threadId = asThreadId("thread-stale-admission-status-after-stop");
       const idleEvent = promiseWithResolvers<unknown>();
       const userMessageEvent = promiseWithResolvers<unknown>();
+      const assistantEvent = promiseWithResolvers<unknown>();
       const staleStatusStarted = promiseWithResolvers<void>();
       const staleStatusRelease = promiseWithResolvers<void>();
       const staleStatusReturned = promiseWithResolvers<void>();
       const activePromptStarted = promiseWithResolvers<void>();
       const activePromptRelease = promiseWithResolvers<void>();
       runtimeMock.state.autoPromptEcho = false;
-      runtimeMock.state.subscribedEvents = [idleEvent.promise, userMessageEvent.promise];
+      runtimeMock.state.subscribedEvents = [
+        idleEvent.promise,
+        userMessageEvent.promise,
+        assistantEvent.promise,
+      ];
       runtimeMock.state.sessionStatusImplementation = async () => {
         if (runtimeMock.state.sessionStatusCalls === 1) {
           staleStatusStarted.resolve(undefined);
@@ -3124,6 +3154,19 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       activePromptRelease.resolve(undefined);
       const activeTurn = yield* Fiber.join(activeTurnFiber);
       yield* advanceTestClock(250);
+      assistantEvent.resolve({
+        id: "evt-assistant-after-stale-status",
+        type: "message.updated",
+        properties: {
+          sessionID: "http://127.0.0.1:9999/session",
+          info: {
+            id: "msg-assistant-after-stale-status",
+            role: "assistant",
+            parentID: activeMessageId,
+            finish: "stop",
+          },
+        },
+      });
 
       const completed = Option.getOrUndefined(
         yield* Fiber.join(completedFiber).pipe(Effect.timeout("1 second")),
@@ -3320,14 +3363,19 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
     }),
   );
 
-  it.effect("reconciles a sole idle when the matching prompt echo arrives later", () =>
+  it.effect("reconciles a length-limited reply when the matching prompt echo arrives later", () =>
     Effect.gen(function* () {
       const adapter = yield* OpenCodeAdapter;
       const threadId = asThreadId("thread-idle-before-delayed-echo");
       const idleEvent = promiseWithResolvers<unknown>();
       const userMessageEvent = promiseWithResolvers<unknown>();
+      const assistantEvent = promiseWithResolvers<unknown>();
       runtimeMock.state.autoPromptEcho = false;
-      runtimeMock.state.subscribedEvents = [idleEvent.promise, userMessageEvent.promise];
+      runtimeMock.state.subscribedEvents = [
+        idleEvent.promise,
+        userMessageEvent.promise,
+        assistantEvent.promise,
+      ];
       runtimeMock.state.sessionStatusImplementation = async () => ({ data: {} });
 
       const completedFiber = yield* adapter.streamEvents.pipe(
@@ -3366,6 +3414,25 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         },
       });
       yield* advanceTestClock(250);
+
+      const waiting = (yield* adapter.listSessions()).find(
+        (candidate) => candidate.threadId === threadId,
+      );
+      NodeAssert.equal(waiting?.status, "running");
+      assistantEvent.resolve({
+        id: "evt-delayed-assistant-response",
+        type: "message.updated",
+        properties: {
+          sessionID: "http://127.0.0.1:9999/session",
+          info: {
+            id: "msg-delayed-assistant",
+            role: "assistant",
+            parentID: messageId,
+            finish: "length",
+          },
+        },
+      });
+      yield* advanceTestClock(2_000);
 
       const completed = Option.getOrUndefined(
         yield* Fiber.join(completedFiber).pipe(Effect.timeout("1 second")),
@@ -3440,15 +3507,15 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       NodeAssert.equal(runtimeMock.state.sessionStatusCalls > 0, true);
       const sessions = yield* adapter.listSessions();
       const session = sessions.find((candidate) => candidate.threadId === threadId);
-      NodeAssert.equal(session?.status, "ready");
-      NodeAssert.equal(session?.activeTurnId, undefined);
+      NodeAssert.equal(session?.status, "running");
+      NodeAssert.equal(session?.activeTurnId, activeTurn.turnId);
       NodeAssert.notEqual(activeTurn.turnId, stoppedTurn.turnId);
 
       yield* adapter.stopSession(threadId);
     }),
   );
 
-  it.effect("reconciles a sole idle after a stop when the exact prompt echo arrives", () =>
+  it.effect("keeps the turn running when an idle precedes the exact prompt echo", () =>
     Effect.gen(function* () {
       const adapter = yield* OpenCodeAdapter;
       const threadId = asThreadId("thread-idle-before-exact-echo-after-stop");
@@ -3457,12 +3524,6 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       runtimeMock.state.autoPromptEcho = false;
       runtimeMock.state.subscribedEvents = [idleEvent.promise, userMessageEvent.promise];
       runtimeMock.state.sessionStatusImplementation = async () => ({ data: {} });
-
-      const completedFiber = yield* adapter.streamEvents.pipe(
-        Stream.filter((event) => event.threadId === threadId && event.type === "turn.completed"),
-        Stream.runHead,
-        Effect.forkChild,
-      );
       yield* adapter.startSession({
         provider: ProviderDriverKind.make("opencode"),
         threadId,
@@ -3514,14 +3575,11 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       });
       yield* advanceTestClock(250);
 
-      const completed = Option.getOrUndefined(
-        yield* Fiber.join(completedFiber).pipe(Effect.timeout("1 second")),
+      const waiting = (yield* adapter.listSessions()).find(
+        (candidate) => candidate.threadId === threadId,
       );
-      NodeAssert.equal(completed?.turnId, activeTurn.turnId);
-      const sessions = yield* adapter.listSessions();
-      const session = sessions.find((candidate) => candidate.threadId === threadId);
-      NodeAssert.equal(session?.status, "ready");
-      NodeAssert.equal(session?.activeTurnId, undefined);
+      NodeAssert.equal(waiting?.status, "running");
+      NodeAssert.equal(waiting?.activeTurnId, activeTurn.turnId);
 
       yield* adapter.stopSession(threadId);
     }),
@@ -3533,10 +3591,15 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       const threadId = asThreadId("thread-idle-and-echo-before-acceptance-after-stop");
       const idleEvent = promiseWithResolvers<unknown>();
       const userMessageEvent = promiseWithResolvers<unknown>();
+      const assistantEvent = promiseWithResolvers<unknown>();
       const activePromptStarted = promiseWithResolvers<void>();
       const activePromptRelease = promiseWithResolvers<void>();
       runtimeMock.state.autoPromptEcho = false;
-      runtimeMock.state.subscribedEvents = [idleEvent.promise, userMessageEvent.promise];
+      runtimeMock.state.subscribedEvents = [
+        idleEvent.promise,
+        userMessageEvent.promise,
+        assistantEvent.promise,
+      ];
       runtimeMock.state.sessionStatusImplementation = async () => ({ data: {} });
       runtimeMock.state.promptAsyncImplementation = async () => {
         if (runtimeMock.state.promptCalls.length === 2) {
@@ -3601,6 +3664,25 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       activePromptRelease.resolve(undefined);
       const activeTurn = yield* Fiber.join(activeTurnFiber);
       yield* advanceTestClock(250);
+
+      const waiting = (yield* adapter.listSessions()).find(
+        (candidate) => candidate.threadId === threadId,
+      );
+      NodeAssert.equal(waiting?.activeTurnId, activeTurn.turnId);
+      assistantEvent.resolve({
+        id: "evt-assistant-after-held-acceptance",
+        type: "message.updated",
+        properties: {
+          sessionID: "http://127.0.0.1:9999/session",
+          info: {
+            id: "msg-after-held-acceptance",
+            role: "assistant",
+            parentID: activeMessageId,
+            finish: "stop",
+          },
+        },
+      });
+      yield* advanceTestClock(2_000);
 
       const completed = Option.getOrUndefined(
         yield* Fiber.join(completedFiber).pipe(Effect.timeout("1 second")),
@@ -7024,6 +7106,108 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
     }),
   );
 
+  it.effect(
+    "marks tool-call continuation text as progress while keeping length and stop output visible",
+    () =>
+      Effect.gen(function* () {
+        const adapter = yield* OpenCodeAdapter;
+        const threadId = asThreadId("thread-opencode-progress-text");
+        const sessionID = "http://127.0.0.1:9999/session";
+        runtimeMock.state.subscribedEvents = (["tool-calls", "length", "stop"] as const).flatMap(
+          (finish, index) => {
+            const messageID = `msg-progress-${index}`;
+            return [
+              {
+                type: "message.updated",
+                properties: { sessionID, info: { id: messageID, role: "assistant" } },
+              },
+              {
+                type: "message.part.updated",
+                properties: {
+                  sessionID,
+                  part: {
+                    id: `part-progress-${index}`,
+                    messageID,
+                    sessionID,
+                    type: "text",
+                    text: `Text ${index}`,
+                    time: { start: index + 1, end: index + 2 },
+                  },
+                },
+              },
+              {
+                type: "message.updated",
+                properties: { sessionID, info: { id: messageID, role: "assistant", finish } },
+              },
+              ...(index === 0
+                ? [
+                    {
+                      type: "message.part.updated",
+                      properties: {
+                        sessionID,
+                        part: {
+                          id: `part-progress-${index}`,
+                          messageID,
+                          sessionID,
+                          type: "text",
+                          text: "Text 0 updated",
+                          time: { start: 1, end: 2 },
+                        },
+                      },
+                    },
+                  ]
+                : []),
+            ];
+          },
+        );
+        const eventsFiber = yield* adapter.streamEvents.pipe(
+          Stream.filter(
+            (event) =>
+              event.threadId === threadId &&
+              (event.type === "content.delta" || event.type === "item.completed"),
+          ),
+          Stream.take(8),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+
+        yield* adapter.startSession({
+          provider: ProviderDriverKind.make("opencode"),
+          threadId,
+          runtimeMode: "full-access",
+        });
+
+        const events = Array.from(yield* Fiber.join(eventsFiber).pipe(Effect.timeout("1 second")));
+        const completions = events.filter((event) => event.type === "item.completed");
+        NodeAssert.deepEqual(
+          completions.map((event) =>
+            event.type === "item.completed" ? [event.itemId, event.payload.presentation] : [],
+          ),
+          [
+            ["part-progress-0", undefined],
+            ["part-progress-0", "progress"],
+            ["part-progress-1", undefined],
+            ["part-progress-2", undefined],
+          ],
+        );
+        NodeAssert.deepEqual(
+          events
+            .filter((event) => event.type === "content.delta")
+            .map((event) =>
+              event.type === "content.delta"
+                ? [event.itemId, event.payload.streamKind, event.payload.delta]
+                : [],
+            ),
+          [
+            ["part-progress-0", "assistant_text", "Text 0"],
+            ["part-progress-0", "assistant_progress_text", " updated"],
+            ["part-progress-1", "assistant_text", "Text 1"],
+            ["part-progress-2", "assistant_text", "Text 2"],
+          ],
+        );
+      }),
+  );
+
   it.effect("emits tool lifecycle events before late assistant metadata", () =>
     Effect.gen(function* () {
       const adapter = yield* OpenCodeAdapter;
@@ -7151,6 +7335,218 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
     }),
   );
 
+  it.effect("flushes retained assistant text before completing its turn", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-terminal-retained-text");
+      const sessionID = "http://127.0.0.1:9999/session";
+      const enqueue = makeOpenCodeEventQueue();
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter(
+          (event) =>
+            event.threadId === threadId &&
+            (event.type === "content.delta" ||
+              event.type === "item.completed" ||
+              event.type === "turn.completed"),
+        ),
+        Stream.takeUntil((event) => event.type === "turn.completed"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* adapter.sendTurn({
+        threadId,
+        input: "Finish the report",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("opencode"),
+          "opencode/kimi-k3",
+        ),
+      });
+      const promptMessageId = (runtimeMock.state.promptCalls.at(-1) as { messageID: string })
+        .messageID;
+      enqueue({ type: "session.status", properties: { sessionID, status: { type: "busy" } } });
+      enqueue({
+        type: "message.part.updated",
+        properties: {
+          sessionID,
+          part: {
+            id: "part-retained-report",
+            messageID: "msg-retained-report",
+            sessionID,
+            type: "text",
+            text: "Final report",
+            time: { start: 1, end: 2 },
+          },
+        },
+      });
+      enqueue({
+        type: "message.updated",
+        properties: {
+          sessionID,
+          info: {
+            id: "msg-retained-report",
+            role: "assistant",
+            parentID: promptMessageId,
+            finish: "stop",
+          },
+        },
+      });
+      enqueue({ type: "session.status", properties: { sessionID, status: { type: "idle" } } });
+
+      const events = Array.from(yield* Fiber.join(eventsFiber).pipe(Effect.timeout("1 second")));
+      NodeAssert.deepEqual(
+        events.map((event) => event.type),
+        ["content.delta", "item.completed", "turn.completed"],
+      );
+      if (events[0]?.type === "content.delta") {
+        NodeAssert.equal(events[0].payload.delta, "Final report");
+      }
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect("keeps late final reports with the prompt's completed turn", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-late-final-report");
+      const sessionID = "http://127.0.0.1:9999/session";
+      const enqueue = makeOpenCodeEventQueue();
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const completedFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId && event.type === "turn.completed"),
+        Stream.runHead,
+        Effect.forkChild,
+      );
+      const turn = yield* adapter.sendTurn({
+        threadId,
+        input: "Audit this branch",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("opencode"),
+          "opencode/kimi-k3",
+        ),
+      });
+      const promptMessageId = (runtimeMock.state.promptCalls.at(-1) as { messageID: string })
+        .messageID;
+      enqueue({ type: "session.status", properties: { sessionID, status: { type: "busy" } } });
+      enqueue({
+        type: "message.updated",
+        properties: {
+          sessionID,
+          info: {
+            id: "msg-first-report",
+            role: "assistant",
+            parentID: promptMessageId,
+            finish: "stop",
+          },
+        },
+      });
+      enqueue({ type: "session.status", properties: { sessionID, status: { type: "idle" } } });
+      const completed = Option.getOrUndefined(
+        yield* Fiber.join(completedFiber).pipe(Effect.timeout("1 second")),
+      );
+      NodeAssert.equal(completed?.turnId, turn.turnId);
+
+      const nextTurn = yield* adapter.sendTurn({
+        threadId,
+        input: "Continue the audit",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("opencode"),
+          "opencode/kimi-k3",
+        ),
+      });
+      const lateDeltaFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter(
+          (event) =>
+            event.threadId === threadId &&
+            event.type === "content.delta" &&
+            event.itemId === "part-late-report",
+        ),
+        Stream.runHead,
+        Effect.forkChild,
+      );
+      enqueue({
+        type: "message.updated",
+        properties: {
+          sessionID,
+          info: {
+            id: "msg-late-report",
+            role: "assistant",
+            parentID: promptMessageId,
+            finish: "stop",
+          },
+        },
+      });
+      enqueue({
+        type: "message.part.updated",
+        properties: {
+          sessionID,
+          part: {
+            id: "part-late-report",
+            messageID: "msg-late-report",
+            sessionID,
+            type: "text",
+            text: "Revised audit",
+            time: { start: 1, end: 2 },
+          },
+        },
+      });
+      const lateDelta = Option.getOrUndefined(
+        yield* Fiber.join(lateDeltaFiber).pipe(Effect.timeout("1 second")),
+      );
+      NodeAssert.equal(lateDelta?.turnId, turn.turnId);
+      NodeAssert.notEqual(lateDelta?.turnId, nextTurn.turnId);
+      const unassociatedDeltaFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter(
+          (event) =>
+            event.threadId === threadId &&
+            event.type === "content.delta" &&
+            event.itemId === "part-unassociated-report",
+        ),
+        Stream.runHead,
+        Effect.forkChild,
+      );
+      enqueue({
+        type: "message.updated",
+        properties: {
+          sessionID,
+          info: {
+            id: "msg-unassociated-report",
+            role: "assistant",
+            parentID: "evicted-prompt-id",
+            finish: "stop",
+          },
+        },
+      });
+      enqueue({
+        type: "message.part.updated",
+        properties: {
+          sessionID,
+          part: {
+            id: "part-unassociated-report",
+            messageID: "msg-unassociated-report",
+            sessionID,
+            type: "text",
+            text: "Earlier report",
+            time: { start: 1, end: 2 },
+          },
+        },
+      });
+      const unassociatedDelta = Option.getOrUndefined(
+        yield* Fiber.join(unassociatedDeltaFiber).pipe(Effect.timeout("1 second")),
+      );
+      NodeAssert.equal(unassociatedDelta?.turnId, undefined);
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
   it.effect("processes late assistant metadata without visiting completed turns", () =>
     Effect.gen(function* () {
       const adapter = yield* OpenCodeAdapter;
@@ -7177,9 +7573,23 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
             "opencode/kimi-k3",
           ),
         });
+        const promptMessageId = (runtimeMock.state.promptCalls.at(-1) as { messageID: string })
+          .messageID;
+        enqueue({
+          type: "session.status",
+          properties: { sessionID, status: { type: "busy" } },
+        });
         enqueue({
           type: "message.updated",
-          properties: { sessionID, info: { id: `history-message-${index}`, role: "assistant" } },
+          properties: {
+            sessionID,
+            info: {
+              id: `history-message-${index}`,
+              role: "assistant",
+              parentID: promptMessageId,
+              finish: "stop",
+            },
+          },
         });
         enqueue({
           type: "message.part.updated",
@@ -7282,6 +7692,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
           "opencode/kimi-k3",
         ),
       });
+      enqueue({ type: "session.status", properties: { sessionID, status: { type: "busy" } } });
       for (const parentID of ["", promptMessageId]) {
         enqueue({
           type: "message.updated",
@@ -7606,6 +8017,78 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       NodeAssert.equal(Option.getOrThrow(yield* Fiber.join(completedFiber)).turnId, turn.turnId);
       NodeAssert.equal(
         (yield* adapter.listSessions()).find((session) => session.threadId === threadId)?.status,
+        "ready",
+      );
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect("recovers a finished assistant message whose terminal event was lost", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-reconnect-lost-terminal-message");
+      const reconnect = promiseWithResolvers<unknown>();
+      runtimeMock.state.subscribedEvents = [reconnect.promise];
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const turn = yield* adapter.sendTurn({
+        threadId,
+        input: "Finish during reconnect",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("opencode"),
+          "opencode/kimi-k3",
+        ),
+      });
+      const promptMessageId = (runtimeMock.state.promptCalls[0] as { messageID: string }).messageID;
+      runtimeMock.state.messages.push(
+        {
+          info: {
+            id: "assistant-from-previous-turn",
+            role: "assistant",
+            parentID: "other-prompt",
+            finish: "stop",
+          },
+          parts: [],
+        },
+        {
+          info: {
+            id: "assistant-finished-during-reconnect",
+            role: "assistant",
+            parentID: promptMessageId,
+            finish: "length",
+          },
+          parts: [],
+        },
+      );
+      const warningFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId && event.type === "runtime.warning"),
+        Stream.runHead,
+        Effect.forkChild,
+      );
+      const completedFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId && event.type === "turn.completed"),
+        Stream.runHead,
+        Effect.forkChild,
+      );
+      runtimeMock.state.eventStreamError?.(new Error("socket closed"));
+      yield* Fiber.join(warningFiber);
+      reconnect.resolve({
+        id: "evt-reconnected-after-finished-message",
+        type: "server.connected",
+        properties: {},
+      } satisfies OpenCodeEvent);
+      yield* advanceTestClock(6_000);
+      const completed = Option.getOrUndefined(
+        yield* Fiber.join(completedFiber).pipe(Effect.timeout("1 second")),
+      );
+      NodeAssert.equal(completed?.turnId, turn.turnId);
+      NodeAssert.equal(runtimeMock.state.sessionMessagesCalls, 1);
+      NodeAssert.equal(
+        (yield* adapter.listSessions()).find((candidate) => candidate.threadId === threadId)
+          ?.status,
         "ready",
       );
       yield* adapter.stopSession(threadId);

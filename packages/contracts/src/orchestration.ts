@@ -560,9 +560,10 @@ export const OrchestrationProject = Schema.Struct({
 });
 export type OrchestrationProject = typeof OrchestrationProject.Type;
 
-/** `reasoning` carries a provider's thinking trace: a reasoning summary, or
- *  the raw chain of thought when the model exposes one. It is a sibling of the
- *  assistant text it precedes, not a replacement for it. */
+export const MAX_THREAD_MESSAGES = 2_000;
+
+/** `reasoning` carries a provider's thinking summary, raw trace, or OpenCode
+ *  continuation text. It sits alongside the assistant answer. */
 export const OrchestrationMessageRole = Schema.Literals([
   "user",
   "assistant",

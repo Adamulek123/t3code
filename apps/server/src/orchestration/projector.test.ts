@@ -1,9 +1,11 @@
 import {
   CommandId,
   EventId,
+  MessageId,
   ProjectId,
   ProviderDriverKind,
   ThreadId,
+  TurnId,
   type OrchestrationEvent,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -672,9 +674,49 @@ describe("orchestration projector", () => {
       ),
     );
 
+    const withAssistantAnchor = {
+      ...afterDelta,
+      threads: afterDelta.threads.map((thread) => ({
+        ...thread,
+        latestTurn: {
+          turnId: TurnId.make("turn-1"),
+          state: "running" as const,
+          requestedAt: deltaAt,
+          startedAt: deltaAt,
+          completedAt: null,
+          assistantMessageId: MessageId.make("assistant:msg-1"),
+        },
+      })),
+    };
+    const afterTurnlessReclassification = await Effect.runPromise(
+      projectEvent(
+        withAssistantAnchor,
+        makeEvent({
+          sequence: 3,
+          type: "thread.message-sent",
+          aggregateKind: "thread",
+          aggregateId: "thread-1",
+          occurredAt: completeAt,
+          commandId: "cmd-turnless",
+          payload: {
+            threadId: "thread-1",
+            messageId: "assistant:msg-1",
+            role: "reasoning",
+            text: "",
+            turnId: null,
+            streaming: false,
+            createdAt: completeAt,
+            updatedAt: completeAt,
+          },
+        }),
+      ),
+    );
+    expect(afterTurnlessReclassification.threads[0]?.latestTurn?.assistantMessageId).toBe(
+      "assistant:msg-1",
+    );
     const afterComplete = await Effect.runPromise(
       projectEvent(
-        afterDelta,
+        withAssistantAnchor,
         makeEvent({
           sequence: 3,
           type: "thread.message-sent",
@@ -685,7 +727,7 @@ describe("orchestration projector", () => {
           payload: {
             threadId: "thread-1",
             messageId: "assistant:msg-1",
-            role: "assistant",
+            role: "reasoning",
             text: "",
             turnId: "turn-1",
             streaming: false,
@@ -698,9 +740,11 @@ describe("orchestration projector", () => {
 
     const message = afterComplete.threads[0]?.messages[0];
     expect(message?.id).toBe("assistant:msg-1");
+    expect(message?.role).toBe("reasoning");
     expect(message?.text).toBe("hello");
     expect(message?.streaming).toBe(false);
     expect(message?.updatedAt).toBe(completeAt);
+    expect(afterComplete.threads[0]?.latestTurn?.assistantMessageId).toBeNull();
   });
 
   it("prunes reverted turn messages from in-memory thread snapshot", async () => {
