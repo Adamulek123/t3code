@@ -213,7 +213,6 @@ interface OpenCodeIdleReconciliation {
 }
 
 interface OpenCodePromptAdmission {
-  steering: boolean;
   readonly generation: number;
   readonly turnId: TurnId;
   readonly messageId: string;
@@ -223,8 +222,6 @@ interface OpenCodePromptAdmission {
   idleDuringAdmission: { readonly turnId: TurnId; readonly raw: unknown } | undefined;
   idleObservedAfterMessage: boolean;
   messageObserved: boolean;
-  assistantResponseFinished: boolean;
-  responseReceipt: Deferred.Deferred<void>;
   busyObserved: boolean;
   idleStatusConfirmations: number;
   accepted: boolean;
@@ -900,24 +897,10 @@ const cancelPendingOpenCodePrompt = Effect.fn("cancelPendingOpenCodePrompt")(fun
     return;
   }
   admission.cancelled = true;
-  if (admission.recoveryFiber) {
-    yield* Fiber.interrupt(admission.recoveryFiber);
-  }
   if (admission.promptFiber) {
     yield* Fiber.interrupt(admission.promptFiber);
   }
   yield* Deferred.await(admission.submissionSettled);
-});
-
-const retirePromptAdmission = Effect.fnUntraced(function* (
-  context: OpenCodeSessionContext,
-  admission: OpenCodePromptAdmission,
-) {
-  admission.cancelled = true;
-  context.promptAdmission = undefined;
-  if (admission.recoveryFiber) {
-    yield* Fiber.interrupt(admission.recoveryFiber);
-  }
 });
 
 const closeStartingOpenCodeContext = Effect.fn("closeStartingOpenCodeContext")(function* (
@@ -1398,7 +1381,6 @@ export function makeOpenCodeAdapter(
         if (!promptAdmission.requiresMessageReceipt) {
           yield* Deferred.await(promptAdmission.acceptance);
         }
-        let lastStatusIsIdle = false;
         for (
           let retryCount = 0;
           retryCount < 5 || (promptAdmission.requiresMessageReceipt && !promptAdmission.accepted);
@@ -1475,7 +1457,6 @@ export function makeOpenCodeAdapter(
           const status = statusData?.[context.openCodeSessionId];
           const isIdle =
             statusData !== undefined && (status === undefined || status.type === "idle");
-          lastStatusIsIdle = isIdle;
           const isBusy = status?.type === "busy" || status?.type === "retry";
           if (isBusy) {
             promptAdmission.busyObserved = true;
@@ -1489,14 +1470,14 @@ export function makeOpenCodeAdapter(
           if (
             isIdle &&
             idle !== undefined &&
-            (promptAdmission.assistantResponseFinished || promptAdmission.busyObserved)
+            (promptAdmission.messageObserved || promptAdmission.busyObserved)
           ) {
             context.promptAdmission = undefined;
             context.awaitingBusyAfterInterruption = false;
             yield* scheduleIdleReconciliation(context, promptAdmission.turnId, idle.raw);
             return;
           }
-          if (isIdle && promptAdmission.assistantResponseFinished) {
+          if (isIdle && promptAdmission.messageObserved) {
             promptAdmission.idleStatusConfirmations += 1;
             if (promptAdmission.idleStatusConfirmations >= 2) {
               context.promptAdmission = undefined;
@@ -1517,7 +1498,7 @@ export function makeOpenCodeAdapter(
           }
           if (
             isIdle &&
-            promptAdmission.assistantResponseFinished &&
+            promptAdmission.messageObserved &&
             promptAdmission.recoveryRaw !== undefined
           ) {
             context.promptAdmission = undefined;
@@ -1532,61 +1513,6 @@ export function makeOpenCodeAdapter(
 
           const delayMs = Math.min(250 * 2 ** retryCount, 2_000);
           yield* Effect.sleep(`${delayMs} millis`);
-        }
-        // An idle status can precede OpenCode's first assistant response. Keep
-        // the turn owned until that response arrives; its terminal update
-        // restarts reconciliation without polling an idle session indefinitely.
-        if (promptAdmission.messageObserved && !promptAdmission.assistantResponseFinished) {
-          // The terminal assistant event may have been lost during a reconnect.
-          // Confirm it from OpenCode's durable messages before waiting for the stream.
-          if (lastStatusIsIdle) {
-            const messages = yield* runOpenCodeSdk("session.messages", (signal) =>
-              context.client.session.messages({ sessionID: context.openCodeSessionId }, { signal }),
-            ).pipe(Effect.timeout("1 second"), Effect.option);
-            if (
-              (yield* Ref.get(context.stopped)) ||
-              sessions.get(context.session.threadId) !== context ||
-              context.promptAdmission !== promptAdmission ||
-              context.activeTurnId !== promptAdmission.turnId ||
-              context.promptGeneration !== promptAdmission.generation ||
-              promptAdmission.cancelled
-            ) {
-              return;
-            }
-            const finished =
-              Option.isSome(messages) &&
-              messages.value.data?.some(
-                (message) =>
-                  message.info.role === "assistant" &&
-                  message.info.parentID === promptAdmission.messageId &&
-                  (message.info.finish === "stop" || message.info.finish === "length"),
-              );
-            if (finished) {
-              promptAdmission.assistantResponseFinished = true;
-              yield* Deferred.succeed(promptAdmission.responseReceipt, undefined);
-            }
-          }
-          const response = yield* Deferred.await(promptAdmission.responseReceipt).pipe(
-            Effect.timeoutOption("2 minutes"),
-          );
-          if (Option.isNone(response)) {
-            yield* failPromptAdmissionRecovery(context, promptAdmission);
-            return;
-          }
-          if (
-            context.promptAdmission === promptAdmission &&
-            context.activeTurnId === promptAdmission.turnId &&
-            context.promptGeneration === promptAdmission.generation &&
-            !promptAdmission.cancelled
-          ) {
-            context.promptAdmission = undefined;
-            yield* scheduleIdleReconciliation(
-              context,
-              promptAdmission.turnId,
-              promptAdmission.recoveryRaw,
-            );
-          }
-          return;
         }
         yield* failPromptAdmissionRecovery(context, promptAdmission);
       }).pipe(
@@ -2489,7 +2415,15 @@ export function makeOpenCodeAdapter(
             promptAdmission.messageObserved = true;
             yield* Deferred.succeed(promptAdmission.messageReceipt, undefined);
             if (promptAdmission.accepted) {
-              yield* schedulePromptAdmissionRecovery(context, event);
+              const idle = promptAdmission.idleDuringAdmission;
+              context.awaitingBusyAfterInterruption = false;
+              context.promptAdmission = undefined;
+              if (promptAdmission.recoveryFiber) {
+                yield* Fiber.interrupt(promptAdmission.recoveryFiber);
+              }
+              if (idle) {
+                yield* scheduleIdleReconciliation(context, idle.turnId, idle.raw);
+              }
             }
           }
           context.messageRoleById.set(event.properties.info.id, event.properties.info.role);
@@ -2497,11 +2431,6 @@ export function makeOpenCodeAdapter(
             context.textPartsByMessageId.delete(event.properties.info.id);
           }
           if (event.properties.info.role === "assistant") {
-            const finishesPromptResponse =
-              promptAdmission !== undefined &&
-              promptAdmission.messageId === event.properties.info.parentID &&
-              (event.properties.info.finish === "stop" ||
-                event.properties.info.finish === "length");
             const usage = context.turnTokenUsage;
             const parentMessageId =
               typeof event.properties.info.parentID === "string" &&
@@ -2543,18 +2472,6 @@ export function makeOpenCodeAdapter(
                 event.properties.info.finish === "tool-calls"
               ) {
                 yield* emitAssistantProgressCompletion(context, part, turnId, event);
-              }
-            }
-            if (finishesPromptResponse) {
-              promptAdmission.assistantResponseFinished = true;
-              yield* Deferred.succeed(promptAdmission.responseReceipt, undefined);
-              if (promptAdmission.accepted) {
-                if (promptAdmission.recoveryFiber) {
-                  yield* Fiber.interrupt(promptAdmission.recoveryFiber);
-                }
-                context.promptAdmission = undefined;
-                context.awaitingBusyAfterInterruption = false;
-                yield* scheduleIdleReconciliation(context, promptAdmission.turnId, event);
               }
             }
           }
@@ -2763,13 +2680,8 @@ export function makeOpenCodeAdapter(
             yield* cancelIdleReconciliation(context);
             context.awaitingBusyAfterInterruption = false;
             if (context.promptAdmission?.turnId === turnId) {
-              const admission = context.promptAdmission;
-              admission.busyObserved = true;
-              if (admission.accepted && admission.messageObserved) {
-                yield* retirePromptAdmission(context, admission);
-              } else {
-                yield* schedulePromptAdmissionRecovery(context, event);
-              }
+              context.promptAdmission.busyObserved = true;
+              yield* schedulePromptAdmissionRecovery(context, event);
             }
             yield* updateProviderSession(context, {
               status: "running",
@@ -2799,19 +2711,9 @@ export function makeOpenCodeAdapter(
               break;
             }
             if (context.promptAdmission?.turnId === turnId) {
-              const admission = context.promptAdmission;
-              const priorIdle = admission.idleDuringAdmission ?? admission.priorIdle;
-              admission.idleDuringAdmission = { turnId, raw: event };
-              admission.idleObservedAfterMessage = admission.messageObserved;
-              if (
-                admission.accepted &&
-                admission.messageObserved &&
-                (priorIdle || !context.awaitingBusyAfterInterruption)
-              ) {
-                yield* retirePromptAdmission(context, admission);
-                yield* scheduleIdleReconciliation(context, turnId, event);
-                break;
-              }
+              context.promptAdmission.idleDuringAdmission = { turnId, raw: event };
+              context.promptAdmission.idleObservedAfterMessage =
+                context.promptAdmission.messageObserved;
               yield* schedulePromptAdmissionRecovery(context, event);
               break;
             }
@@ -2845,10 +2747,6 @@ export function makeOpenCodeAdapter(
             if (context.interruptedTurnId !== undefined || context.reconcileIdleStatus) {
               break;
             }
-          }
-          const promptAdmission = context.promptAdmission;
-          if (promptAdmission) {
-            yield* retirePromptAdmission(context, promptAdmission);
           }
           yield* cancelIdleReconciliation(context);
           const terminalCancellation =
@@ -3367,12 +3265,7 @@ export function makeOpenCodeAdapter(
             : undefined;
           context.pendingIdleReconciliation = undefined;
           const promptGeneration = context.promptGeneration + 1;
-          const previousAdmission = context.promptAdmission;
-          if (previousAdmission?.recoveryFiber) {
-            yield* Fiber.interrupt(previousAdmission.recoveryFiber);
-          }
           const promptAdmission: OpenCodePromptAdmission = {
-            steering: steeringTurnId !== undefined,
             generation: promptGeneration,
             turnId,
             messageId,
@@ -3382,8 +3275,6 @@ export function makeOpenCodeAdapter(
             idleDuringAdmission: undefined,
             idleObservedAfterMessage: false,
             messageObserved: false,
-            assistantResponseFinished: false,
-            responseReceipt: Deferred.makeUnsafe<void>(),
             busyObserved: false,
             idleStatusConfirmations: 0,
             accepted: false,
@@ -3688,29 +3579,13 @@ export function makeOpenCodeAdapter(
           ) {
             context.awaitingBusyAfterInterruption = false;
             const idle = promptAdmission.idleDuringAdmission;
-            if (promptAdmission.busyObserved && promptAdmission.messageObserved) {
-              if (promptAdmission.recoveryFiber) {
-                yield* Fiber.interrupt(promptAdmission.recoveryFiber);
-              }
-              context.promptAdmission = undefined;
-              if (idle) {
-                yield* scheduleIdleReconciliation(context, turnId, idle.raw);
-              }
-            } else if (promptAdmission.assistantResponseFinished) {
-              if (promptAdmission.recoveryFiber) {
-                yield* Fiber.interrupt(promptAdmission.recoveryFiber);
-              }
-              context.promptAdmission = undefined;
-              yield* scheduleIdleReconciliation(context, turnId, promptAdmission.recoveryRaw);
-            } else if (
-              idle &&
-              promptAdmission.idleObservedAfterMessage &&
-              promptAdmission.steering
-            ) {
-              context.promptAdmission = undefined;
-              yield* scheduleIdleReconciliation(context, turnId, idle.raw);
+            if (idle && !promptAdmission.idleObservedAfterMessage) {
+              yield* schedulePromptAdmissionRecovery(context, idle.raw);
             } else {
-              yield* schedulePromptAdmissionRecovery(context, idle?.raw);
+              context.promptAdmission = undefined;
+            }
+            if (idle && promptAdmission.idleObservedAfterMessage) {
+              yield* scheduleIdleReconciliation(context, turnId, idle.raw);
             }
           } else {
             yield* schedulePromptAdmissionRecovery(context, promptAdmission.recoveryRaw);
@@ -3849,7 +3724,11 @@ export function makeOpenCodeAdapter(
         context.cancellation = cancellation;
         const promptAdmission = context.promptAdmission;
         if (promptAdmission !== undefined && promptAdmission.turnId === interruptedTurnId) {
-          yield* cancelPendingOpenCodePrompt(context);
+          promptAdmission.cancelled = true;
+          if (promptAdmission.promptFiber) {
+            yield* Fiber.interrupt(promptAdmission.promptFiber);
+          }
+          yield* Deferred.await(promptAdmission.submissionSettled);
         }
 
         yield* Effect.forEach([...context.commandFibers], Fiber.interrupt, { discard: true });
