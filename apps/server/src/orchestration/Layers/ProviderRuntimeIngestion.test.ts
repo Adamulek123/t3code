@@ -1439,6 +1439,76 @@ describe("ProviderRuntimeIngestion", () => {
     expect(message?.streaming).toBe(false);
   });
 
+  it.each([
+    { mode: "token" as const, terminalType: "turn.completed" as const },
+    { mode: "token" as const, terminalType: "turn.aborted" as const },
+    { mode: "paragraph" as const, terminalType: "turn.completed" as const },
+    { mode: "paragraph" as const, terminalType: "turn.aborted" as const },
+  ])(
+    "settles the previous OpenCode part in $mode mode before $terminalType",
+    async ({ mode, terminalType }) => {
+      const harness = await createHarness({ serverSettings: { responseStreamingMode: mode } });
+      const threadId = asThreadId("thread-1");
+      const turnId = asTurnId("turn-part-switch");
+      const base = {
+        provider: ProviderDriverKind.make("opencode"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        threadId,
+        turnId,
+      };
+      const delta = (itemId: string, text: string) => ({
+        ...base,
+        type: "content.delta" as const,
+        eventId: asEventId(`evt-${itemId}`),
+        itemId: asItemId(itemId),
+        payload: { streamKind: "assistant_text" as const, delta: text },
+      });
+      const readMessages = async () =>
+        (await harness.readModel()).threads.find((entry) => entry.id === threadId)!.messages;
+      await harness.emitAndDrain([
+        { ...base, type: "turn.started", eventId: asEventId("evt-part-switch-started") },
+        delta("first-part", "First part.\n\n"),
+      ]);
+      expect(await readMessages()).toContainEqual(
+        expect.objectContaining({
+          id: "assistant:first-part",
+          text: "First part.\n\n",
+          streaming: true,
+        }),
+      );
+
+      harness.advanceClock(1_000);
+      await harness.emitAndDrain([delta("second-part", "Second part.\n\n")]);
+      expect(await readMessages()).toEqual([
+        expect.objectContaining({ id: "assistant:first-part", streaming: false }),
+        expect.objectContaining({ id: "assistant:second-part", streaming: true }),
+      ]);
+      await harness.emitAndDrain([
+        {
+          ...base,
+          type: terminalType,
+          eventId: asEventId("evt-part-switch-terminal"),
+          payload:
+            terminalType === "turn.completed"
+              ? { state: "completed" }
+              : { reason: "Interrupted by user." },
+        },
+      ]);
+      expect(await readMessages()).toEqual([
+        expect.objectContaining({
+          id: "assistant:first-part",
+          text: "First part.\n\n",
+          streaming: false,
+        }),
+        expect.objectContaining({
+          id: "assistant:second-part",
+          text: "Second part.\n\n",
+          streaming: false,
+        }),
+      ]);
+    },
+  );
+
   it("keeps a completed OpenCode turn with reasoning but no answer visible", async () => {
     const harness = await createHarness();
     const threadId = asThreadId("thread-1");

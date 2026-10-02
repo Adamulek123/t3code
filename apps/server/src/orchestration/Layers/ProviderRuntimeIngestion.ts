@@ -1299,7 +1299,8 @@ const make = Effect.gen(function* () {
           createdAt: input.event.createdAt,
           commandTag: "assistant-complete-on-new-part",
           finalDeltaCommandTag: "assistant-delta-finalize-on-new-part",
-          hasProjectedMessage: false,
+          hasProjectedMessage:
+            (yield* getThreadMessageById(input.threadId, activeMessageId)) !== undefined,
         });
       }
 
