@@ -15,6 +15,8 @@ import {
   type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Cause from "effect/Cause";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 
@@ -25,6 +27,97 @@ import * as IdAllocator from "./IdAllocator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderRuntimeRecovery from "./ProviderRuntimeRecoveryService.ts";
 import * as ServerSettings from "../serverSettings.ts";
+
+it.effect.each([
+  { trigger: "startup", failure: "read" },
+  { trigger: "startup", failure: "commit" },
+  { trigger: "shutdown", failure: "read" },
+  { trigger: "shutdown", failure: "commit" },
+] as const)("continues $trigger recovery after a thread $failure defect", ({ trigger, failure }) =>
+  Effect.gen(function* () {
+    const badThread = ThreadId.make("recovery-bad-thread");
+    const healthyThread = ThreadId.make("recovery-healthy-thread");
+    const committed = yield* Ref.make<ThreadId[]>([]);
+    const layer = ProviderRuntimeRecovery.layer.pipe(
+      Layer.provide(ServerSettings.layerTest()),
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getRecoveryThreadIds: () => Effect.succeed([badThread, healthyThread]),
+            getRuntimeRecoveryProjection: (threadId) =>
+              threadId === badThread && failure === "read"
+                ? Effect.die("corrupt thread projection")
+                : Effect.succeed({
+                    thread: { id: threadId },
+                    runtimeRequests: [
+                      {
+                        id: RuntimeRequestId.make(`request:${threadId}`),
+                        nodeId: NodeId.make(`node:${threadId}`),
+                        status: "pending",
+                        responseCapability: { type: "not_resumable", reason: "old process" },
+                      },
+                    ],
+                    providerSessions: [],
+                    providerThreads: [],
+                    providerTurns: [],
+                    runs: [],
+                    attempts: [],
+                    nodes: [],
+                    subagents: [],
+                    messages: [],
+                    turnItems: [],
+                  } as unknown as OrchestrationV2ThreadProjection),
+          }),
+          Layer.mock(EventSink.EventSinkV2)({
+            commitCommand: (input) =>
+              input.threadId === badThread
+                ? Effect.die("corrupt thread event")
+                : Ref.update(committed, (ids) => [...ids, input.threadId]).pipe(
+                    Effect.as({ committed: true, cancelledEffectCount: 0 } as never),
+                  ),
+          }),
+          IdAllocator.layer,
+          Layer.mock(EffectOutbox.EffectOutboxV2)({
+            reconcileAfterProcessLoss: Effect.succeed({ requeued: 2, cancelled: 3 }),
+          }),
+        ),
+      ),
+    );
+    const summary = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService.pipe(
+      Effect.flatMap((recovery) => recovery.reconcile(trigger)),
+      Effect.provide(layer),
+    );
+    assert.deepEqual(yield* Ref.get(committed), [healthyThread]);
+    assert.equal(summary.closedRequests, 1);
+    assert.equal(summary.requeuedEffects, 2);
+    assert.equal(summary.retiredEffects, 3);
+  }),
+);
+
+it.effect("preserves cancellation while recovering an individual thread", () =>
+  Effect.gen(function* () {
+    const layer = ProviderRuntimeRecovery.layer.pipe(
+      Layer.provide(ServerSettings.layerTest()),
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getRecoveryThreadIds: () => Effect.succeed([ThreadId.make("cancelled-recovery")]),
+            getRuntimeRecoveryProjection: () => Effect.interrupt,
+          }),
+          Layer.mock(EventSink.EventSinkV2)({}),
+          IdAllocator.layer,
+          Layer.mock(EffectOutbox.EffectOutboxV2)({}),
+        ),
+      ),
+    );
+    const exit = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService.pipe(
+      Effect.flatMap((recovery) => recovery.reconcile("startup")),
+      Effect.provide(layer),
+      Effect.exit,
+    );
+    assert.isTrue(Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause));
+  }),
+);
 
 it.effect("leaves durable effects for the worker after runtime reconciliation", () =>
   Effect.gen(function* () {

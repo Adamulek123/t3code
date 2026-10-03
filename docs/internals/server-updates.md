@@ -70,6 +70,12 @@ readiness or the launcher's commit boundary. Graceful shutdown captures intent b
 closing providers, then reconciles after ingestion has stopped so a late completion
 cannot be overwritten by a stale cancellation.
 
+Recovery isolates projection and reconciliation failures per thread. It logs the
+thread and trigger, then continues recovering other threads and reconciling the
+outbox. Cancellation still stops recovery. Reads of the candidate list and global
+outbox failures remain startup errors. Recovery stays serial because all writes
+share the environment's database.
+
 The [continuation handler](../../apps/server/src/orchestration-v2/RestartContinuation.ts)
 rechecks the preference, archive state, provider selection, and newer user work before
 dispatching. Stable command and message IDs prevent duplicate submissions after an

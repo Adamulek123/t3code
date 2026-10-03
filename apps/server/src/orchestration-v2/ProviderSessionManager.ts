@@ -1489,11 +1489,14 @@ export const layerWithOptions = (
                 providerInstanceId: runtime.instanceId,
               }),
             ).pipe(
-              Effect.andThen(observeActivity(providerSessionId, markBusy(providerSessionId))),
-              Effect.andThen(runtime.startTurn(input)),
-              Effect.catch((error) =>
-                observeActivity(providerSessionId, markIdle(providerSessionId)).pipe(
-                  Effect.andThen(Effect.fail(error)),
+              Effect.andThen(
+                Effect.uninterruptibleMask((restore) =>
+                  observeActivity(providerSessionId, markBusy(providerSessionId)).pipe(
+                    Effect.andThen(restore(runtime.startTurn(input))),
+                    Effect.onError(() =>
+                      observeActivity(providerSessionId, markIdle(providerSessionId)),
+                    ),
+                  ),
                 ),
               ),
             ),
