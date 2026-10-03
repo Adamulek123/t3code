@@ -23,6 +23,7 @@ import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
@@ -218,7 +219,10 @@ const make = Effect.gen(function* () {
 
     const tracked = input.workspaceStrategy.type === "worktree";
     let createdWorktreePath: string | null = null;
+    let createdWorktreeBranch: string | null = null;
     let setupTerminalId: string | null = null;
+    let branchRenameFiber: Fiber.Fiber<unknown, never> | null = null;
+    let preparationComplete = false;
     if (tracked) {
       yield* setupTracker.begin({
         threadId,
@@ -267,19 +271,18 @@ const make = Effect.gen(function* () {
       // The server owns worktree naming: without an explicit branch, provision
       // under a temporary `t3code/<hash>` name so the worktree never waits on
       // name generation, then rename in the background below.
-      const requestedBranch = input.workspaceStrategy.branch;
-      let branch: string | null;
-      if (input.workspaceStrategy.type === "worktree" && requestedBranch === undefined) {
-        const uuid = yield* randomUuidV4;
-        branch = buildTemporaryWorktreeBranchName(() => uuid.replaceAll("-", ""));
-      } else {
-        branch = requestedBranch ?? null;
-      }
+      let branch = input.workspaceStrategy.branch ?? null;
       let worktreePath =
         input.workspaceStrategy.type === "existing_worktree"
           ? input.workspaceStrategy.worktreePath
           : null;
       if (input.workspaceStrategy.type === "worktree") {
+        const worktreeBranch =
+          branch ??
+          (yield* randomUuidV4.pipe(
+            Effect.map((uuid) => buildTemporaryWorktreeBranchName(() => uuid.replaceAll("-", ""))),
+          ));
+        branch = worktreeBranch;
         if (runId !== null) {
           yield* threads
             .dispatch({
@@ -335,7 +338,7 @@ const make = Effect.gen(function* () {
             {
               cwd: project.workspaceRoot,
               refName: startRef,
-              newRefName: branch!,
+              newRefName: worktreeBranch,
               baseRefName: input.workspaceStrategy.baseRef,
               path: null,
             },
@@ -344,6 +347,7 @@ const make = Effect.gen(function* () {
                 onWorktreeClaimed: (path) =>
                   Effect.sync(() => {
                     createdWorktreePath = path;
+                    createdWorktreeBranch = worktreeBranch;
                   }),
                 onCheckoutProgress: (progress) =>
                   setupTracker.stage(threadId, "checkout", { percent: progress.percent }),
@@ -354,6 +358,7 @@ const make = Effect.gen(function* () {
         worktreePath = worktree.worktree.path;
         branch = worktree.worktree.refName;
         createdWorktreePath = worktreePath;
+        createdWorktreeBranch = branch;
         yield* setupTracker.update(threadId, (snapshot) => ({ ...snapshot, worktreePath, branch }));
         yield* setupTracker.stageStatus(threadId, "checkout", "done");
       }
@@ -380,7 +385,7 @@ const make = Effect.gen(function* () {
       ) {
         const oldBranch = branch;
         const worktreeCwd = worktreePath;
-        yield* generateBranchNameFor(worktreeCwd, initialMessage).pipe(
+        branchRenameFiber = yield* generateBranchNameFor(worktreeCwd, initialMessage).pipe(
           Effect.flatMap(({ branch: newBranch, exactName }) =>
             git.renameBranch({
               cwd: worktreeCwd,
@@ -456,9 +461,10 @@ const make = Effect.gen(function* () {
             terminalId: setup.terminalId,
           },
         }));
-        if (setup.completion) {
+        const setupCompletion = setup.completion;
+        if (setupCompletion) {
           const awaitCompletion = Effect.gen(function* () {
-            const completion = yield* setup.completion!;
+            const completion = yield* setupCompletion;
             yield* setupTracker.stage(threadId, "setup-script", {
               status: completion.exitCode === 0 ? "done" : "failed",
               detail: `exited with ${completion.exitCode ?? "no exit code"}`,
@@ -498,7 +504,17 @@ const make = Effect.gen(function* () {
             threadId,
             runId,
           })
-          .pipe(Effect.mapError(mapError(input, "release-run", threadId)));
+          .pipe(
+            Effect.mapError(mapError(input, "release-run", threadId)),
+            Effect.tap(() =>
+              Effect.sync(() => {
+                preparationComplete = true;
+              }),
+            ),
+            Effect.uninterruptible,
+          );
+      } else {
+        preparationComplete = true;
       }
       yield* setupTracker.stageStatus(threadId, "agent", "done");
       yield* awaitAsyncSetup;
@@ -507,33 +523,92 @@ const make = Effect.gen(function* () {
       Effect.onError((cause) =>
         Effect.gen(function* () {
           const cancelled = Cause.hasInterruptsOnly(cause);
-          yield* setupTracker.finish(
-            threadId,
-            cancelled ? "cancelled" : "failed",
-            cancelled ? null : failureDetail(Cause.squash(cause)),
-          );
-          if (cancelled && tracked && createdWorktreePath) {
-            if (setupTerminalId)
+          // Once the prepared run is released, the provider owns its workspace.
+          // An async setup interrupted during shutdown must not delete it.
+          if (!preparationComplete) {
+            if (branchRenameFiber !== null) yield* Fiber.interrupt(branchRenameFiber);
+            if (setupTerminalId !== null)
               yield* terminals
                 .close({ threadId, terminalId: setupTerminalId, deleteHistory: true })
-                .pipe(Effect.ignore);
-            yield* git
+                .pipe(
+                  Effect.tap(() =>
+                    setupTracker.update(threadId, (snapshot) => ({
+                      ...snapshot,
+                      setupScript: null,
+                    })),
+                  ),
+                  Effect.catchCause((cleanupCause) =>
+                    Effect.logWarning("Failed to close thread launch setup terminal", {
+                      threadId,
+                      terminalId: setupTerminalId,
+                      cause: cleanupCause,
+                    }),
+                  ),
+                );
+          }
+          if (!preparationComplete && tracked && createdWorktreePath !== null) {
+            const removed = yield* git
               .removeWorktree({
                 cwd: project.workspaceRoot,
                 path: createdWorktreePath,
                 force: true,
               })
-              .pipe(Effect.ignore);
-            yield* threads
-              .dispatch({
-                type: "thread.metadata.update",
-                commandId: CommandId.make(`${input.commandId}:cancel-workspace`),
-                threadId,
+              .pipe(
+                Effect.as(true),
+                Effect.catchCause((cleanupCause) =>
+                  Effect.logWarning("Failed to remove thread launch worktree", {
+                    threadId,
+                    worktreePath: createdWorktreePath,
+                    cause: cleanupCause,
+                  }).pipe(Effect.as(false)),
+                ),
+              );
+            // Keep the binding when removal fails so the surviving worktree
+            // remains discoverable instead of becoming an orphan.
+            if (removed) {
+              yield* threads
+                .dispatch({
+                  type: "thread.metadata.update",
+                  commandId: CommandId.make(`${input.commandId}:cleanup-workspace`),
+                  threadId,
+                  worktreePath: null,
+                  branch: null,
+                })
+                .pipe(Effect.ignore);
+              yield* setupTracker.update(threadId, (snapshot) => ({
+                ...snapshot,
                 worktreePath: null,
                 branch: null,
-              })
-              .pipe(Effect.ignore);
+              }));
+            } else {
+              const shell = yield* threads
+                .getThreadShell(threadId)
+                .pipe(Effect.catchCause(() => Effect.succeed(null)));
+              // Checkout can fail after claiming a path but before the normal
+              // workspace update. Bind that survivor so it can still be found.
+              if (shell !== null && shell.worktreePath !== createdWorktreePath) {
+                yield* threads
+                  .dispatch({
+                    type: "thread.metadata.update",
+                    commandId: CommandId.make(`${input.commandId}:cleanup-workspace`),
+                    threadId,
+                    worktreePath: createdWorktreePath,
+                    branch: createdWorktreeBranch,
+                  })
+                  .pipe(Effect.ignore);
+                yield* setupTracker.update(threadId, (snapshot) => ({
+                  ...snapshot,
+                  worktreePath: createdWorktreePath,
+                  branch: createdWorktreeBranch,
+                }));
+              }
+            }
           }
+          yield* setupTracker.finish(
+            threadId,
+            cancelled ? "cancelled" : "failed",
+            cancelled ? null : failureDetail(Cause.squash(cause)),
+          );
         }),
       ),
     );
