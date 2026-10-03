@@ -615,6 +615,7 @@ export const layerWithOptions = (
         readonly reason: ProviderSessionReleaseReason;
         /** Requests created later belong to a replacement session with the same id. */
         readonly releasedAt: DateTime.Utc;
+        readonly threadIds?: ReadonlySet<ThreadId>;
       }) =>
         Effect.gen(function* () {
           const providerSessionId = input.entry.runtime.providerSessionId;
@@ -626,7 +627,7 @@ export const layerWithOptions = (
               : "Provider session was closed before this runtime request was resolved.";
 
           const events: Array<OrchestrationV2DomainEvent> = [];
-          for (const threadId of input.entry.attachedThreadIds) {
+          for (const threadId of input.threadIds ?? input.entry.attachedThreadIds) {
             const projection = yield* projectionStore.getThreadRecords(
               threadId,
               ["runtimeRequests", "nodes", "turnItems"],
@@ -1933,6 +1934,16 @@ export const layerWithOptions = (
                   { concurrency: 1, discard: true },
                 );
               }
+            }
+            // Persist request cleanup while the thread is still attached.
+            // Shared sessions stay live and cannot clean this thread on release.
+            if (currentEntry?.attachedThreadIds.has(input.threadId)) {
+              yield* writeReleasedRuntimeRequestEvents({
+                entry: currentEntry,
+                reason: "manual_shutdown",
+                threadIds: new Set([input.threadId]),
+                releasedAt: yield* DateTime.now,
+              });
             }
             const detached = yield* Ref.modify(sessions, (current) => {
               const entry = current.get(key);
