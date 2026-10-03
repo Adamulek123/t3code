@@ -1614,6 +1614,96 @@ it.layer(TestLayer)("orchestration V2 foundation persistence", (it) => {
     }),
   );
 
+  it.effect.each([true, false])(
+    "enqueues finalization effects only when the current-run guard commits: %s",
+    (current) =>
+      Effect.gen(function* () {
+        const sink = yield* EventSink.EventSinkV2;
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make(`thread:guarded-effects:${current}`);
+        const runId = RunId.make(`run:guarded-effects:${current}`);
+        const attemptId = RunAttemptId.make(`attempt:guarded-effects:${current}`);
+        const run: OrchestrationV2Run = {
+          id: runId,
+          threadId,
+          ordinal: 1,
+          providerInstanceId,
+          modelSelection,
+          providerThreadId: null,
+          userMessageId: MessageId.make(`message:guarded-effects:${current}`),
+          rootNodeId: null,
+          activeAttemptId: attemptId,
+          status: "running",
+          queuePosition: null,
+          requestedAt: now,
+          startedAt: now,
+          completedAt: null,
+          checkpointId: null,
+          contextHandoffId: null,
+        };
+        yield* sink.write({
+          events: [
+            threadCreatedEvent({
+              id: `event:guarded-effects:thread:${current}`,
+              thread: makeThread(threadId, now),
+              now,
+            }),
+            {
+              id: EventId.make(`event:guarded-effects:run:${current}`),
+              type: "run.created",
+              threadId,
+              runId,
+              providerInstanceId,
+              occurredAt: now,
+              payload: run,
+            },
+          ],
+        });
+        const effect = {
+          id: `effect:guarded-effects:${current}`,
+          commandId: CommandId.make(`command:guarded-effects:${current}`),
+          threadId,
+          request: {
+            type: "checkpoint.capture" as const,
+            runId,
+            scopeId: CheckpointScopeId.make(`scope:guarded-effects:${current}`),
+          },
+        };
+        const result = yield* sink.writeIfRunCurrent({
+          threadId,
+          runId,
+          activeAttemptId: current ? attemptId : RunAttemptId.make("attempt:superseded"),
+          expectedStatus: "running",
+          effects: [effect],
+          events: [
+            {
+              id: EventId.make(`event:guarded-effects:finalized:${current}`),
+              type: "run.updated",
+              threadId,
+              runId,
+              providerInstanceId,
+              occurredAt: now,
+              payload: { ...run, status: "waiting" },
+            },
+          ],
+        });
+        assert.equal(result.committed, current);
+        assert.equal(Option.isSome(yield* outbox.get(effect.id)), current);
+        assert.equal(
+          (yield* projections.getThreadProjection(threadId)).runs[0]?.status,
+          current ? "waiting" : "running",
+        );
+        if (current) yield* outbox.awaitAvailable;
+        else {
+          const wake = yield* outbox.awaitAvailable.pipe(Effect.forkChild);
+          yield* Effect.yieldNow;
+          assert.isUndefined(wake.pollUnsafe());
+        }
+      }).pipe(Effect.provide(Layer.fresh(TestLayer))),
+  );
+
   it.effect("guards post-terminal provider-thread writes by attempt and run ordinal", () =>
     Effect.gen(function* () {
       const eventSink = yield* EventSink.EventSinkV2;

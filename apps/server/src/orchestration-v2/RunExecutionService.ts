@@ -8,6 +8,7 @@ import {
   type NodeId,
   type OrchestrationV2AppThread,
   type OrchestrationV2CheckpointScope,
+  type OrchestrationV2ConversationMessage,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ExecutionNode,
   type OrchestrationV2ProviderFailure,
@@ -33,6 +34,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
@@ -562,6 +564,9 @@ export const layer: Layer.Layer<
       readonly shouldFinalizeRun?: () => Effect.Effect<boolean, ProjectionStoreV2Error>;
       readonly hasUnpairedRunInterruptRequest?: () => Effect.Effect<boolean, never>;
       readonly openRunOwnedSubagents?: OpenRunOwnedSubagentProjection;
+      readonly openMessages?: ReadonlyArray<OrchestrationV2ConversationMessage>;
+      readonly openTurnItems?: ReadonlyArray<OrchestrationV2TurnItem>;
+      readonly openNodes?: ReadonlyArray<OrchestrationV2ExecutionNode>;
       readonly terminal: ProviderTerminalEvent;
       readonly failureItemPersisted: boolean;
       readonly refreshAfterTurn: Effect.Effect<void>;
@@ -683,6 +688,49 @@ export const layer: Layer.Layer<
                 ]
               : [],
           events: [
+            ...(yield* Effect.forEach(input.openNodes ?? [], (node) =>
+              Effect.gen(function* () {
+                return {
+                  id: yield* allocateEventId(),
+                  type: "node.updated" as const,
+                  threadId: input.run.threadId,
+                  runId: input.run.id,
+                  nodeId: node.id,
+                  occurredAt: completedAt,
+                  payload: { ...node, status: input.terminal.status, completedAt },
+                };
+              }),
+            )),
+            ...(yield* Effect.forEach(input.openMessages ?? [], (message) =>
+              Effect.gen(function* () {
+                return {
+                  id: yield* allocateEventId(),
+                  type: "message.updated" as const,
+                  threadId: input.run.threadId,
+                  runId: input.run.id,
+                  occurredAt: completedAt,
+                  payload: { ...message, streaming: false, updatedAt: completedAt },
+                };
+              }),
+            )),
+            ...(yield* Effect.forEach(input.openTurnItems ?? [], (item) =>
+              Effect.gen(function* () {
+                return {
+                  id: yield* allocateEventId(),
+                  type: "turn-item.updated" as const,
+                  threadId: input.run.threadId,
+                  runId: input.run.id,
+                  occurredAt: completedAt,
+                  payload: {
+                    ...item,
+                    ...("streaming" in item ? { streaming: false } : {}),
+                    status: input.terminal.status,
+                    completedAt,
+                    updatedAt: completedAt,
+                  },
+                };
+              }),
+            )),
             // Terminalize open run-owned subagent rows before the root run
             // settles so projections never keep a forever-running subagent card.
             ...cascadedSubagentEvents,
@@ -782,6 +830,7 @@ export const layer: Layer.Layer<
             activeAttemptId: input.writeIfRunCurrent.activeAttemptId,
             expectedStatus: input.writeIfRunCurrent.expectedStatus,
             events: finalization.events,
+            effects: finalization.effects,
           });
           if (!result.committed) {
             return;
@@ -948,6 +997,13 @@ export const layer: Layer.Layer<
           );
           const rootTerminalSeen = yield* Ref.make(false);
           const rootRunFinalized = yield* Ref.make(false);
+          const finalizationPermit = yield* Semaphore.make(1);
+          const openMessages = new Map<
+            OrchestrationV2ConversationMessage["id"],
+            OrchestrationV2ConversationMessage
+          >();
+          const openTurnItems = new Map<TurnItemId, OrchestrationV2TurnItem>();
+          const openNodes = new Map<NodeId, OrchestrationV2ExecutionNode>();
           const providerThreadOwnerLost = yield* Ref.make(false);
           const activeChildProviderTurns = yield* Ref.make<ReadonlySet<ProviderTurnId>>(new Set());
           const activeChildSubagents = yield* Ref.make<ReadonlySet<NodeId>>(new Set());
@@ -955,7 +1011,10 @@ export const layer: Layer.Layer<
             ReadonlySet<OrchestrationV2TurnItem["id"]>
           >(new Set(inheritedBackgroundTurnItemsById.keys()));
           const openRunOwnedSubagents = yield* Ref.make(emptyOpenRunOwnedSubagentProjection());
-          const finalizeRootRun = (terminal: ProviderTerminalEvent) =>
+          const finalizeRootRun = (
+            terminal: ProviderTerminalEvent,
+            failureItemPersisted = terminal.status === "failed",
+          ) =>
             Effect.gen(function* () {
               if (yield* Ref.get(rootRunFinalized)) {
                 return;
@@ -977,8 +1036,11 @@ export const layer: Layer.Layer<
                       hasUnpairedRunInterruptRequest: input.hasUnpairedRunInterruptRequest,
                     }),
                 openRunOwnedSubagents: openSubagents,
+                openMessages: [...openMessages.values()],
+                openTurnItems: [...openTurnItems.values()],
+                openNodes: [...openNodes.values()],
                 terminal,
-                failureItemPersisted: terminal.status === "failed",
+                failureItemPersisted,
                 refreshAfterTurn,
               }).pipe(
                 Effect.mapError(
@@ -989,7 +1051,10 @@ export const layer: Layer.Layer<
                 yield* Ref.set(openRunOwnedSubagents, emptyOpenRunOwnedSubagentProjection());
               }
               yield* Ref.set(rootRunFinalized, true);
-            });
+              openMessages.clear();
+              openTurnItems.clear();
+              openNodes.clear();
+            }).pipe(finalizationPermit.withPermits(1), Effect.uninterruptible);
           const trackChildLifecycle = (event: ProviderAdapterV2Event, deliverable: boolean) =>
             Effect.gen(function* () {
               const routing = yield* Ref.get(eventRouting);
@@ -1175,6 +1240,34 @@ export const layer: Layer.Layer<
             ),
             Stream.tap((event) =>
               Effect.gen(function* () {
+                if (
+                  event.type === "node.updated" &&
+                  event.node.runId === input.run.id &&
+                  (event.node.kind === "assistant_message" ||
+                    event.node.kind === "reasoning" ||
+                    event.node.kind === "plan" ||
+                    event.node.kind === "todo_list")
+                ) {
+                  if (isOpenExecutionNodeStatus(event.node.status))
+                    openNodes.set(event.node.id, event.node);
+                  else openNodes.delete(event.node.id);
+                }
+                if (event.type === "message.updated" && event.message.runId === input.run.id) {
+                  if (event.message.streaming) openMessages.set(event.message.id, event.message);
+                  else openMessages.delete(event.message.id);
+                }
+                if (
+                  event.type === "turn_item.updated" &&
+                  event.turnItem.runId === input.run.id &&
+                  (event.turnItem.type === "assistant_message" ||
+                    event.turnItem.type === "reasoning" ||
+                    event.turnItem.type === "proposed_plan" ||
+                    event.turnItem.type === "todo_list")
+                ) {
+                  if (isSettledTurnItemStatus(event.turnItem.status))
+                    openTurnItems.delete(event.turnItem.id);
+                  else openTurnItems.set(event.turnItem.id, event.turnItem);
+                }
                 let storedEventCount = 0;
                 const deliveredEvent = filterAssistantEvent(
                   event,
@@ -1261,67 +1354,36 @@ export const layer: Layer.Layer<
               Effect.gen(function* () {
                 const terminal = yield* Ref.get(terminalEvent);
                 if (terminal === null) {
+                  yield* finalizeRootRun(
+                    makeFailedTerminalEvent(
+                      makeProviderFailure({
+                        message: "The provider event stream closed before the turn finished.",
+                        class: "unknown",
+                      }),
+                      (yield* Ref.get(latestTurnItemOrdinal)) + 1,
+                    ),
+                    false,
+                  );
                   return;
                 }
                 yield* finalizeRootRun(terminal);
               }),
             ),
             Effect.catchCause((cause) =>
-              Ref.get(rootRunFinalized).pipe(
-                Effect.flatMap((finalized) =>
-                  Effect.logWarning("orchestration V2 provider event ingestion failed", {
-                    runId: input.run.id,
-                    cause,
-                  }).pipe(
-                    Effect.andThen(
-                      finalized
-                        ? Effect.void
-                        : Ref.get(latestProviderThread).pipe(
-                            Effect.flatMap((providerThread) =>
-                              Ref.get(latestTurnItemOrdinal).pipe(
-                                Effect.flatMap((latestItemOrdinal) =>
-                                  Ref.get(openRunOwnedSubagents).pipe(
-                                    Effect.flatMap((openSubagents) =>
-                                      writeFinalRunEvents({
-                                        run: input.run,
-                                        rootNode: input.rootNode,
-                                        checkpointScope: input.checkpointScope,
-                                        providerThread,
-                                        attempt: input.attempt,
-                                        // The failure may be the ownership
-                                        // read itself, so check in the write.
-                                        writeIfRunCurrent: {
-                                          activeAttemptId: input.attempt.id,
-                                          expectedStatus: "running",
-                                        },
-                                        openRunOwnedSubagents: openSubagents,
-                                        terminal: makeFailedTerminalEvent(
-                                          makeProviderFailure({
-                                            cause: Cause.squash(cause),
-                                            class: "unknown",
-                                          }),
-                                          latestItemOrdinal + 1,
-                                        ),
-                                        failureItemPersisted: false,
-                                        refreshAfterTurn,
-                                      }),
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ),
-                    ),
-                    Effect.mapError(
-                      (writeCause) =>
-                        new RunExecutionIngestError({
-                          runId: input.run.id,
-                          cause: { ingest: cause, write: writeCause },
-                        }),
-                    ),
+              Effect.gen(function* () {
+                if (Cause.hasInterruptsOnly(cause)) return yield* Effect.failCause(cause);
+                yield* Effect.logWarning("orchestration V2 provider event ingestion failed", {
+                  runId: input.run.id,
+                  cause,
+                });
+                yield* finalizeRootRun(
+                  makeFailedTerminalEvent(
+                    makeProviderFailure({ cause: Cause.squash(cause), class: "unknown" }),
+                    (yield* Ref.get(latestTurnItemOrdinal)) + 1,
                   ),
-                ),
-              ),
+                  false,
+                );
+              }),
             ),
             Effect.ensuring(eventSubscription.close),
             Effect.forkDetach,
@@ -1376,56 +1438,39 @@ export const layer: Layer.Layer<
               ))
             : input.session.startTurn(turnInput);
           yield* Effect.andThen(shouldStart, startTurn).pipe(
+            Effect.mapError(
+              (cause) =>
+                new RunExecutionStartError({
+                  commandId: input.commandId,
+                  runId: input.run.id,
+                  cause,
+                }),
+            ),
             Effect.catchCause((cause) =>
-              Effect.logError("orchestration V2 provider turn start failed", {
-                runId: input.run.id,
-                cause,
-              }).pipe(
-                Effect.andThen(Fiber.interrupt(providerEventFiber)),
-                Effect.andThen(Ref.get(latestProviderThread)),
-                Effect.flatMap((providerThread) =>
-                  Ref.get(latestTurnItemOrdinal).pipe(
-                    Effect.flatMap((latestItemOrdinal) =>
-                      Ref.get(openRunOwnedSubagents).pipe(
-                        Effect.flatMap((openSubagents) =>
-                          writeFinalRunEvents({
-                            run: input.run,
-                            rootNode: input.rootNode,
-                            checkpointScope: input.checkpointScope,
-                            providerThread,
-                            attempt: input.attempt,
-                            // Checked in the write transaction, not by another
-                            // read that can fail like the one before the start.
-                            writeIfRunCurrent: {
-                              activeAttemptId: input.attempt.id,
-                              expectedStatus: "running",
-                            },
-                            openRunOwnedSubagents: openSubagents,
-                            terminal: makeFailedTerminalEvent(
-                              makeProviderFailure({
-                                cause: Cause.squash(cause),
-                                // A failed ownership read is not the provider's fault.
-                                class: Exit.isFailure(shouldStart) ? "unknown" : "provider_error",
-                              }),
-                              latestItemOrdinal + 1,
-                            ),
-                            failureItemPersisted: false,
-                            refreshAfterTurn,
-                          }),
-                        ),
-                      ),
-                    ),
+              Effect.gen(function* () {
+                if (Cause.hasInterruptsOnly(cause)) return yield* Effect.failCause(cause);
+                yield* Effect.logError("orchestration V2 provider turn start failed", {
+                  runId: input.run.id,
+                  cause,
+                });
+                yield* Fiber.interrupt(providerEventFiber);
+                yield* finalizeRootRun(
+                  makeFailedTerminalEvent(
+                    makeProviderFailure({ cause: Cause.squash(cause), class: Exit.isFailure(shouldStart) ? "unknown" : "provider_error" }),
+                    (yield* Ref.get(latestTurnItemOrdinal)) + 1,
                   ),
-                ),
-                Effect.mapError(
-                  (writeCause) =>
-                    new RunExecutionStartError({
-                      commandId: input.commandId,
-                      runId: input.run.id,
-                      cause: { start: cause, write: writeCause },
-                    }),
-                ),
-              ),
+                  false,
+                ).pipe(
+                  Effect.mapError(
+                    (writeCause) =>
+                      new RunExecutionStartError({
+                        commandId: input.commandId,
+                        runId: input.run.id,
+                        cause: { start: cause, write: writeCause },
+                      }),
+                  ),
+                );
+              }),
             ),
           );
         }),
