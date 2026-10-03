@@ -1572,7 +1572,12 @@ export const layerWithOptions = (
                       const current = (yield* Ref.get(sessions)).get(
                         sessionKey(entry.runtime.providerSessionId),
                       );
-                      if (current?.runtime !== entry.runtime) return;
+                      if (
+                        current?.runtime !== entry.runtime ||
+                        !current.attachedThreadIds.has(threadId)
+                      ) {
+                        return;
+                      }
                       yield* providerEventIngestor
                         .ingestNormalized({
                           providerSessionId: entry.runtime.providerSessionId,
@@ -1935,50 +1940,65 @@ export const layerWithOptions = (
                 );
               }
             }
-            // Persist request cleanup while the thread is still attached.
-            // Shared sessions stay live and cannot clean this thread on release.
-            if (currentEntry?.attachedThreadIds.has(input.threadId)) {
-              yield* writeReleasedRuntimeRequestEvents({
-                entry: currentEntry,
-                reason: "manual_shutdown",
-                threadIds: new Set([input.threadId]),
-                releasedAt: yield* DateTime.now,
-              });
-            }
-            const detached = yield* Ref.modify(sessions, (current) => {
-              const entry = current.get(key);
-              if (entry === undefined || !entry.attachedThreadIds.has(input.threadId)) {
-                return [Option.none<LiveSessionEntry>(), current] as const;
-              }
-              const attachedThreadIds = new Set(entry.attachedThreadIds);
-              attachedThreadIds.delete(input.threadId);
-              const loadedProviderThreadKeyByThread = new Map(
-                entry.loadedProviderThreadKeyByThread,
-              );
-              loadedProviderThreadKeyByThread.delete(input.threadId);
-              // For a plain (workspace-change) detach, the credential id stays
-              // recorded: the thread may re-attach and reuse it, and
-              // releaseEntry revokes it when the provider process finally goes
-              // away. A terminal detach (archive/delete) prunes the record so
-              // nothing vetoes the revocation below.
-              const mcpCredentialIdByThread =
-                input.revokeMcpCredential === true
-                  ? (() => {
-                      const pruned = new Map(entry.mcpCredentialIdByThread);
-                      pruned.delete(input.threadId);
-                      return pruned;
-                    })()
-                  : entry.mcpCredentialIdByThread;
-              const updatedEntry = {
-                ...entry,
-                attachedThreadIds,
-                loadedProviderThreadKeyByThread,
-                mcpCredentialIdByThread,
-              };
-              const updated = new Map(current);
-              updated.set(key, updatedEntry);
-              return [Option.some(updatedEntry), updated] as const;
-            });
+            // Drain in-flight runless request writes, then close requests and
+            // remove the attachment before the pump can accept another write.
+            // Provider interrupts stay outside this permit: they may wait for
+            // an event that the pump needs to persist.
+            const detached =
+              currentEntry === undefined
+                ? Option.none<LiveSessionEntry>()
+                : yield* Effect.gen(function* () {
+                    const entry = (yield* Ref.get(sessions)).get(key);
+                    if (
+                      entry?.runtime !== currentEntry.runtime ||
+                      !entry.attachedThreadIds.has(input.threadId)
+                    ) {
+                      return Option.none<LiveSessionEntry>();
+                    }
+                    yield* writeReleasedRuntimeRequestEvents({
+                      entry,
+                      reason: "manual_shutdown",
+                      threadIds: new Set([input.threadId]),
+                      releasedAt: yield* DateTime.now,
+                    });
+                    return yield* Ref.modify(sessions, (current) => {
+                      const entry = current.get(key);
+                      if (
+                        entry?.runtime !== currentEntry.runtime ||
+                        !entry.attachedThreadIds.has(input.threadId)
+                      ) {
+                        return [Option.none<LiveSessionEntry>(), current] as const;
+                      }
+                      const attachedThreadIds = new Set(entry.attachedThreadIds);
+                      attachedThreadIds.delete(input.threadId);
+                      const loadedProviderThreadKeyByThread = new Map(
+                        entry.loadedProviderThreadKeyByThread,
+                      );
+                      loadedProviderThreadKeyByThread.delete(input.threadId);
+                      // For a plain (workspace-change) detach, the credential id stays
+                      // recorded: the thread may re-attach and reuse it, and
+                      // releaseEntry revokes it when the provider process finally goes
+                      // away. A terminal detach (archive/delete) prunes the record so
+                      // nothing vetoes the revocation below.
+                      const mcpCredentialIdByThread =
+                        input.revokeMcpCredential === true
+                          ? (() => {
+                              const pruned = new Map(entry.mcpCredentialIdByThread);
+                              pruned.delete(input.threadId);
+                              return pruned;
+                            })()
+                          : entry.mcpCredentialIdByThread;
+                      const updatedEntry = {
+                        ...entry,
+                        attachedThreadIds,
+                        loadedProviderThreadKeyByThread,
+                        mcpCredentialIdByThread,
+                      };
+                      const updated = new Map(current);
+                      updated.set(key, updatedEntry);
+                      return [Option.some(updatedEntry), updated] as const;
+                    });
+                  }).pipe(currentEntry.requestEventPermit.withPermits(1));
             // Plain detaches deliberately do not revoke: a detached thread's
             // provider process may still be alive (shared multi-thread codex
             // session across a workspace handoff) and holds its MCP client's
