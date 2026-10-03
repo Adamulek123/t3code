@@ -220,6 +220,7 @@ const make = Effect.gen(function* () {
     const tracked = input.workspaceStrategy.type === "worktree";
     let createdWorktreePath: string | null = null;
     let createdWorktreeBranch: string | null = null;
+    let renamedWorktreeBranch: string | null = null;
     let setupTerminalId: string | null = null;
     let branchRenameFiber: Fiber.Fiber<unknown, never> | null = null;
     let preparationComplete = false;
@@ -387,12 +388,22 @@ const make = Effect.gen(function* () {
         const worktreeCwd = worktreePath;
         branchRenameFiber = yield* generateBranchNameFor(worktreeCwd, initialMessage).pipe(
           Effect.flatMap(({ branch: newBranch, exactName }) =>
-            git.renameBranch({
-              cwd: worktreeCwd,
-              oldBranch,
-              newBranch,
-              ...(exactName ? { exactName: true } : {}),
-            }),
+            git
+              .renameBranch({
+                cwd: worktreeCwd,
+                oldBranch,
+                newBranch,
+                ...(exactName ? { exactName: true } : {}),
+              })
+              .pipe(
+                // Record a completed rename before cancellation can stop its
+                // metadata write. The external Git operation stays interruptible.
+                Effect.onExit((exit) =>
+                  Effect.sync(() => {
+                    if (Exit.isSuccess(exit)) renamedWorktreeBranch = exit.value.branch;
+                  }),
+                ),
+              ),
           ),
           Effect.flatMap((renamed) =>
             threads.dispatch({
@@ -593,22 +604,34 @@ const make = Effect.gen(function* () {
                   ).pipe(Effect.as(null)),
                 ),
               );
-              // Checkout can fail after claiming a path but before the normal
-              // workspace update. Bind that survivor so it can still be found.
-              if (shell !== null && shell.worktreePath !== createdWorktreePath) {
-                yield* threads
-                  .dispatch({
-                    type: "thread.metadata.update",
-                    commandId: CommandId.make(`${input.commandId}:cleanup-workspace`),
-                    threadId,
-                    worktreePath: createdWorktreePath,
-                    branch: createdWorktreeBranch,
-                  })
-                  .pipe(Effect.ignore);
+              const survivingBranch = renamedWorktreeBranch ?? createdWorktreeBranch;
+              // Repair only the launch's binding, including a checkout that
+              // failed before publishing its path. Keep newer bindings intact.
+              const ownsBinding =
+                shell !== null &&
+                ((shell.worktreePath === createdWorktreePath &&
+                  (shell.branch === createdWorktreeBranch || shell.branch === survivingBranch)) ||
+                  (shell.worktreePath === null &&
+                    shell.branch === (input.workspaceStrategy.branch ?? null)));
+              if (ownsBinding) {
+                if (
+                  shell.worktreePath !== createdWorktreePath ||
+                  shell.branch !== survivingBranch
+                ) {
+                  yield* threads
+                    .dispatch({
+                      type: "thread.metadata.update",
+                      commandId: CommandId.make(`${input.commandId}:cleanup-workspace`),
+                      threadId,
+                      worktreePath: createdWorktreePath,
+                      branch: survivingBranch,
+                    })
+                    .pipe(Effect.ignore);
+                }
                 yield* setupTracker.update(threadId, (snapshot) => ({
                   ...snapshot,
                   worktreePath: createdWorktreePath,
-                  branch: createdWorktreeBranch,
+                  branch: survivingBranch,
                 }));
               }
             }

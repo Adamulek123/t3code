@@ -106,6 +106,9 @@ interface HarnessOptions {
   readonly generateBranchName?: TextGeneration.TextGeneration["Service"]["generateBranchName"];
   readonly serverSettings?: Parameters<typeof ServerSettings.layerTest>[0];
   readonly providers?: ReadonlyArray<ServerProvider>;
+  readonly beforeLaunchDispatch?: (
+    command: Parameters<ThreadManagement.ThreadManagementService["Service"]["dispatch"]>[0],
+  ) => Effect.Effect<void>;
 }
 
 function makeHarness(options: HarnessOptions = {}) {
@@ -187,8 +190,24 @@ function makeHarness(options: HarnessOptions = {}) {
         folderForThread: () => Effect.succeed(Option.none()),
       }),
   );
+  const beforeLaunchDispatch = options.beforeLaunchDispatch;
+  const launchThreadManagement = beforeLaunchDispatch
+    ? Layer.effect(
+        ThreadManagement.ThreadManagementService,
+        Effect.gen(function* () {
+          const threads = yield* ThreadManagement.ThreadManagementService;
+          return ThreadManagement.ThreadManagementService.of({
+            ...threads,
+            dispatch: (command) =>
+              beforeLaunchDispatch(command).pipe(Effect.andThen(threads.dispatch(command))),
+          });
+        }),
+      ).pipe(Layer.provide(threadManagement))
+    : threadManagement;
   const launch = ThreadLaunch.layer.pipe(
-    Layer.provide(Layer.mergeAll(externalServices, threadManagement, receipts, IdAllocator.layer)),
+    Layer.provide(
+      Layer.mergeAll(externalServices, launchThreadManagement, receipts, IdAllocator.layer),
+    ),
   );
   const projectedProjects = Layer.mock(ProjectStore.ProjectStoreV2)({
     get: (requestedProjectId) =>
@@ -1584,6 +1603,83 @@ it.effect("stops branch renaming before removing a failed launch worktree", () =
       assert.isNull((yield* tracker.get(launched.threadId))?.setupScript);
     }).pipe(Effect.provide(harness.layer));
   }),
+);
+
+it.effect.each(["original", "newer-branch", "newer-workspace"] as const)(
+  "keeps survivor metadata accurate after interrupting a completed rename with %s binding",
+  (binding) =>
+    Effect.gen(function* () {
+      const metadataEntered = yield* Deferred.make<void>();
+      const setupCompletion = yield* Deferred.make<{ exitCode: number; durationMs: number }>();
+      const actualBranch = yield* Ref.make("t3code/abcd1234");
+      const harness = makeHarness({
+        renameBranch: () =>
+          Ref.set(actualBranch, "renamed-branch").pipe(Effect.as({ branch: "renamed-branch" })),
+        beforeLaunchDispatch: (command) =>
+          String(command.commandId).endsWith(":branch-rename")
+            ? Deferred.succeed(metadataEntered, undefined).pipe(Effect.andThen(Effect.never))
+            : Effect.void,
+        removeWorktree: () => Effect.fail(new Error("remove failed") as never),
+        runSetup: () =>
+          Effect.succeed({
+            status: "started" as const,
+            async: false,
+            scriptId: "setup",
+            scriptName: "Setup",
+            scriptCommand: "vp install",
+            terminalId: "setup",
+            cwd: "/repo-worktrees/feature",
+            completion: Deferred.await(setupCompletion),
+          }),
+      });
+      yield* Effect.gen(function* () {
+        const launches = yield* ThreadLaunch.ThreadLaunchService;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
+        const input = launchInput({
+          command: `launch:renamed-survivor:${binding}`,
+          thread: `thread:renamed-survivor:${binding}`,
+          message: "Start",
+          workspace: { type: "worktree", baseRef: "main", branch: "t3code/abcd1234" },
+        });
+        const launched = yield* launches.launch(input);
+        yield* Deferred.await(metadataEntered);
+        assert.equal(yield* Ref.get(actualBranch), "renamed-branch");
+        assert.equal(
+          (yield* threads.getThreadProjection(launched.threadId)).thread.branch,
+          "t3code/abcd1234",
+        );
+        const newerPath =
+          binding === "newer-workspace" ? "/replacement-worktree" : "/repo-worktrees/feature";
+        if (binding !== "original") {
+          yield* threads.dispatch({
+            type: "thread.metadata.update",
+            commandId: CommandId.make(`${input.commandId}:newer-binding`),
+            threadId: launched.threadId,
+            worktreePath: newerPath,
+            branch: "newer-branch",
+          });
+        }
+        yield* Deferred.succeed(setupCompletion, { exitCode: 1, durationMs: 1 });
+        yield* threads.streamStoredEventsFrom({ threadId: launched.threadId }).pipe(
+          Stream.filter(
+            (stored) =>
+              stored.event.type === "run.updated" && stored.event.payload.status === "failed",
+          ),
+          Stream.runHead,
+        );
+        const projection = yield* threads.getThreadProjection(launched.threadId);
+        assert.equal(
+          projection.thread.branch,
+          binding === "original" ? "renamed-branch" : "newer-branch",
+        );
+        assert.equal(projection.thread.worktreePath, newerPath);
+        if (binding === "original") {
+          assert.equal((yield* tracker.get(launched.threadId))?.branch, "renamed-branch");
+        }
+        assert.equal(projection.runs[0]?.status, "failed");
+      }).pipe(Effect.provide(harness.layer));
+    }),
 );
 
 it.effect("rejects a server-allocated launch replay with a mismatching thread id", () => {
