@@ -1715,6 +1715,9 @@ it.layer(TestLayer)("orchestration V2 foundation persistence", (it) => {
     "already-closed",
     "unprojected-successor",
     "richer-text",
+    "root-reasoning",
+    "root-reasoning-retargeted",
+    "root-reasoning-successor-turn",
   ] as const)("guards superseded artifact cleanup by current node ancestry: %s", (scenario) =>
     Effect.gen(function* () {
       const sink = yield* EventSink.EventSinkV2;
@@ -1723,18 +1726,19 @@ it.layer(TestLayer)("orchestration V2 foundation persistence", (it) => {
       const threadId = ThreadId.make(`thread:artifact-cleanup:${scenario}`);
       const oldRoot = NodeId.make(`node:old-root:${scenario}`);
       const newRoot = NodeId.make(`node:new-root:${scenario}`);
-      const artifactNodeId = NodeId.make(`node:artifact:${scenario}`);
+      const rootLinked = scenario.startsWith("root-reasoning");
+      const artifactNodeId = rootLinked ? oldRoot : NodeId.make(`node:artifact:${scenario}`);
       const node: OrchestrationV2ExecutionNode = {
         id: artifactNodeId,
         threadId,
         runId: null,
-        parentNodeId: oldRoot,
+        parentNodeId: rootLinked ? null : oldRoot,
         rootNodeId: oldRoot,
-        kind: "assistant_message",
+        kind: rootLinked ? "root_turn" : "assistant_message",
         status: "running",
         countsForRun: false,
         providerThreadId: null,
-        providerTurnId: ProviderTurnId.make(`turn:old:${scenario}`),
+        providerTurnId: rootLinked ? null : ProviderTurnId.make(`turn:old:${scenario}`),
         nativeItemRef: null,
         runtimeRequestId: null,
         checkpointScopeId: null,
@@ -1755,7 +1759,7 @@ it.layer(TestLayer)("orchestration V2 foundation persistence", (it) => {
         createdAt: now,
         updatedAt: now,
       };
-      const item: Extract<OrchestrationV2TurnItem, { readonly type: "assistant_message" }> = {
+      const item: OrchestrationV2TurnItem = {
         id: TurnItemId.make(`item:artifact:${scenario}`),
         threadId,
         runId: null,
@@ -1770,8 +1774,9 @@ it.layer(TestLayer)("orchestration V2 foundation persistence", (it) => {
         startedAt: now,
         completedAt: null,
         updatedAt: now,
-        type: "assistant_message",
-        messageId: message.id,
+        ...(rootLinked
+          ? { type: "reasoning" as const }
+          : { type: "assistant_message" as const, messageId: message.id }),
         text: message.text,
         streaming: true,
       };
@@ -1780,29 +1785,37 @@ it.layer(TestLayer)("orchestration V2 foundation persistence", (it) => {
         currentNode: OrchestrationV2ExecutionNode,
         currentMessage: OrchestrationV2ConversationMessage,
         currentItem: OrchestrationV2TurnItem,
-      ): ReadonlyArray<OrchestrationV2DomainEvent> => [
-        {
-          id: EventId.make(`event:artifact:${scenario}:node:${suffix}`),
-          type: "node.updated",
-          threadId,
-          occurredAt: now,
-          payload: currentNode,
-        },
-        {
-          id: EventId.make(`event:artifact:${scenario}:message:${suffix}`),
-          type: "message.updated",
-          threadId,
-          occurredAt: now,
-          payload: currentMessage,
-        },
-        {
-          id: EventId.make(`event:artifact:${scenario}:item:${suffix}`),
-          type: "turn-item.updated",
-          threadId,
-          occurredAt: now,
-          payload: currentItem,
-        },
-      ];
+      ): ReadonlyArray<OrchestrationV2DomainEvent> => {
+        const events: ReadonlyArray<OrchestrationV2DomainEvent> = [
+          {
+            id: EventId.make(`event:artifact:${scenario}:node:${suffix}`),
+            type: "node.updated",
+            threadId,
+            occurredAt: now,
+            payload: currentNode,
+          },
+          {
+            id: EventId.make(`event:artifact:${scenario}:message:${suffix}`),
+            type: "message.updated",
+            threadId,
+            occurredAt: now,
+            payload: currentMessage,
+          },
+          {
+            id: EventId.make(`event:artifact:${scenario}:item:${suffix}`),
+            type: "turn-item.updated",
+            threadId,
+            occurredAt: now,
+            payload: currentItem,
+          },
+        ];
+        return events.filter(
+          (event) =>
+            !rootLinked ||
+            event.type === "turn-item.updated" ||
+            (suffix !== "cleanup" && event.type === "node.updated"),
+        );
+      };
       yield* sink.write({
         events: [
           threadCreatedEvent({
@@ -1813,13 +1826,36 @@ it.layer(TestLayer)("orchestration V2 foundation persistence", (it) => {
           ...(scenario === "buffered" || scenario === "unprojected-successor"
             ? []
             : artifactEvents("initial", node, message, item)),
+          ...(rootLinked
+            ? [
+                {
+                  id: EventId.make(`event:artifact:${scenario}:user`),
+                  type: "turn-item.updated" as const,
+                  threadId,
+                  occurredAt: now,
+                  payload: {
+                    ...item,
+                    id: TurnItemId.make(`item:user:${scenario}`),
+                    type: "user_message" as const,
+                    providerTurnId: null,
+                    status: "completed" as const,
+                    completedAt: now,
+                    messageId: MessageId.make(`message:user:${scenario}`),
+                    inputIntent: "turn_start" as const,
+                    createdBy: "user" as const,
+                    creationSource: "web" as const,
+                    text: "Continue",
+                    attachments: [],
+                  },
+                },
+              ]
+            : []),
         ],
       });
-      const adopted = scenario === "adopted-node" || scenario === "retargeted-records";
-      const newNodeId =
-        scenario === "retargeted-records"
-          ? NodeId.make(`node:successor-message:${scenario}`)
-          : node.id;
+      const retargeted =
+        scenario === "retargeted-records" || scenario === "root-reasoning-retargeted";
+      const adopted = scenario === "adopted-node" || retargeted;
+      const newNodeId = retargeted ? NodeId.make(`node:successor-message:${scenario}`) : node.id;
       if (adopted)
         yield* sink.write({
           events: artifactEvents(
@@ -1841,6 +1877,14 @@ it.layer(TestLayer)("orchestration V2 foundation persistence", (it) => {
               providerTurnId: ProviderTurnId.make(`turn:new:${scenario}`),
             },
           ).filter((event) => event.type !== "node.updated"),
+        });
+      if (scenario === "root-reasoning-successor-turn")
+        yield* sink.write({
+          events: artifactEvents("successor-turn", node, message, {
+            ...item,
+            providerTurnId: ProviderTurnId.make(`turn:new:${scenario}`),
+            text: "Successor reasoning",
+          }).filter((event) => event.type === "turn-item.updated"),
         });
       if (scenario === "richer-text")
         yield* sink.write({
@@ -1879,6 +1923,25 @@ it.layer(TestLayer)("orchestration V2 foundation persistence", (it) => {
       const projection = yield* projections.getThreadProjection(threadId);
       const actualMessage = projection.messages.find((candidate) => candidate.id === message.id);
       const actualItem = projection.turnItems.find((candidate) => candidate.id === item.id);
+      if (rootLinked) {
+        const closed = scenario === "root-reasoning";
+        assert.lengthOf(stored, closed ? 1 : 0);
+        assert.equal(actualItem?.status, closed ? "interrupted" : "running");
+        assert.equal(actualItem?.type === "reasoning" && actualItem.streaming, !closed);
+        assert.equal(actualItem?.nodeId, retargeted ? newNodeId : oldRoot);
+        assert.equal(
+          actualItem?.providerTurnId,
+          ProviderTurnId.make(
+            `turn:${scenario === "root-reasoning-successor-turn" ? "new" : "old"}:${scenario}`,
+          ),
+        );
+        const userItem = projection.turnItems.find(
+          (candidate) => candidate.id === `item:user:${scenario}`,
+        );
+        assert.equal(userItem?.status, "completed");
+        assert.isNull(userItem?.providerTurnId);
+        return;
+      }
       if (adopted) {
         assert.equal(actualMessage?.text, "Successor text");
         assert.isTrue(actualMessage?.streaming);

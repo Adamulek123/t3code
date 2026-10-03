@@ -3344,6 +3344,46 @@ it.effect("records a finished run as failed when its ownership check cannot be r
   }),
 );
 
+it.effect(
+  "closes old reasoning after a failed ownership read without changing the successor run",
+  () =>
+    Effect.gen(function* () {
+      const result = yield* captureRootRunTermination({
+        key: "superseded-finalize-guard-read-failure",
+        runCurrentWriteCommitted: false,
+        shouldFinalizeRun: () =>
+          Effect.fail(
+            new ProjectionStore.ProjectionStoreReadError({
+              threadId: ThreadId.make("thread:superseded-finalize-guard-read-failure"),
+              cause: "database unavailable",
+            }),
+          ),
+        events: (ids) =>
+          Stream.fromIterable([
+            {
+              type: "turn_item.updated",
+              driver,
+              turnItem: {
+                ...makeLinkedChildTurnItemFixture({ ids, driver, type: "reasoning" }),
+                id: ids.itemId,
+                threadId: ids.threadId,
+                runId: ids.runId,
+                nodeId: ids.rootNodeId,
+                providerTurnId: ids.rootProviderTurnId,
+              },
+            },
+            rootTerminalEvent(ids, "completed"),
+          ]),
+      });
+      assert.deepEqual(result.observed, []);
+      assert.isFalse(result.events.some((event) => event.type === "run.updated"));
+      assert.isFalse(result.events.some((event) => event.type === "provider-thread.updated"));
+      const reasoning = result.written.find((item) => item.type === "reasoning");
+      assert.equal(reasoning?.status, "failed");
+      assert.isFalse(reasoning?.type === "reasoning" && reasoning.streaming);
+    }),
+);
+
 it.effect("does not refresh pull requests for auxiliary or stale provider terminals", () =>
   Effect.gen(function* () {
     const { observed } = yield* captureRootRunTermination({
@@ -3651,6 +3691,7 @@ function captureRootRunTermination(input: {
   readonly startTurn?: ProviderAdapterV2SessionRuntime["startTurn"];
   readonly refreshAfterTurn?: Effect.Effect<void>;
   readonly providerTurnIdKnown?: boolean;
+  readonly runCurrentWriteCommitted?: boolean;
 }) {
   return Effect.gen(function* () {
     const ids = backgroundScenarioIds(input.key);
@@ -3700,9 +3741,11 @@ function captureRootRunTermination(input: {
               }),
             writeWithEffects: (payload) => captureFinalEvents(payload.events).pipe(Effect.as([])),
             writeIfRunCurrent: (payload) =>
-              captureFinalEvents(payload.events).pipe(
-                Effect.as({ committed: true, storedEvents: [] }),
-              ),
+              input.runCurrentWriteCommitted === false
+                ? Effect.succeed({ committed: false, storedEvents: [] })
+                : captureFinalEvents(payload.events).pipe(
+                    Effect.as({ committed: true, storedEvents: [] }),
+                  ),
           }),
           IdAllocator.layer,
           Layer.mock(ProviderEventIngestor.ProviderEventIngestorV2)({

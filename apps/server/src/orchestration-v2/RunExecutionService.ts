@@ -842,6 +842,13 @@ export const layer: Layer.Layer<
             effects: finalization.effects,
           });
           if (!result.committed) {
+            if (artifactEvents.length > 0) {
+              yield* eventSink.writeWithEffects({
+                events: artifactEvents,
+                effects: [],
+                guardNodeRootId: input.rootNode.id,
+              });
+            }
             return false;
           }
         } else {
@@ -1023,6 +1030,7 @@ export const layer: Layer.Layer<
           const finalizeRootRun = (
             terminal: ProviderTerminalEvent,
             failureItemPersisted = terminal.status === "failed",
+            guardRunCurrent = false,
           ) =>
             Effect.gen(function* () {
               if (yield* Ref.get(rootRunFinalized)) {
@@ -1036,9 +1044,16 @@ export const layer: Layer.Layer<
                 checkpointScope: input.checkpointScope,
                 providerThread,
                 attempt: input.attempt,
-                ...(input.shouldFinalizeRun === undefined
-                  ? {}
-                  : { shouldFinalizeRun: input.shouldFinalizeRun }),
+                ...(guardRunCurrent
+                  ? {
+                      writeIfRunCurrent: {
+                        activeAttemptId: input.attempt.id,
+                        expectedStatus: "running" as const,
+                      },
+                    }
+                  : input.shouldFinalizeRun === undefined
+                    ? {}
+                    : { shouldFinalizeRun: input.shouldFinalizeRun }),
                 ...(input.hasUnpairedRunInterruptRequest === undefined
                   ? {}
                   : {
@@ -1395,6 +1410,7 @@ export const layer: Layer.Layer<
                     (yield* Ref.get(latestTurnItemOrdinal)) + 1,
                   ),
                   false,
+                  true,
                 );
               }),
             ),
@@ -1469,10 +1485,14 @@ export const layer: Layer.Layer<
                 yield* Fiber.interrupt(providerEventFiber);
                 yield* finalizeRootRun(
                   makeFailedTerminalEvent(
-                    makeProviderFailure({ cause: Cause.squash(cause), class: Exit.isFailure(shouldStart) ? "unknown" : "provider_error" }),
+                    makeProviderFailure({
+                      cause: Cause.squash(cause),
+                      class: Exit.isFailure(shouldStart) ? "unknown" : "provider_error",
+                    }),
                     (yield* Ref.get(latestTurnItemOrdinal)) + 1,
                   ),
                   false,
+                  true,
                 ).pipe(
                   Effect.mapError(
                     (writeCause) =>

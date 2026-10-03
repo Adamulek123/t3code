@@ -353,10 +353,20 @@ const baseLayer: Layer.Layer<
           continue;
         // Assistant streaming may suppress the successor's running node update.
         // Check item provenance too, even when the projected node still looks old.
-        const expectedTurnId = offeredNodes.get(nodeId) ?? node?.provider_turn_id;
-        const items = yield* sql<{ readonly provider_turn_id: string | null }>`
-          SELECT provider_turn_id FROM orchestration_v2_projection_turn_items
-          WHERE thread_id = ${event.threadId} AND node_id = ${nodeId}`;
+        // Root-linked reasoning shares a node with the user message. Its
+        // turn identity belongs to the item, and sibling items may have none.
+        const isRootTurnItem =
+          event.type === "turn-item.updated" &&
+          nodeId === rootNodeId &&
+          event.payload.providerTurnId !== null;
+        const expectedTurnId = isRootTurnItem
+          ? event.payload.providerTurnId
+          : (offeredNodes.get(nodeId) ?? node?.provider_turn_id);
+        const items = isRootTurnItem
+          ? []
+          : yield* sql<{ readonly provider_turn_id: string | null }>`
+              SELECT provider_turn_id FROM orchestration_v2_projection_turn_items
+              WHERE thread_id = ${event.threadId} AND node_id = ${nodeId}`;
         if (items.some((item) => item.provider_turn_id !== expectedTurnId)) continue;
         if (expectedTurnId == null && (node !== undefined || items.length > 0)) continue;
         if (event.type === "node.updated") {
