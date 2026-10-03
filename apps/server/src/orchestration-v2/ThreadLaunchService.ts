@@ -574,36 +574,42 @@ const make = Effect.gen(function* () {
                   }).pipe(Effect.as(false)),
                 ),
               );
+            const shell = yield* threads.getThreadShell(threadId).pipe(
+              Effect.catchCause((cleanupCause) =>
+                Effect.logWarning("Failed to read thread launch worktree binding during cleanup", {
+                  threadId,
+                  worktreePath: createdWorktreePath,
+                  cause: cleanupCause,
+                }).pipe(Effect.as(null)),
+              ),
+            );
             // Keep the binding when removal fails so the surviving worktree
             // remains discoverable instead of becoming an orphan.
             if (removed) {
-              yield* threads
-                .dispatch({
-                  type: "thread.metadata.update",
-                  commandId: CommandId.make(`${input.commandId}:cleanup-workspace`),
-                  threadId,
-                  worktreePath: null,
-                  branch: null,
-                })
-                .pipe(Effect.ignore);
+              if (
+                shell !== null &&
+                (shell.worktreePath === createdWorktreePath ||
+                  (shell.worktreePath === null &&
+                    shell.branch === (input.workspaceStrategy.branch ?? null)))
+              ) {
+                yield* threads
+                  .dispatch({
+                    type: "thread.metadata.update",
+                    commandId: CommandId.make(`${input.commandId}:cleanup-workspace`),
+                    threadId,
+                    expectedWorktreePath: shell.worktreePath,
+                    expectedBranch: shell.branch,
+                    worktreePath: null,
+                    branch: null,
+                  })
+                  .pipe(Effect.ignore);
+              }
               yield* setupTracker.update(threadId, (snapshot) => ({
                 ...snapshot,
                 worktreePath: null,
                 branch: null,
               }));
             } else {
-              const shell = yield* threads.getThreadShell(threadId).pipe(
-                Effect.catchCause((cleanupCause) =>
-                  Effect.logWarning(
-                    "Failed to read thread launch worktree binding during cleanup",
-                    {
-                      threadId,
-                      worktreePath: createdWorktreePath,
-                      cause: cleanupCause,
-                    },
-                  ).pipe(Effect.as(null)),
-                ),
-              );
               const survivingBranch = renamedWorktreeBranch ?? createdWorktreeBranch;
               // Repair only the launch's binding, including a checkout that
               // failed before publishing its path. Keep newer bindings intact.
@@ -623,6 +629,8 @@ const make = Effect.gen(function* () {
                       type: "thread.metadata.update",
                       commandId: CommandId.make(`${input.commandId}:cleanup-workspace`),
                       threadId,
+                      expectedWorktreePath: shell.worktreePath,
+                      expectedBranch: shell.branch,
                       worktreePath: createdWorktreePath,
                       branch: survivingBranch,
                     })

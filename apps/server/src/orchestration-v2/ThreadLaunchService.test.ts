@@ -1520,6 +1520,110 @@ it.effect.each([true, false])(
   },
 );
 
+it.effect("keeps a newer workspace binding after removing a failed launch worktree", () =>
+  Effect.gen(function* () {
+    const setupEntered = yield* Deferred.make<void>();
+    const setupFailed = yield* Deferred.make<void>();
+    const harness = makeHarness({
+      runSetup: () =>
+        Deferred.succeed(setupEntered, undefined).pipe(
+          Effect.andThen(Deferred.await(setupFailed)),
+          Effect.andThen(Effect.fail(new Error("setup failed") as never)),
+        ),
+    });
+    yield* Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const input = launchInput({
+        command: "launch:removed-newer-workspace",
+        thread: "thread:removed-newer-workspace",
+        message: "Start",
+        workspace: { type: "worktree", baseRef: "main", branch: "feature" },
+      });
+      const launched = yield* launches.launch(input);
+      yield* Deferred.await(setupEntered);
+      yield* threads.dispatch({
+        type: "thread.metadata.update",
+        commandId: CommandId.make(`${input.commandId}:newer-binding`),
+        threadId: launched.threadId,
+        worktreePath: "/replacement-worktree",
+        branch: "newer-branch",
+      });
+      yield* Deferred.succeed(setupFailed, undefined);
+      yield* threads.streamStoredEventsFrom({ threadId: launched.threadId }).pipe(
+        Stream.filter(
+          (stored) =>
+            stored.event.type === "run.updated" && stored.event.payload.status === "failed",
+        ),
+        Stream.runHead,
+      );
+      const projection = yield* threads.getThreadProjection(launched.threadId);
+      assert.equal(projection.thread.worktreePath, "/replacement-worktree");
+      assert.equal(projection.thread.branch, "newer-branch");
+      assert.deepEqual(
+        harness.removeWorktree.mock.calls.map(([input]) => input.path),
+        ["/repo-worktrees/feature"],
+      );
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
+it.effect.each([
+  { removed: true, newPath: "/replacement-worktree" },
+  { removed: false, newPath: "/replacement-worktree" },
+  { removed: true, newPath: null },
+  { removed: false, newPath: null },
+])("keeps a workspace rebound during partial checkout cleanup: %o", ({ removed, newPath }) =>
+  Effect.gen(function* () {
+    const cleanupEntered = yield* Deferred.make<void>();
+    const cleanupResume = yield* Deferred.make<void>();
+    const harness = makeHarness({
+      createWorktree: (_input, options) =>
+        (options?.progress?.onWorktreeClaimed?.("/claimed") ?? Effect.void).pipe(
+          Effect.andThen(Effect.fail(new Error("checkout failed") as never)),
+        ),
+      removeWorktree: () =>
+        removed ? Effect.void : Effect.fail(new Error("remove failed") as never),
+      beforeLaunchDispatch: (command) =>
+        String(command.commandId).endsWith(":cleanup-workspace")
+          ? Deferred.succeed(cleanupEntered, undefined).pipe(
+              Effect.andThen(Deferred.await(cleanupResume)),
+            )
+          : Effect.void,
+    });
+    yield* Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const input = launchInput({
+        command: `launch:cleanup-rebound:${removed}`,
+        thread: `thread:cleanup-rebound:${removed}`,
+        message: "Start",
+        workspace: { type: "worktree", baseRef: "main", branch: "feature" },
+      });
+      const launched = yield* launches.launch(input);
+      yield* Deferred.await(cleanupEntered);
+      yield* threads.dispatch({
+        type: "thread.metadata.update",
+        commandId: CommandId.make(`${input.commandId}:newer-binding`),
+        threadId: launched.threadId,
+        worktreePath: newPath,
+        branch: "newer-branch",
+      });
+      yield* Deferred.succeed(cleanupResume, undefined);
+      yield* threads.streamStoredEventsFrom({ threadId: launched.threadId }).pipe(
+        Stream.filter(
+          (stored) =>
+            stored.event.type === "run.updated" && stored.event.payload.status === "failed",
+        ),
+        Stream.runHead,
+      );
+      const projection = yield* threads.getThreadProjection(launched.threadId);
+      assert.equal(projection.thread.worktreePath, newPath);
+      assert.equal(projection.thread.branch, "newer-branch");
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
 it.effect("keeps a failed launch worktree bound when cleanup cannot remove it", () => {
   const harness = makeHarness({
     runSetup: () => Effect.fail(new Error("setup failed") as never),
@@ -2110,8 +2214,10 @@ it.effect("shared intake preserves durable attachment bytes after a lost launch 
     );
     assert.isDefined(stored);
     assert.notEqual(stored.attachments[0]?.id, attachment.id);
+    const contextRecord = stored.context?.records[0];
+    assert.isDefined(contextRecord);
     assert.equal(
-      (stored.context?.records[0] as { attachmentId: string }).attachmentId,
+      (contextRecord as { attachmentId: string }).attachmentId,
       stored.attachments[0]?.id,
     );
     const userItem = accepted.turnItems.find(
