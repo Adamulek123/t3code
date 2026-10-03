@@ -3435,6 +3435,42 @@ it.effect("does not write another terminal batch when start fails after root com
   }),
 );
 
+it.effect(
+  "cancels a blocked observer when provider startup fails without writing another terminal batch",
+  () =>
+    Effect.gen(function* () {
+      const refreshStarted = yield* Deferred.make<void>();
+      const refreshBlocked = yield* Deferred.make<void>();
+      const refreshExited = yield* Deferred.make<void>();
+      const result = yield* captureRootRunTermination({
+        key: "blocked-observer-start-error",
+        shouldFinalizeRun: () => Effect.succeed(true),
+        events: (ids) => Stream.make(rootTerminalEvent(ids, "completed")),
+        refreshAfterTurn: Deferred.succeed(refreshStarted, undefined).pipe(
+          Effect.andThen(Deferred.await(refreshBlocked)),
+          Effect.ensuring(Deferred.succeed(refreshExited, undefined)),
+        ),
+        startTurn: (input) =>
+          Deferred.await(refreshStarted).pipe(
+            Effect.andThen(
+              Effect.fail(
+                new ProviderAdapterTurnStartError({
+                  driver,
+                  threadId: input.threadId,
+                  providerThreadId: input.providerThread.id,
+                  runId: input.runId,
+                  cause: "late start failure",
+                }),
+              ),
+            ),
+          ),
+      });
+      yield* Deferred.await(refreshExited);
+      assert.deepEqual(result.observed, ["run:waiting", "pull-requests-refreshed"]);
+      assert.deepEqual(result.written, []);
+    }),
+);
+
 it.effect.each(["interrupted", "drained"] as const)(
   "flushes buffered assistant text when the run is %s",
   (status) =>

@@ -569,7 +569,6 @@ export const layer: Layer.Layer<
       readonly openNodes?: ReadonlyArray<OrchestrationV2ExecutionNode>;
       readonly terminal: ProviderTerminalEvent;
       readonly failureItemPersisted: boolean;
-      readonly refreshAfterTurn: Effect.Effect<void>;
       readonly writeIfRunCurrent?: {
         readonly activeAttemptId: RunAttemptId;
         readonly expectedStatus: OrchestrationV2Run["status"];
@@ -615,10 +614,10 @@ export const layer: Layer.Layer<
                   },
                 ],
               });
-              yield* input.refreshAfterTurn;
+              return true;
             }
           }
-          return;
+          return false;
         }
         const allocateEventId = () => idAllocator.allocate.event({ threadId: input.run.threadId });
         const open = input.openRunOwnedSubagents ?? emptyOpenRunOwnedSubagentProjection();
@@ -833,12 +832,12 @@ export const layer: Layer.Layer<
             effects: finalization.effects,
           });
           if (!result.committed) {
-            return;
+            return false;
           }
         } else {
           yield* eventSink.writeWithEffects(finalization);
         }
-        yield* input.refreshAfterTurn;
+        return true;
       });
 
     return RunExecutionServiceV2.of({
@@ -915,7 +914,7 @@ export const layer: Layer.Layer<
                   runId: input.run.id,
                   cause,
                 });
-                yield* writeFinalRunEvents({
+                const shouldRefresh = yield* writeFinalRunEvents({
                   run: input.run,
                   rootNode: input.rootNode,
                   checkpointScope: input.checkpointScope,
@@ -932,12 +931,12 @@ export const layer: Layer.Layer<
                     input.providerTurnOrdinal * 100 + 1,
                   ),
                   failureItemPersisted: false,
-                  refreshAfterTurn,
                   writeIfRunCurrent: {
                     activeAttemptId: input.attemptId,
                     expectedStatus: "running",
                   },
                 });
+                if (shouldRefresh) yield* refreshAfterTurn;
                 return null;
               }),
             ),
@@ -1017,11 +1016,11 @@ export const layer: Layer.Layer<
           ) =>
             Effect.gen(function* () {
               if (yield* Ref.get(rootRunFinalized)) {
-                return;
+                return false;
               }
               const providerThread = yield* Ref.get(latestProviderThread);
               const openSubagents = yield* Ref.get(openRunOwnedSubagents);
-              yield* writeFinalRunEvents({
+              const shouldRefresh = yield* writeFinalRunEvents({
                 run: input.run,
                 rootNode: input.rootNode,
                 checkpointScope: input.checkpointScope,
@@ -1041,7 +1040,6 @@ export const layer: Layer.Layer<
                 openNodes: [...openNodes.values()],
                 terminal,
                 failureItemPersisted,
-                refreshAfterTurn,
               }).pipe(
                 Effect.mapError(
                   (cause) => new RunExecutionIngestError({ runId: input.run.id, cause }),
@@ -1054,7 +1052,12 @@ export const layer: Layer.Layer<
               openMessages.clear();
               openTurnItems.clear();
               openNodes.clear();
-            }).pipe(finalizationPermit.withPermits(1), Effect.uninterruptible);
+              return shouldRefresh;
+            }).pipe(
+              finalizationPermit.withPermits(1),
+              Effect.uninterruptible,
+              Effect.flatMap((shouldRefresh) => (shouldRefresh ? refreshAfterTurn : Effect.void)),
+            );
           const trackChildLifecycle = (event: ProviderAdapterV2Event, deliverable: boolean) =>
             Effect.gen(function* () {
               const routing = yield* Ref.get(eventRouting);
