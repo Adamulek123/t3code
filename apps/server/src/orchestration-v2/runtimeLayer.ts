@@ -336,7 +336,8 @@ export const layerProduction = Layer.mergeAll(
   UsageLimitRecoveryWorker.layer.pipe(
     Layer.provide(Layer.mergeAll(ProjectionStore.layer, layerThreadManagementProvided)),
   ),
-  layerProviderContinuationWorkerProvided,
+layerProviderContinuationWorkerProvided,
   layerAgentSessionImporterProvided,
+  ProjectionMaintenance.workerLive.pipe(Layer.provide(ProjectionMaintenance.layer)),
   EffectOutbox.layerPruneWorker.pipe(Layer.provide(EffectOutbox.layer)),
 ).pipe(Layer.provide(Scheduler.layer), Layer.provideMerge(layerEventInfrastructure));
