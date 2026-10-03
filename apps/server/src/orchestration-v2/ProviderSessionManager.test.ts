@@ -2726,7 +2726,7 @@ it.effect.each(["approval_request", "user_input_request"] as const)(
           modelSelection,
           runtimePolicy,
         });
-        yield* manager.detach({ providerSessionId, threadId });
+        yield* manager.detach({ providerSessionId, threadId, detail: "Workspace changed." });
         // A duplicate detach must leave the sibling and replacement session alone.
         yield* manager.detach({ providerSessionId, threadId });
         const projection = yield* projectionStore.getThreadProjection(threadId);
@@ -2735,7 +2735,11 @@ it.effect.each(["approval_request", "user_input_request"] as const)(
           (request) => request.id === detachedRequest.requestId,
         );
         assert.equal(closedRequest?.status, "cancelled");
-        assert.equal(closedRequest?.responseCapability.type, "not_resumable");
+        assert.deepEqual(closedRequest?.responseCapability, {
+          type: "not_resumable",
+          reason:
+            "Thread detached from the provider session before this runtime request was resolved.",
+        });
         assert.equal(
           projection.nodes.find((node) => node.id === detachedRequest.nodeId)?.status,
           "cancelled",

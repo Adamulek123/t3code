@@ -4,7 +4,6 @@ import {
   OrchestrationV2DomainEvent,
   OrchestrationV2ProviderSession,
   type OrchestrationV2ProviderThread,
-  OrchestrationV2RuntimeRequest,
   ProviderInstanceId,
   ProviderSessionId,
   ThreadId,
@@ -236,7 +235,7 @@ function releaseStatusFor(
 
 function releasedRuntimeRequestStatusFor(
   reason: ProviderSessionReleaseReason,
-): OrchestrationV2RuntimeRequest["status"] {
+): "cancelled" | "expired" {
   return reason === "manual_shutdown" || reason === "server_shutdown" ? "cancelled" : "expired";
 }
 
@@ -612,7 +611,9 @@ export const layerWithOptions = (
 
       const writeReleasedRuntimeRequestEvents = (input: {
         readonly entry: LiveSessionEntry;
-        readonly reason: ProviderSessionReleaseReason;
+        readonly status: "cancelled" | "expired";
+        readonly artifactStatus: "cancelled" | "failed";
+        readonly reason: string;
         /** Requests created later belong to a replacement session with the same id. */
         readonly releasedAt: DateTime.Utc;
         readonly threadIds?: ReadonlySet<ThreadId>;
@@ -620,11 +621,6 @@ export const layerWithOptions = (
         Effect.gen(function* () {
           const providerSessionId = input.entry.runtime.providerSessionId;
           const now = yield* DateTime.now;
-          const status = releasedRuntimeRequestStatusFor(input.reason);
-          const reason =
-            input.reason === "runtime_error"
-              ? "Provider session failed before this runtime request was resolved."
-              : "Provider session was closed before this runtime request was resolved.";
 
           const events: Array<OrchestrationV2DomainEvent> = [];
           for (const threadId of input.threadIds ?? input.entry.attachedThreadIds) {
@@ -654,10 +650,10 @@ export const layerWithOptions = (
                 occurredAt: now,
                 payload: {
                   ...request,
-                  status,
+                  status: input.status,
                   responseCapability: {
                     type: "not_resumable",
-                    reason,
+                    reason: input.reason,
                   },
                   resolvedAt: now,
                 },
@@ -678,7 +674,7 @@ export const layerWithOptions = (
                   occurredAt: now,
                   payload: {
                     ...requestNode,
-                    status: input.reason === "runtime_error" ? "failed" : "cancelled",
+                    status: input.artifactStatus,
                     completedAt: now,
                   },
                 });
@@ -703,7 +699,7 @@ export const layerWithOptions = (
                   occurredAt: now,
                   payload: {
                     ...turnItem,
-                    status: input.reason === "runtime_error" ? "failed" : "cancelled",
+                    status: input.artifactStatus,
                     completedAt: now,
                     updatedAt: now,
                   },
@@ -734,9 +730,16 @@ export const layerWithOptions = (
               ? Effect.succeed(Exit.void)
               : Effect.exit(writeReleasedSessionEvents(input)),
             Effect.exit(
-              writeReleasedRuntimeRequestEvents(input).pipe(
-                input.entry.requestEventPermit.withPermits(1),
-              ),
+              writeReleasedRuntimeRequestEvents({
+                entry: input.entry,
+                releasedAt: input.releasedAt,
+                status: releasedRuntimeRequestStatusFor(input.reason),
+                artifactStatus: input.reason === "runtime_error" ? "failed" : "cancelled",
+                reason:
+                  input.reason === "runtime_error"
+                    ? "Provider session failed before this runtime request was resolved."
+                    : "Provider session was closed before this runtime request was resolved.",
+              }).pipe(input.entry.requestEventPermit.withPermits(1)),
             ),
           ],
           { concurrency: 1 },
@@ -1957,7 +1960,10 @@ export const layerWithOptions = (
                     }
                     yield* writeReleasedRuntimeRequestEvents({
                       entry,
-                      reason: "manual_shutdown",
+                      status: "cancelled",
+                      artifactStatus: "cancelled",
+                      reason:
+                        "Thread detached from the provider session before this runtime request was resolved.",
                       threadIds: new Set([input.threadId]),
                       releasedAt: yield* DateTime.now,
                     });
