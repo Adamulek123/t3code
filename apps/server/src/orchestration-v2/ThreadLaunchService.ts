@@ -581,9 +581,18 @@ const make = Effect.gen(function* () {
                 branch: null,
               }));
             } else {
-              const shell = yield* threads
-                .getThreadShell(threadId)
-                .pipe(Effect.catchCause(() => Effect.succeed(null)));
+              const shell = yield* threads.getThreadShell(threadId).pipe(
+                Effect.catchCause((cleanupCause) =>
+                  Effect.logWarning(
+                    "Failed to read thread launch worktree binding during cleanup",
+                    {
+                      threadId,
+                      worktreePath: createdWorktreePath,
+                      cause: cleanupCause,
+                    },
+                  ).pipe(Effect.as(null)),
+                ),
+              );
               // Checkout can fail after claiming a path but before the normal
               // workspace update. Bind that survivor so it can still be found.
               if (shell !== null && shell.worktreePath !== createdWorktreePath) {
