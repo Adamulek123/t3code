@@ -3206,6 +3206,56 @@ it.effect("omits interrupt results and subagent cascade for a superseded attempt
   }),
 );
 
+it.effect("closes old attempt text after steering supersedes its run ownership", () =>
+  Effect.gen(function* () {
+    const result = yield* captureRootRunTermination({
+      key: "superseded-open-text",
+      shouldFinalizeRun: () => Effect.succeed(false),
+      events: (ids) => {
+        const node = {
+          ...makeRunOwnedSubagentNodeFixture({ ids, status: "running" }),
+          kind: "assistant_message" as const,
+        };
+        const message: OrchestrationV2ConversationMessage = {
+          id: MessageId.make("message:superseded-open-text"),
+          threadId: ids.threadId,
+          runId: ids.runId,
+          nodeId: node.id,
+          role: "assistant",
+          text: "Partial text",
+          streaming: true,
+          attachments: [],
+          createdBy: "agent",
+          creationSource: "provider",
+          createdAt: DateTime.makeUnsafe(0),
+          updatedAt: DateTime.makeUnsafe(0),
+        };
+        return Stream.fromIterable([
+          { type: "node.updated", driver, node },
+          { type: "message.updated", driver, message },
+          {
+            type: "turn_item.updated",
+            driver,
+            turnItem: {
+              ...makeLinkedChildTurnItemFixture({ ids, driver, type: "assistant_message" }),
+              threadId: ids.threadId,
+              runId: ids.runId,
+              nodeId: node.id,
+              providerTurnId: ids.rootProviderTurnId,
+            },
+          },
+          rootTerminalEvent(ids, "interrupted"),
+        ]);
+      },
+    });
+    assert.lengthOf(result.messages, 1);
+    assert.isFalse(result.messages[0]?.streaming);
+    assert.equal(result.written[0]?.status, "interrupted");
+    assert.isFalse(result.events.some((event) => event.type === "run.updated"));
+    assert.deepEqual(result.observed, []);
+  }),
+);
+
 it.effect("emits run_interrupt_result when superseded attempt still has a hard-stop request", () =>
   Effect.gen(function* () {
     const { written, observed } = yield* captureRootRunTermination({

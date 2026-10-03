@@ -581,9 +581,62 @@ export const layer: Layer.Layer<
           status: input.terminal.status,
           completedAt,
         };
+        const allocateEventId = () => idAllocator.allocate.event({ threadId: input.run.threadId });
+        const artifactEvents = [
+          ...(yield* Effect.forEach(input.openNodes ?? [], (node) =>
+            Effect.gen(function* () {
+              return {
+                id: yield* allocateEventId(),
+                type: "node.updated" as const,
+                threadId: input.run.threadId,
+                runId: input.run.id,
+                nodeId: node.id,
+                occurredAt: completedAt,
+                payload: { ...node, status: input.terminal.status, completedAt },
+              };
+            }),
+          )),
+          ...(yield* Effect.forEach(input.openMessages ?? [], (message) =>
+            Effect.gen(function* () {
+              return {
+                id: yield* allocateEventId(),
+                type: "message.updated" as const,
+                threadId: input.run.threadId,
+                runId: input.run.id,
+                occurredAt: completedAt,
+                payload: { ...message, streaming: false, updatedAt: completedAt },
+              };
+            }),
+          )),
+          ...(yield* Effect.forEach(input.openTurnItems ?? [], (item) =>
+            Effect.gen(function* () {
+              return {
+                id: yield* allocateEventId(),
+                type: "turn-item.updated" as const,
+                threadId: input.run.threadId,
+                runId: input.run.id,
+                occurredAt: completedAt,
+                payload: {
+                  ...item,
+                  ...("streaming" in item ? { streaming: false } : {}),
+                  status: input.terminal.status,
+                  completedAt,
+                  updatedAt: completedAt,
+                },
+              };
+            }),
+          )),
+        ];
         const shouldFinalizeRun =
           input.shouldFinalizeRun === undefined ? true : yield* input.shouldFinalizeRun();
         if (!shouldFinalizeRun) {
+          if (artifactEvents.length > 0) {
+            yield* eventSink.writeWithEffects({
+              events: artifactEvents,
+              effects: [],
+              guardNodeRootId: input.rootNode.id,
+            });
+          }
           // Superseded attempt (steer / selection restart). Emit
           // run_interrupt_result only when hard Stop left an unpaired request
           // for this run; plain steers and already-paired stops emit nothing.
@@ -619,7 +672,6 @@ export const layer: Layer.Layer<
           }
           return false;
         }
-        const allocateEventId = () => idAllocator.allocate.event({ threadId: input.run.threadId });
         const open = input.openRunOwnedSubagents ?? emptyOpenRunOwnedSubagentProjection();
         const hasOpenSubagentProjection =
           open.subagents.size > 0 ||
@@ -687,49 +739,7 @@ export const layer: Layer.Layer<
                 ]
               : [],
           events: [
-            ...(yield* Effect.forEach(input.openNodes ?? [], (node) =>
-              Effect.gen(function* () {
-                return {
-                  id: yield* allocateEventId(),
-                  type: "node.updated" as const,
-                  threadId: input.run.threadId,
-                  runId: input.run.id,
-                  nodeId: node.id,
-                  occurredAt: completedAt,
-                  payload: { ...node, status: input.terminal.status, completedAt },
-                };
-              }),
-            )),
-            ...(yield* Effect.forEach(input.openMessages ?? [], (message) =>
-              Effect.gen(function* () {
-                return {
-                  id: yield* allocateEventId(),
-                  type: "message.updated" as const,
-                  threadId: input.run.threadId,
-                  runId: input.run.id,
-                  occurredAt: completedAt,
-                  payload: { ...message, streaming: false, updatedAt: completedAt },
-                };
-              }),
-            )),
-            ...(yield* Effect.forEach(input.openTurnItems ?? [], (item) =>
-              Effect.gen(function* () {
-                return {
-                  id: yield* allocateEventId(),
-                  type: "turn-item.updated" as const,
-                  threadId: input.run.threadId,
-                  runId: input.run.id,
-                  occurredAt: completedAt,
-                  payload: {
-                    ...item,
-                    ...("streaming" in item ? { streaming: false } : {}),
-                    status: input.terminal.status,
-                    completedAt,
-                    updatedAt: completedAt,
-                  },
-                };
-              }),
-            )),
+            ...artifactEvents,
             // Terminalize open run-owned subagent rows before the root run
             // settles so projections never keep a forever-running subagent card.
             ...cascadedSubagentEvents,

@@ -12,6 +12,8 @@ import {
   NodeId,
   type OrchestrationV2AppThread,
   type OrchestrationV2DomainEvent,
+  type OrchestrationV2ExecutionNode,
+  type OrchestrationV2ConversationMessage,
   type OrchestrationV2Run,
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2TurnItem,
@@ -20,6 +22,7 @@ import {
   ProviderInstanceId,
   ProviderSessionId,
   ProviderThreadId,
+  ProviderTurnId,
   RunAttemptId,
   RunId,
   ThreadId,
@@ -1702,6 +1705,216 @@ it.layer(TestLayer)("orchestration V2 foundation persistence", (it) => {
           assert.isUndefined(wake.pollUnsafe());
         }
       }).pipe(Effect.provide(Layer.fresh(TestLayer))),
+  );
+
+  it.effect.each([
+    "old-root",
+    "adopted-node",
+    "retargeted-records",
+    "buffered",
+    "already-closed",
+    "unprojected-successor",
+    "richer-text",
+  ] as const)("guards superseded artifact cleanup by current node ancestry: %s", (scenario) =>
+    Effect.gen(function* () {
+      const sink = yield* EventSink.EventSinkV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make(`thread:artifact-cleanup:${scenario}`);
+      const oldRoot = NodeId.make(`node:old-root:${scenario}`);
+      const newRoot = NodeId.make(`node:new-root:${scenario}`);
+      const artifactNodeId = NodeId.make(`node:artifact:${scenario}`);
+      const node: OrchestrationV2ExecutionNode = {
+        id: artifactNodeId,
+        threadId,
+        runId: null,
+        parentNodeId: oldRoot,
+        rootNodeId: oldRoot,
+        kind: "assistant_message",
+        status: "running",
+        countsForRun: false,
+        providerThreadId: null,
+        providerTurnId: ProviderTurnId.make(`turn:old:${scenario}`),
+        nativeItemRef: null,
+        runtimeRequestId: null,
+        checkpointScopeId: null,
+        startedAt: now,
+        completedAt: null,
+      };
+      const message: OrchestrationV2ConversationMessage = {
+        id: MessageId.make(`message:artifact:${scenario}`),
+        threadId,
+        runId: null,
+        nodeId: artifactNodeId,
+        role: "assistant",
+        text: "Old partial text",
+        streaming: true,
+        attachments: [],
+        createdBy: "agent",
+        creationSource: "provider",
+        createdAt: now,
+        updatedAt: now,
+      };
+      const item: Extract<OrchestrationV2TurnItem, { readonly type: "assistant_message" }> = {
+        id: TurnItemId.make(`item:artifact:${scenario}`),
+        threadId,
+        runId: null,
+        nodeId: artifactNodeId,
+        providerThreadId: null,
+        providerTurnId: ProviderTurnId.make(`turn:old:${scenario}`),
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal: 1,
+        status: "running",
+        title: null,
+        startedAt: now,
+        completedAt: null,
+        updatedAt: now,
+        type: "assistant_message",
+        messageId: message.id,
+        text: message.text,
+        streaming: true,
+      };
+      const artifactEvents = (
+        suffix: string,
+        currentNode: OrchestrationV2ExecutionNode,
+        currentMessage: OrchestrationV2ConversationMessage,
+        currentItem: OrchestrationV2TurnItem,
+      ): ReadonlyArray<OrchestrationV2DomainEvent> => [
+        {
+          id: EventId.make(`event:artifact:${scenario}:node:${suffix}`),
+          type: "node.updated",
+          threadId,
+          occurredAt: now,
+          payload: currentNode,
+        },
+        {
+          id: EventId.make(`event:artifact:${scenario}:message:${suffix}`),
+          type: "message.updated",
+          threadId,
+          occurredAt: now,
+          payload: currentMessage,
+        },
+        {
+          id: EventId.make(`event:artifact:${scenario}:item:${suffix}`),
+          type: "turn-item.updated",
+          threadId,
+          occurredAt: now,
+          payload: currentItem,
+        },
+      ];
+      yield* sink.write({
+        events: [
+          threadCreatedEvent({
+            id: `event:artifact:${scenario}:thread`,
+            thread: makeThread(threadId, now),
+            now,
+          }),
+          ...(scenario === "buffered" || scenario === "unprojected-successor"
+            ? []
+            : artifactEvents("initial", node, message, item)),
+        ],
+      });
+      const adopted = scenario === "adopted-node" || scenario === "retargeted-records";
+      const newNodeId =
+        scenario === "retargeted-records"
+          ? NodeId.make(`node:successor-message:${scenario}`)
+          : node.id;
+      if (adopted)
+        yield* sink.write({
+          events: artifactEvents(
+            "successor",
+            { ...node, id: newNodeId, rootNodeId: newRoot, parentNodeId: newRoot },
+            { ...message, nodeId: newNodeId, text: "Successor text" },
+            { ...item, nodeId: newNodeId, text: "Successor text" },
+          ),
+        });
+      if (scenario === "unprojected-successor")
+        yield* sink.write({
+          events: artifactEvents(
+            "unprojected",
+            node,
+            { ...message, text: "Successor text" },
+            {
+              ...item,
+              text: "Successor text",
+              providerTurnId: ProviderTurnId.make(`turn:new:${scenario}`),
+            },
+          ).filter((event) => event.type !== "node.updated"),
+        });
+      if (scenario === "richer-text")
+        yield* sink.write({
+          events: artifactEvents(
+            "richer",
+            node,
+            { ...message, text: "Old partial text with more projected content" },
+            { ...item, text: "Old partial text with more projected content" },
+          ),
+        });
+      if (scenario === "already-closed")
+        yield* sink.write({
+          events: artifactEvents(
+            "completed",
+            { ...node, status: "completed", completedAt: now },
+            { ...message, text: "Complete text", streaming: false },
+            {
+              ...item,
+              text: "Complete text",
+              status: "completed",
+              streaming: false,
+              completedAt: now,
+            },
+          ),
+        });
+      const stored = yield* sink.writeWithEffects({
+        effects: [],
+        guardNodeRootId: oldRoot,
+        events: artifactEvents(
+          "cleanup",
+          { ...node, status: "interrupted", completedAt: now },
+          { ...message, streaming: false },
+          { ...item, status: "interrupted", streaming: false, completedAt: now },
+        ),
+      });
+      const projection = yield* projections.getThreadProjection(threadId);
+      const actualMessage = projection.messages.find((candidate) => candidate.id === message.id);
+      const actualItem = projection.turnItems.find((candidate) => candidate.id === item.id);
+      if (adopted) {
+        assert.equal(actualMessage?.text, "Successor text");
+        assert.isTrue(actualMessage?.streaming);
+        assert.equal(actualItem?.status, "running");
+        assert.equal(
+          projection.nodes.find((candidate) => candidate.id === newNodeId)?.status,
+          "running",
+        );
+        assert.lengthOf(stored, scenario === "retargeted-records" ? 1 : 0);
+      } else if (scenario === "unprojected-successor") {
+        assert.lengthOf(stored, 0);
+        assert.equal(actualMessage?.text, "Successor text");
+        assert.isTrue(actualMessage?.streaming);
+        assert.equal(actualItem?.status, "running");
+        assert.lengthOf(projection.nodes, 0);
+      } else if (scenario === "already-closed") {
+        assert.lengthOf(stored, 0);
+        assert.equal(actualMessage?.text, "Complete text");
+        assert.equal(actualItem?.status, "completed");
+      } else {
+        assert.lengthOf(stored, 3);
+        if (scenario === "richer-text") {
+          assert.equal(actualMessage?.text, "Old partial text with more projected content");
+          assert.equal(
+            actualItem?.type === "assistant_message" && actualItem.text,
+            actualMessage?.text,
+          );
+        }
+        assert.isFalse(actualMessage?.streaming);
+        assert.equal(actualItem?.status, "interrupted");
+        assert.equal(
+          projection.nodes.find((candidate) => candidate.id === node.id)?.status,
+          "interrupted",
+        );
+      }
+    }).pipe(Effect.provide(Layer.fresh(TestLayer))),
   );
 
   it.effect("guards post-terminal provider-thread writes by attempt and run ordinal", () =>
