@@ -827,7 +827,8 @@ export const layerWithOptions = (
               }
               if (
                 input.onlyIfIdleGeneration !== undefined &&
-                (existing.activeStarts.size > 0 || existing.idleGeneration !== input.onlyIfIdleGeneration)
+                (existing.activeStarts.size > 0 ||
+                  existing.idleGeneration !== input.onlyIfIdleGeneration)
               ) {
                 return ["kept", current] as const;
               }

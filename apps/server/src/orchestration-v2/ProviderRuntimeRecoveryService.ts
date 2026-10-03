@@ -777,32 +777,45 @@ export const make = Effect.gen(function* () {
     if (!enabled) return;
     const threadIds = yield* projections.getRecoveryThreadIds("runtime");
     for (const threadId of threadIds) {
-      const projection = yield* projections.getRuntimeRecoveryProjection(threadId);
-      if (
-        !resolveProjectSettings(enabled, projection.thread.projectId).settings
-          .continueThreadsAfterServerUpdate
-      )
-        continue;
-      // Shutdown reconciliation cancels the background work below, so a
-      // settled thread's continuation must be captured while it is still open.
-      const run = restartContinuationRun(
-        projection,
-        providerThreadsWithOpenBackgroundWork(projection),
+      yield* Effect.gen(function* () {
+        const projection = yield* projections.getRuntimeRecoveryProjection(threadId);
+        if (
+          !resolveProjectSettings(enabled, projection.thread.projectId).settings
+            .continueThreadsAfterServerUpdate
+        )
+          return;
+        // Shutdown reconciliation cancels the background work below, so a
+        // settled thread's continuation must be captured while it is still open.
+        const run = restartContinuationRun(
+          projection,
+          providerThreadsWithOpenBackgroundWork(projection),
+        );
+        if (!run) return;
+        const commandId = CommandId.make(`command:restart-prepare:${run.id}`);
+        yield* eventSink.writeWithEffects({
+          commandId,
+          events: [],
+          effects: [
+            {
+              id: `effect:restart-continuation:${run.id}`,
+              commandId,
+              threadId,
+              request: { type: "provider-runtime.continue", sourceRunId: run.id },
+            },
+          ],
+        });
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Cause.hasInterruptsOnly(cause)
+            ? Effect.failCause(cause)
+            : Effect.logError("orchestration-v2.runtime-recovery.thread-failed", {
+                trigger: "shutdown",
+                phase: "prepare",
+                threadId,
+                cause,
+              }),
+        ),
       );
-      if (!run) continue;
-      const commandId = CommandId.make(`command:restart-prepare:${run.id}`);
-      yield* eventSink.writeWithEffects({
-        commandId,
-        events: [],
-        effects: [
-          {
-            id: `effect:restart-continuation:${run.id}`,
-            commandId,
-            threadId,
-            request: { type: "provider-runtime.continue", sourceRunId: run.id },
-          },
-        ],
-      });
     }
   }).pipe(
     Effect.mapError((cause) => new ProviderRuntimeRecoveryError({ operation: "reconcile", cause })),
