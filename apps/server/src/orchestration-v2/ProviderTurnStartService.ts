@@ -964,6 +964,7 @@ export const layer: Layer.Layer<
         run,
         projection.runs,
         projection.providerTurns,
+        projection.attempts,
       );
       const restartCancelledWork = pendingRestartCancelledBackgroundWork({
         runs: projection.runs,
@@ -978,9 +979,7 @@ export const layer: Layer.Layer<
             .map((candidate) => candidate.id),
         ),
         run,
-        runAttemptIds: projection.attempts
-          .filter((candidate) => candidate.runId === run.id)
-          .map((candidate) => candidate.id),
+        attempts: projection.attempts,
       });
       const restartNote =
         restartCancelledWork.length === 0
