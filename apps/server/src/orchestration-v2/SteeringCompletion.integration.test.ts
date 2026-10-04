@@ -417,7 +417,10 @@ const composerSelection = {
   options: [...runSelection.options, { id: "fastMode", value: false }],
 };
 
-const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function* (name: string) {
+const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function* (
+  name: string,
+  supportsRestart = false,
+) {
   const cwd = yield* checkpointWorkspace(name);
   const events = yield* Queue.unbounded<ProviderAdapterV2Event>();
   const started: ProviderAdapterV2TurnInput[] = [];
@@ -427,7 +430,7 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
     turns: {
       ...CodexProviderCapabilitiesV2.turns,
       supportsActiveSteering: true,
-      supportsSteeringByInterruptRestart: false,
+      supportsSteeringByInterruptRestart: supportsRestart,
     },
   };
   const adapter: ProviderAdapterV2Shape = {
@@ -477,6 +480,9 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
           startTurn: (turn) =>
             Effect.gen(function* () {
               started.push(turn);
+              // The restart test releases this snapshot after stale predecessor
+              // frames, while production routing still has no current root ID.
+              if (supportsRestart && started.length > 1) return;
               yield* Queue.offer(events, {
                 type: "provider_turn.updated",
                 driver,
@@ -501,7 +507,42 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
             Effect.sync(() => {
               steered.push(turn.message.text);
             }),
-          interruptTurn: () => Effect.void,
+          interruptTurn: () =>
+            Effect.gen(function* () {
+              if (!supportsRestart) return;
+              const turn = started.at(-1)!;
+              const completedAt = yield* DateTime.now;
+              const providerTurnId = ProviderTurnId.make(`provider-turn:${turn.attemptId}`);
+              yield* Queue.offer(events, {
+                type: "provider_turn.updated",
+                driver,
+                providerTurn: {
+                  id: providerTurnId,
+                  providerThreadId: turn.providerThread.id,
+                  nodeId: turn.rootNodeId,
+                  runAttemptId: turn.attemptId,
+                  nativeTurnRef: {
+                    driver,
+                    nativeId: `native:${turn.attemptId}`,
+                    strength: "strong",
+                  },
+                  ordinal: turn.providerTurnOrdinal,
+                  status: "interrupted",
+                  startedAt: now,
+                  completedAt,
+                },
+              });
+              yield* Queue.offer(events, {
+                type: "turn.terminal",
+                driver,
+                providerThreadId: turn.providerThread.id,
+                providerTurnId,
+                runOrdinal: turn.runOrdinal,
+                status: "interrupted",
+                failure: null,
+                threadDisposition: "reusable",
+              });
+            }),
           respondToRuntimeRequest: () => Effect.void,
           readThreadSnapshot: () => Effect.die("unused"),
           rollbackThread: () => Effect.die("unused"),
@@ -559,6 +600,175 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
   });
   return { events, started, steered, layer, startFirstTurn };
 });
+
+it.effect("learns a restarted production attempt's root and rejects its predecessor terminal", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { events, started, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
+        "production-root-identity-restart",
+        true,
+      );
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const threadId = yield* startFirstTurn;
+        const first = started[0]!;
+        const firstProjection = yield* orchestrator.getThreadProjection(threadId);
+        assert.isNull(firstProjection.attempts[0]?.providerTurnId);
+        const oldTurn = firstProjection.providerTurns[0]!;
+        const replacementRunning = yield* orchestrator.streamDomainEvents.pipe(
+          Stream.filter(
+            (event) =>
+              event.type === "provider-turn.updated" &&
+              event.payload.status === "running" &&
+              event.payload.runAttemptId !== first.attemptId,
+          ),
+          Stream.take(1),
+          Stream.runDrain,
+          Effect.forkScoped,
+        );
+        const admitted = yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("identity-restart"),
+          threadId,
+          messageId: MessageId.make("message:identity-restart"),
+          text: "restart",
+          attachments: [],
+          modelSelection: runSelection,
+          dispatchMode: { type: "restart_active", targetRunId: first.runId },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        const admission = admitted.storedEvents.find(
+          (stored) => stored.event.type === "run-attempt.created",
+        );
+        assert.isDefined(admission);
+        if (admission.event.type !== "run-attempt.created")
+          return yield* Effect.die("missing attempt");
+        assert.isNull(admission.event.payload.providerTurnId);
+        yield* worker.drain();
+        assert.lengthOf(started, 2);
+        const second = started[1]!;
+        assert.equal(second.providerThread.id, first.providerThread.id);
+        assert.equal(second.runOrdinal, first.runOrdinal);
+        assert.notEqual(second.attemptId, first.attemptId);
+        assert.equal(second.attemptId, admission.event.payload.id);
+        const restartedAt = yield* DateTime.now;
+        yield* Queue.offer(events, {
+          type: "provider_turn.updated",
+          driver,
+          providerTurn: { ...oldTurn, status: "completed", completedAt: restartedAt },
+        });
+        yield* Queue.offer(events, {
+          type: "turn.terminal",
+          driver,
+          providerThreadId: oldTurn.providerThreadId,
+          providerTurnId: oldTurn.id,
+          runOrdinal: second.runOrdinal,
+          status: "completed",
+          failure: null,
+          threadDisposition: "reusable",
+        });
+        yield* Queue.offer(events, {
+          type: "provider_turn.updated",
+          driver,
+          providerTurn: {
+            ...oldTurn,
+            id: ProviderTurnId.make(`provider-turn:${second.attemptId}`),
+            runAttemptId: second.attemptId,
+            nodeId: second.rootNodeId,
+            ordinal: second.providerTurnOrdinal,
+            nativeTurnRef: { driver, nativeId: `native:${second.attemptId}`, strength: "strong" },
+            status: "running",
+            startedAt: restartedAt,
+            completedAt: null,
+          },
+        });
+        yield* Fiber.join(replacementRunning);
+        const running = yield* orchestrator.getThreadProjection(threadId);
+        assert.equal(running.runs[0]?.status, "running");
+        assert.equal(running.runs[0]?.activeAttemptId, second.attemptId);
+        const currentTurn = running.providerTurns.find(
+          (turn) => turn.runAttemptId === second.attemptId,
+        )!;
+        assert.isDefined(currentTurn);
+
+        // Both frames are from the superseded attempt. A fresh current snapshot
+        // is the persisted receipt that this subscriber drained them in order.
+        const completedAt = yield* DateTime.now;
+        const receipt = yield* orchestrator.streamDomainEvents.pipe(
+          Stream.filter(
+            (event) =>
+              event.type === "provider-turn.updated" &&
+              event.payload.id === currentTurn.id &&
+              event.payload.completedAt !== null,
+          ),
+          Stream.take(1),
+          Stream.runDrain,
+          Effect.forkScoped,
+        );
+        yield* Queue.offer(events, {
+          type: "provider_turn.updated",
+          driver,
+          providerTurn: { ...oldTurn, status: "completed", completedAt },
+        });
+        yield* Queue.offer(events, {
+          type: "turn.terminal",
+          driver,
+          providerThreadId: oldTurn.providerThreadId,
+          providerTurnId: oldTurn.id,
+          runOrdinal: second.runOrdinal,
+          status: "completed",
+          failure: null,
+          threadDisposition: "reusable",
+        });
+        yield* Queue.offer(events, {
+          type: "provider_turn.updated",
+          driver,
+          providerTurn: { ...currentTurn, status: "completed", completedAt },
+        });
+        yield* Fiber.join(receipt);
+        const afterStale = yield* orchestrator.getThreadProjection(threadId);
+        assert.equal(afterStale.runs[0]?.status, "running");
+        assert.equal(afterStale.runs[0]?.activeAttemptId, second.attemptId);
+        assert.deepEqual(
+          afterStale.attempts.map((attempt) => attempt.status),
+          ["superseded", "running"],
+        );
+
+        const finalized = yield* orchestrator.streamDomainEvents.pipe(
+          Stream.filter(
+            (event) =>
+              event.type === "run.updated" &&
+              event.payload.id === second.runId &&
+              event.payload.status === "waiting",
+          ),
+          Stream.take(1),
+          Stream.runDrain,
+          Effect.forkScoped,
+        );
+        yield* Queue.offer(events, {
+          type: "turn.terminal",
+          driver,
+          providerThreadId: currentTurn.providerThreadId,
+          providerTurnId: currentTurn.id,
+          runOrdinal: second.runOrdinal,
+          status: "completed",
+          failure: null,
+          threadDisposition: "reusable",
+        });
+        yield* Fiber.join(finalized);
+        yield* worker.drain();
+        const settled = yield* orchestrator.getThreadProjection(threadId);
+        assert.equal(settled.runs[0]?.status, "completed");
+        assert.deepEqual(
+          settled.attempts.map((attempt) => attempt.status),
+          ["superseded", "completed"],
+        );
+      }).pipe(Effect.provide(layer));
+    }),
+  ),
+);
 
 it.effect("steers a changed turn-scoped selection into a provider that cannot restart", () =>
   Effect.scoped(
