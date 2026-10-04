@@ -266,6 +266,22 @@ function sessionScopedRuntimeRequestThreadId(event: ProviderAdapterV2Event): Thr
   }
 }
 
+function runtimeRequestArtifactThreadId(event: ProviderAdapterV2Event): ThreadId | undefined {
+  switch (event.type) {
+    case "runtime_request.updated":
+      return event.threadId;
+    case "node.updated":
+      return event.node.runtimeRequestId !== null ? event.node.threadId : undefined;
+    case "turn_item.updated":
+      return event.turnItem.type === "approval_request" ||
+        event.turnItem.type === "user_input_request"
+        ? event.turnItem.threadId
+        : undefined;
+    default:
+      return undefined;
+  }
+}
+
 function providerThreadRuntimeKey(
   providerThread: Parameters<ProviderAdapterV2SessionRuntime["resumeThread"]>[0]["providerThread"],
 ): string {
@@ -1570,15 +1586,23 @@ export const layerWithOptions = (
                   // their runless request artifacts directly so the normal T3
                   // request UI can answer them and unblock session setup.
                   const threadId = sessionScopedRuntimeRequestThreadId(event);
-                  if (threadId !== undefined) {
+                  const requestThreadId = runtimeRequestArtifactThreadId(event);
+                  if (requestThreadId !== undefined) {
                     yield* Effect.gen(function* () {
                       const current = (yield* Ref.get(sessions)).get(
                         sessionKey(entry.runtime.providerSessionId),
                       );
                       if (
                         current?.runtime !== entry.runtime ||
-                        !current.attachedThreadIds.has(threadId)
+                        !current.attachedThreadIds.has(requestThreadId)
                       ) {
+                        return;
+                      }
+                      if (threadId === undefined) {
+                        yield* publishToSubscribers(entry.eventSubscribers, {
+                          type: "event",
+                          event,
+                        });
                         return;
                       }
                       yield* providerEventIngestor

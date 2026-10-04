@@ -13,6 +13,8 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  ProviderTurnId,
+  RunId,
   type ProviderSessionId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -2888,6 +2890,27 @@ it.effect(
         // The pump processes this marker only after all late request artifacts.
         yield* Queue.offerAll(queue, [
           ...pending.providerEvents,
+          ...pending.providerEvents.map((event): ProviderAdapterV2Event => {
+            switch (event.type) {
+              case "runtime_request.updated":
+                return {
+                  ...event,
+                  runtimeRequest: {
+                    ...event.runtimeRequest,
+                    providerTurnId: ProviderTurnId.make("detached-turn"),
+                  },
+                };
+              case "node.updated":
+                return { ...event, node: { ...event.node, runId: RunId.make("detached-run") } };
+              case "turn_item.updated":
+                return {
+                  ...event,
+                  turnItem: { ...event.turnItem, runId: RunId.make("detached-run") },
+                };
+              default:
+                return event;
+            }
+          }),
           {
             type: "provider_session.updated",
             driver: CODEX_DRIVER,
@@ -2896,6 +2919,7 @@ it.effect(
         ]);
         const marker = yield* subscription.events.pipe(Stream.runHead);
         assert.isTrue(Option.isSome(marker));
+        if (Option.isSome(marker)) assert.equal(marker.value.type, "provider_session.updated");
         const projection = yield* projectionStore.getThreadProjection(threadId);
         assert.equal(projection.runtimeRequests[0]?.status, "cancelled");
         assert.equal(projection.nodes[0]?.status, "cancelled");
