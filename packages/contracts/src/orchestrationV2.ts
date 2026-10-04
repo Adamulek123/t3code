@@ -574,6 +574,8 @@ export const OrchestrationV2Run = Schema.Struct({
   delegatedCompletion: Schema.optional(OrchestrationV2DelegatedCompletionCohort),
   /** How a launch prepares this run's workspace; prepared-run.retry repeats it. */
   workspacePreparation: Schema.optional(OrchestrationV2ThreadLaunchWorkspaceStrategy),
+  /** Successful provisioning of this exact checkout, before its setup script runs. */
+  completedWorktreePath: Schema.optional(Schema.NullOr(Schema.String)),
 });
 export type OrchestrationV2Run = typeof OrchestrationV2Run.Type;
 
@@ -2760,6 +2762,14 @@ export const OrchestrationV2Command = Schema.Union([
     threadId: ThreadId,
     runId: RunId,
     phase: Schema.Literals(["worktree", "setup"]),
+    completedWorkspace: Schema.optional(
+      Schema.Struct({
+        worktreePath: Schema.String,
+        branch: Schema.String,
+        expectedWorktreePath: Schema.NullOr(Schema.String),
+        expectedBranch: Schema.NullOr(Schema.String),
+      }),
+    ),
   }),
   Schema.Struct({
     type: Schema.Literal("prepared-run.fail"),

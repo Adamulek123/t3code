@@ -24,6 +24,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
@@ -173,6 +174,7 @@ const make = Effect.gen(function* () {
   const cloneTracker = yield* ProjectCloneTracker.ProjectCloneTracker;
   const terminals = yield* TerminalManager.TerminalManager;
   const git = yield* GitWorkflow.GitWorkflowService;
+  const fileSystem = yield* FileSystem.FileSystem;
   const setupScripts = yield* ProjectSetupScriptRunner.ProjectSetupScriptRunner;
   const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
@@ -307,6 +309,12 @@ const make = Effect.gen(function* () {
       // under a temporary `t3code/<hash>` name so the worktree never waits on
       // name generation, then rename in the background below.
       let branch = input.workspaceStrategy.branch ?? null;
+      const binding = yield* threads
+        .getThreadShell(threadId)
+        .pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
+      if (binding === null) {
+        return yield* mapError(input, "update-thread", threadId)("Thread no longer exists.");
+      }
       let worktreePath =
         input.workspaceStrategy.type === "existing_worktree"
           ? input.workspaceStrategy.worktreePath
@@ -402,13 +410,34 @@ const make = Effect.gen(function* () {
       // the first attempt's branch rename.
       if (reused === undefined) {
         yield* threads
-          .dispatch({
-            type: "thread.metadata.update",
-            commandId: CommandId.make(`${input.commandId}:workspace`),
-            threadId,
-            branch,
-            worktreePath,
-          })
+          .dispatch(
+            input.workspaceStrategy.type === "worktree" &&
+              runId !== null &&
+              worktreePath !== null &&
+              branch !== null
+              ? {
+                  type: "prepared-run.progress",
+                  commandId: CommandId.make(`${input.commandId}:workspace`),
+                  threadId,
+                  runId,
+                  phase: "setup",
+                  completedWorkspace: {
+                    worktreePath,
+                    branch,
+                    expectedWorktreePath: binding.worktreePath,
+                    expectedBranch: binding.branch,
+                  },
+                }
+              : {
+                  type: "thread.metadata.update",
+                  commandId: CommandId.make(`${input.commandId}:workspace`),
+                  threadId,
+                  branch,
+                  worktreePath,
+                  expectedWorktreePath: binding.worktreePath,
+                  expectedBranch: binding.branch,
+                },
+          )
           .pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
       }
       workspaceRecorded = true;
@@ -450,6 +479,8 @@ const make = Effect.gen(function* () {
               type: "thread.metadata.update",
               commandId: CommandId.make(`${input.commandId}:branch-rename`),
               threadId,
+              expectedWorktreePath: worktreeCwd,
+              expectedBranch: oldBranch,
               branch: renamed.branch,
               worktreePath: worktreeCwd,
             }),
@@ -1025,42 +1056,66 @@ const make = Effect.gen(function* () {
     projection: OrchestrationV2ThreadProjection,
     run: OrchestrationV2ThreadProjection["runs"][number],
     workspacePreparation: ThreadLaunchWorkspaceStrategy,
-  ) => {
-    const message = projection.messages.find((candidate) => candidate.id === run.userMessageId);
-    // A worktree the failed attempt already created is reused, not created again.
-    const reuse =
-      workspacePreparation.type === "worktree" &&
-      projection.thread.worktreePath !== null &&
-      projection.thread.branch !== null
-        ? {
-            strategy: {
-              type: "existing_worktree" as const,
-              worktreePath: projection.thread.worktreePath,
-              branch: projection.thread.branch,
-            },
-            reusedWorktree: { baseRef: workspacePreparation.baseRef },
-          }
-        : null;
-    return schedulePreparation(
-      {
-        commandId: input.commandId,
-        projectId: projection.thread.projectId,
-        workspaceStrategy: reuse?.strategy ?? workspacePreparation,
-        ...(reuse === null ? {} : { reusedWorktree: reuse.reusedWorktree }),
-        ...(message === undefined
-          ? {}
-          : {
-              initialMessage: {
-                text: message.text,
-                attachments: message.attachments,
-                ...(message.context ? { context: message.context } : {}),
+  ) =>
+    Effect.gen(function* () {
+      const message = projection.messages.find((candidate) => candidate.id === run.userMessageId);
+      // Released versions only published a worktree after successful provisioning.
+      // Preserve that legacy invariant; new runs explicitly start with null proof.
+      const legacyCompleted = run.completedWorktreePath === undefined;
+      if (
+        workspacePreparation.type === "worktree" &&
+        projection.thread.worktreePath !== null &&
+        !legacyCompleted &&
+        run.completedWorktreePath !== projection.thread.worktreePath &&
+        (yield* fileSystem.exists(projection.thread.worktreePath))
+      ) {
+        return yield* mapError(
+          {
+            commandId: input.commandId,
+            projectId: projection.thread.projectId,
+            workspaceStrategy: workspacePreparation,
+          },
+          "provision-worktree",
+          input.threadId,
+        )(
+          `Checkout completion is unknown for ${projection.thread.worktreePath}. Its files have been preserved. Back up any changes, remove this worktree and its branch with Git, then select Retry to create a fresh checkout.`,
+        );
+      }
+      // Only the exact checkout whose successful provisioning was committed is reused.
+      const reuse =
+        workspacePreparation.type === "worktree" &&
+        projection.thread.worktreePath !== null &&
+        (legacyCompleted || run.completedWorktreePath === projection.thread.worktreePath) &&
+        projection.thread.branch !== null
+          ? {
+              strategy: {
+                type: "existing_worktree" as const,
+                worktreePath: projection.thread.worktreePath,
+                branch: projection.thread.branch,
               },
-            }),
-      },
-      input.threadId,
-      run.id,
-    );
-  };
+              reusedWorktree: { baseRef: workspacePreparation.baseRef },
+            }
+          : null;
+      return yield* schedulePreparation(
+        {
+          commandId: input.commandId,
+          projectId: projection.thread.projectId,
+          workspaceStrategy: reuse?.strategy ?? workspacePreparation,
+          ...(reuse === null ? {} : { reusedWorktree: reuse.reusedWorktree }),
+          ...(message === undefined
+            ? {}
+            : {
+                initialMessage: {
+                  text: message.text,
+                  attachments: message.attachments,
+                  ...(message.context ? { context: message.context } : {}),
+                },
+              }),
+        },
+        input.threadId,
+        run.id,
+      );
+    });
 
   return ThreadLaunchService.of({ launch, retryPreparation });
 });
