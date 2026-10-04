@@ -65,6 +65,16 @@ export const workerLive = Layer.effectDiscard(
     const requests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
     const threads = yield* ThreadManagementService.ThreadManagementService;
     const retryAttempts = yield* Ref.make(new Map<string, number>());
+    const retryRequests = new WeakSet<ProviderContinuationRequests.ProviderContinuationRequest>();
+
+    // Keep external duplicate offers out of the pending chain. Internal retries
+    // use private copies so re-offering the original object cannot claim one.
+    const offerRetry = (request: ProviderContinuationRequests.ProviderContinuationRequest) =>
+      Effect.suspend(() => {
+        const retry = { ...request };
+        retryRequests.add(retry);
+        return requests.offer(retry);
+      });
 
     const clearRetryAttempt = (key: string) =>
       Ref.update(retryAttempts, (current) => {
@@ -188,7 +198,19 @@ export const workerLive = Layer.effectDiscard(
 
     yield* requests.take.pipe(
       Effect.flatMap((request) =>
-        dispatchContinuation(request).pipe(
+        Effect.gen(function* () {
+          const isRetry = retryRequests.delete(request);
+          if (
+            request.delegatedCompletion !== undefined &&
+            !isRetry &&
+            (yield* Ref.get(retryAttempts)).has(
+              delegatedCompletionRetryKey(request, request.delegatedCompletion),
+            )
+          ) {
+            return;
+          }
+          yield* dispatchContinuation(request);
+        }).pipe(
           Effect.catchCause((cause) =>
             Effect.gen(function* () {
               if (Cause.hasInterruptsOnly(cause)) return yield* Effect.failCause(cause);
@@ -227,14 +249,16 @@ export const workerLive = Layer.effectDiscard(
                     },
                   );
                   if (currentDelegatedCompletionDelivery(projection, completion) !== undefined) {
-                    yield* requests.offer(request);
+                    yield* offerRetry(request);
                   } else {
                     yield* clearRetryAttempt(retryKey);
                   }
                 }).pipe(
                   Effect.catchCause((retryCause) =>
                     Cause.hasInterruptsOnly(retryCause)
-                      ? Effect.failCause(retryCause)
+                      ? clearRetryAttempt(retryKey).pipe(
+                          Effect.andThen(Effect.failCause(retryCause)),
+                        )
                       : Effect.logWarning(
                           "orchestration-v2.provider-continuation.retry-check-failed",
                           {
@@ -242,7 +266,7 @@ export const workerLive = Layer.effectDiscard(
                             providerThreadId: request.providerThreadId,
                             cause: retryCause,
                           },
-                        ).pipe(Effect.andThen(requests.offer(request))),
+                        ).pipe(Effect.andThen(offerRetry(request))),
                   ),
                   Effect.forkScoped,
                 );
