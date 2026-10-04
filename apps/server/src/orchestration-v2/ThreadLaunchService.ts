@@ -534,8 +534,8 @@ const make = Effect.gen(function* () {
       Effect.onError((cause) =>
         Effect.gen(function* () {
           const cancelled = Cause.hasInterruptsOnly(cause);
-          // Once the prepared run is released, the provider owns its workspace.
-          // An async setup interrupted during shutdown must not delete it.
+          // A released run owns its workspace. An idle launch also keeps its
+          // prepared checkout when shutdown interrupts the remaining async setup.
           if (!preparationComplete) {
             if (branchRenameFiber !== null) yield* Fiber.interrupt(branchRenameFiber);
             if (setupTerminalId !== null)
