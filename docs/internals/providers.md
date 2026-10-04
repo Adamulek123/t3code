@@ -51,17 +51,12 @@ and removal must respect those leases instead of replacing executables under a r
 
 ## Delegated completion delivery
 
-Delegated completion delivery retries at most eight times with capped exponential
-backoff. Exhaustion logs the delivery identity and stops its in-memory retry chain.
-The durable mailbox offer remains available to result reads and recovery. A later
-mailbox re-offer, including one in the same process, starts a new retry budget.
-Cancellation does not enqueue another retry.
+Exhausting a [completion delivery](../../apps/server/src/orchestration-v2/ProviderContinuationService.ts)
+retry chain does not consume its durable mailbox offer. Recovery or a later re-offer
+can start a fresh retry budget, including in the same process; exhaustion is not a
+permanent delivery-failure marker.
 
 ## Setup must not happen as a health-check side effect
-
-Provider turn startup rechecks the current attempt before opening a session and
-again before loading or forking a native thread. An attempt stopped during setup
-must not continue preparing its provider thread.
 
 Opening a provider session can start MCP servers, run hooks, or launch a login browser.
 [Grok probes](../../apps/server/src/provider/Layers/GrokProvider.ts) avoid authentication and
