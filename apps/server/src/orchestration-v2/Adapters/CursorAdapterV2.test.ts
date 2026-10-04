@@ -270,7 +270,7 @@ describe("CursorAdapterV2", () => {
           completedTexts.map((event) => event.text),
           [text, text],
         );
-        assert.isAtMost(texts.filter((item) => item.streaming).length, 4);
+        assert.isAtMost(texts.filter((item) => item.streaming).length, 2);
         assert.isAtMost(
           events.filter((event) => event.type === "message.updated" && event.message.streaming)
             .length,

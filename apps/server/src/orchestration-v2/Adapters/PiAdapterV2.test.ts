@@ -475,6 +475,13 @@ describe("PiAdapterV2", () => {
     (ending) =>
       Effect.gen(function* () {
         const fake = yield* makeFakePi;
+        // Live usage needs a context window, and the `provider_turn.updated` it
+        // emits is the only thing a `message_update` projects. That makes it the
+        // barrier that says the deltas before it are buffered, without the
+        // flush boundary a tool or a settle would introduce.
+        fake.queueState({
+          model: { provider: "anthropic", id: "large", contextWindow: 1_000_000 },
+        });
         const sessionScope = yield* Scope.make();
         yield* Effect.addFinalizer(() => Scope.close(sessionScope, Exit.void));
         const { runtime, takeEvent, capturedEvents } = yield* openRuntime(
@@ -496,6 +503,8 @@ describe("PiAdapterV2", () => {
         yield* fake.emit({ type: "message_start", message: { role: "assistant" } });
         const deltas = Array.from({ length: 64 }, (_, i) => `${i}:ą🙂\n`);
         const text = deltas.join("");
+        const events: Array<ProviderAdapterV2Event> = [];
+        let turnId: OrchestrationV2ProviderTurn["id"] | undefined;
         for (const [contentIndex, type] of [
           [0, "text_delta"],
           [1, "thinking_delta"],
@@ -519,6 +528,35 @@ describe("PiAdapterV2", () => {
             assistantMessageEvent: { type: "text_delta", contentIndex: 2, delta },
           });
         }
+        // Live usage is the only thing a `message_update` projects, so its
+        // event is a barrier that says every delta above is buffered without
+        // the flush a tool, an interrupt or a settle would have introduced.
+        yield* fake.emit({
+          type: "message_update",
+          usage: { totalTokens: 4321 },
+          assistantMessageEvent: { type: "text_delta", contentIndex: 2, delta: "" },
+        });
+        // `takeEvent` drops whatever it scans past, and the running turn
+        // arrives before the barrier, so keep its id on the way through.
+        while (true) {
+          const event = yield* takeEvent(() => true);
+          events.push(event);
+          if (event.type === "provider_turn.updated" && event.providerTurn.status === "running")
+            turnId = event.providerTurn.id;
+          if (
+            event.type === "provider_turn.updated" &&
+            event.providerTurn.tokenUsage?.usedTokens === 4321
+          ) {
+            break;
+          }
+        }
+        // Nothing between the barrier and the ending below is a flush
+        // boundary, so the coalescer's own `STREAM_FLUSH_MS` timer is the only
+        // thing that can project these 64 deltas, and the projection it makes
+        // is the next event out.
+        yield* TestClock.adjust(50);
+        const timedEvent = yield* takeEvent(() => true);
+        events.push(timedEvent);
         if (ending === "interrupted" || ending === "teardown") {
           yield* fake.emit({
             type: "tool_execution_update",
@@ -535,8 +573,6 @@ describe("PiAdapterV2", () => {
         }
         if (ending === "completed" || ending === "failed")
           yield* fake.emit({ type: "agent_settled" });
-        const events: Array<ProviderAdapterV2Event> = [];
-        let turnId: OrchestrationV2ProviderTurn["id"] | undefined;
         while (true) {
           const event = yield* takeEvent(() => true);
           events.push(event);
@@ -562,18 +598,26 @@ describe("PiAdapterV2", () => {
           .filter((event) => event.type === "turn_item.updated")
           .map((event) => event.turnItem);
         const texts = items.filter((event) => event.type === "assistant_message");
-        assert.isAtMost(texts.filter((item) => item.streaming).length, 4);
-        assert.isAtMost(
-          events.filter((event) => event.type === "message.updated" && event.message.streaming)
-            .length,
-          4,
+        const reasoning = items.filter((event) => event.type === "reasoning");
+        const toolIndex = items.findIndex((event) => event.type === "command_execution");
+        // 64 deltas per block, and each burst is projected once: a projection
+        // per delta would give 64 of each. The block after the tool is the one
+        // the coalescer's own timer projected, the only flush in its window.
+        const timed = items[toolIndex + 1];
+        assert.isAbove(toolIndex, 0);
+        assert.isTrue(timed?.type === "assistant_message" && timed.streaming);
+        assert.equal(timed?.type === "assistant_message" ? timed.text : undefined, text);
+        assert.lengthOf(
+          texts.filter((event) => event.streaming),
+          2,
         );
+        assert.lengthOf(reasoning, 2);
+        assert.equal(texts.find((event) => event.streaming)?.text, text);
+        assert.equal(reasoning.find((event) => event.streaming)?.text, text);
         assert.deepEqual(
           texts.filter((event) => !event.streaming).map((event) => event.text),
           [text, text],
         );
-        const toolIndex = items.findIndex((event) => event.type === "command_execution");
-        assert.isAbove(toolIndex, 0);
         assert.equal(items[toolIndex - 1]?.type, "reasoning");
         const thinking = items[toolIndex - 1];
         assert.equal(thinking?.type === "reasoning" ? thinking.text : undefined, text);
@@ -599,6 +643,9 @@ describe("PiAdapterV2", () => {
           1,
         );
       }).pipe(Effect.scoped, Effect.provide(testLayer)),
+    // The coalescer's timer projection is awaited below, so a coalescer that
+    // stopped firing it would hang there rather than fail an assertion. Bound it.
+    5_000,
   );
 
   it.effect("stops provider-initiated work that has no T3 turn owner", () =>
