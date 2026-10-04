@@ -519,6 +519,7 @@ export const layer: Layer.Layer<
         thread: projection.thread,
         modelSelection: run.modelSelection,
       });
+      if (!(yield* isCurrentAttemptInStatus("starting"))) return;
       const existingSessionProjection = projection.providerSessions.find(
         (candidate) => candidate.id === providerSessionId,
       );
@@ -585,6 +586,7 @@ export const layer: Layer.Layer<
         return;
       }
       const session = sessionResult.success;
+      if (!(yield* isCurrentAttemptInStatus("starting"))) return;
       // Only the provider's own thread load fails the run on the last attempt;
       // store, id and handoff failures around it keep their typed errors.
       const loadFromProvider = (
