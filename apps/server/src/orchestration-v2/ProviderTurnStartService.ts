@@ -462,6 +462,13 @@ export const layer: Layer.Layer<
         if (!exists) {
           const project = yield* projects.getById(projection.thread.projectId).pipe(
             Effect.map(Option.getOrUndefined),
+            Effect.tapError((cause) =>
+              Effect.logWarning("provider turn start failed to read worktree project", {
+                threadId: projection.thread.id,
+                projectId: projection.thread.projectId,
+                cause,
+              }),
+            ),
             Effect.orElseSucceed(() => undefined),
           );
           if (project !== undefined) {
@@ -490,7 +497,7 @@ export const layer: Layer.Layer<
             );
           } else {
             yield* Effect.logWarning(
-              "provider turn start cannot recreate worktree without project",
+              "provider turn start cannot recreate worktree because project is unavailable",
               {
                 threadId: projection.thread.id,
                 projectId: projection.thread.projectId,
