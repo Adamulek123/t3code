@@ -82,6 +82,13 @@ terminal removes the same entry, so duplicate or delayed terminals cannot releas
 a successor or sibling turn. Thread and run ordinal alone are insufficient because
 steering can reuse them. Unknown snapshots and terminals do not create activity.
 
+Adapters must emit the attempt-correlated root snapshot before its terminal. Native
+replay conformance tests check that order at the adapter boundary, while orchestration
+tests check admission with unknown identity and later snapshot learning. A start that
+fails without native events is released by attempt ID. A missing snapshot on a healthy
+stream has no idle-release deadline; explicit session close or stream failure still
+removes its live entry. Reattachment to that same entry does not reset its activity.
+
 The [continuation handler](../../apps/server/src/orchestration-v2/RestartContinuation.ts)
 rechecks the preference, archive state, provider selection, and newer user work before
 dispatching. Stable command and message IDs prevent duplicate submissions after an
