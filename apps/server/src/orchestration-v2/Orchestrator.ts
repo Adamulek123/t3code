@@ -7497,7 +7497,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     });
 
   const loadProjectionForCommand = <K extends ProjectionRecordField>(
-    command: OrchestrationV2Command,
+    command: OrchestrationV2ServerCommand,
     fields: ReadonlyArray<K>,
     filter?: ProjectionRecordFilter,
   ) =>
@@ -7511,7 +7511,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
   const preparedRunState = (
     command: Extract<
-      OrchestrationV2Command,
+      OrchestrationV2ServerCommand,
       {
         readonly type:
           | "prepared-run.release"
@@ -7552,7 +7552,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   };
 
   const dispatchPreparedRunProgress = (
-    command: Extract<OrchestrationV2Command, { readonly type: "prepared-run.progress" }>,
+    command: Extract<OrchestrationV2ServerCommand, { readonly type: "prepared-run.progress" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
   ) =>
     Effect.gen(function* () {

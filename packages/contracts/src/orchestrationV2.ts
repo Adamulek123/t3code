@@ -2757,21 +2757,6 @@ export const OrchestrationV2Command = Schema.Union([
     messageId: MessageId,
   }),
   Schema.Struct({
-    type: Schema.Literal("prepared-run.progress"),
-    commandId: CommandId,
-    threadId: ThreadId,
-    runId: RunId,
-    phase: Schema.Literals(["worktree", "setup"]),
-    completedWorkspace: Schema.optional(
-      Schema.Struct({
-        worktreePath: Schema.String,
-        branch: Schema.String,
-        expectedWorktreePath: Schema.NullOr(Schema.String),
-        expectedBranch: Schema.NullOr(Schema.String),
-      }),
-    ),
-  }),
-  Schema.Struct({
     type: Schema.Literal("prepared-run.fail"),
     commandId: CommandId,
     threadId: ThreadId,
@@ -2932,6 +2917,22 @@ export type OrchestrationV2Command = typeof OrchestrationV2Command.Type;
  * send them.
  */
 const OrchestrationV2InternalCommand = Schema.Union([
+  /** Only the launch service can attest that provisioning completed. */
+  Schema.Struct({
+    type: Schema.Literal("prepared-run.progress"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    runId: RunId,
+    phase: Schema.Literals(["worktree", "setup"]),
+    completedWorkspace: Schema.optional(
+      Schema.Struct({
+        worktreePath: Schema.String,
+        branch: Schema.String,
+        expectedWorktreePath: Schema.NullOr(Schema.String),
+        expectedBranch: Schema.NullOr(Schema.String),
+      }),
+    ),
+  }),
   /**
    * Records what a pull request watch saw, and wakes the agent in the same transaction when
    * `wake` is set. Rejected once the watch started at `startedAt` has ended, and a wake is
