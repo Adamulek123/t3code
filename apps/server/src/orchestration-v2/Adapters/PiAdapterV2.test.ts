@@ -20,6 +20,8 @@ import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Scope from "effect/Scope";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -338,14 +340,17 @@ const openRuntime = Effect.fnUntraced(function* (
   threadId = THREAD_ID,
   providerSessionId = SESSION_ID,
   forkFake?: FakePi,
+  sessionScope?: Scope.Scope,
 ) {
   const adapter = yield* makeAdapter(fake, "", forkFake);
-  const runtime = yield* adapter.openSession({
-    threadId,
-    providerSessionId,
-    modelSelection: modelSelection(model),
-    runtimePolicy,
-  });
+  const runtime = yield* adapter
+    .openSession({
+      threadId,
+      providerSessionId,
+      modelSelection: modelSelection(model),
+      runtimePolicy,
+    })
+    .pipe(Effect.provideService(Scope.Scope, sessionScope ?? (yield* Effect.scope)));
   const emitted = yield* Queue.unbounded<ProviderAdapterV2Event>();
   yield* runtime.events.pipe(
     Stream.runForEach((event) => Queue.offer(emitted, event)),
@@ -461,6 +466,126 @@ const expectModelFailure = (errorMessage: string) =>
   }).pipe(Effect.scoped, Effect.provide(layerTest));
 
 describe("PiAdapterV2", () => {
+  it.effect.each(["completed", "failed", "interrupted", "teardown"] as const)(
+    "coalesces ordered text bursts and flushes the tail on %s",
+    (ending) =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakePi;
+        const sessionScope = yield* Scope.make();
+        yield* Effect.addFinalizer(() => Scope.close(sessionScope, Exit.void));
+        const { runtime, takeEvent } = yield* openRuntime(
+          fake,
+          "default",
+          THREAD_ID,
+          SESSION_ID,
+          undefined,
+          sessionScope,
+        );
+        const providerThread = yield* runtime.ensureThread({
+          threadId: THREAD_ID,
+          modelSelection: modelSelection("default"),
+          runtimePolicy,
+        });
+        yield* startTurn(runtime, providerThread);
+        yield* fake.takeRequest("prompt");
+        yield* fake.emit({ type: "agent_start" });
+        yield* fake.emit({ type: "message_start", message: { role: "assistant" } });
+        const deltas = Array.from({ length: 64 }, (_, i) => `${i}:ą🙂\n`);
+        const text = deltas.join("");
+        for (const [contentIndex, type] of [
+          [0, "text_delta"],
+          [1, "thinking_delta"],
+        ] as const) {
+          for (const delta of deltas) {
+            yield* fake.emit({
+              type: "message_update",
+              assistantMessageEvent: { type, contentIndex, delta },
+            });
+          }
+        }
+        yield* fake.emit({
+          type: "tool_execution_start",
+          toolCallId: "tool",
+          toolName: "bash",
+          args: { command: "echo test" },
+        });
+        for (const delta of deltas) {
+          yield* fake.emit({
+            type: "message_update",
+            assistantMessageEvent: { type: "text_delta", contentIndex: 2, delta },
+          });
+        }
+        if (ending === "interrupted" || ending === "teardown") {
+          yield* fake.emit({
+            type: "tool_execution_update",
+            toolCallId: "tool",
+            toolName: "bash",
+            partialResult: { content: [{ type: "text", text: "ready" }] },
+          });
+        }
+        if (ending === "failed") {
+          yield* fake.emit({
+            type: "message_end",
+            message: { role: "assistant", stopReason: "error", errorMessage: "failed" },
+          });
+        }
+        if (ending === "completed" || ending === "failed")
+          yield* fake.emit({ type: "agent_settled" });
+        const events: Array<ProviderAdapterV2Event> = [];
+        let turnId: OrchestrationV2ProviderTurn["id"] | undefined;
+        while (true) {
+          const event = yield* takeEvent(() => true);
+          events.push(event);
+          if (event.type === "provider_turn.updated" && event.providerTurn.status === "running")
+            turnId = event.providerTurn.id;
+          if (
+            event.type === "turn_item.updated" &&
+            event.turnItem.type === "command_execution" &&
+            event.turnItem.output === "ready"
+          ) {
+            if (ending === "teardown") yield* Scope.close(sessionScope, Exit.void);
+            if (ending === "interrupted") {
+              yield* runtime.interruptTurn({
+                providerThread,
+                providerTurnId: turnId!,
+              });
+              yield* fake.emit({ type: "agent_settled" });
+            }
+          }
+          if (
+            event.type === "turn.terminal" ||
+            (ending === "teardown" &&
+              event.type === "turn_item.updated" &&
+              event.turnItem.type === "assistant_message" &&
+              !event.turnItem.streaming &&
+              event.turnItem.nativeItemRef?.nativeId?.endsWith(":c2") === true)
+          )
+            break;
+        }
+        const items = events
+          .filter((event) => event.type === "turn_item.updated")
+          .map((event) => event.turnItem);
+        const texts = items.filter((event) => event.type === "assistant_message");
+        assert.isBelow(texts.length, deltas.length);
+        assert.isBelow(events.length, deltas.length);
+        assert.deepEqual(
+          texts.filter((event) => !event.streaming).map((event) => event.text),
+          [text, text],
+        );
+        const toolIndex = items.findIndex((event) => event.type === "command_execution");
+        assert.isAbove(toolIndex, 0);
+        assert.equal(items[toolIndex - 1]?.type, "reasoning");
+        const thinking = items[toolIndex - 1];
+        assert.equal(thinking?.type === "reasoning" ? thinking.text : undefined, text);
+        assert.isBelow(items[0]!.ordinal, items[toolIndex]!.ordinal);
+        assert.isAbove(texts.at(-1)!.ordinal, items[toolIndex]!.ordinal);
+        assert.equal(
+          events.at(-1)?.type,
+          ending === "teardown" ? "turn_item.updated" : "turn.terminal",
+        );
+      }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
   it.effect("stops provider-initiated work that has no T3 turn owner", () =>
     Effect.gen(function* () {
       const fake = yield* makeFakePi;

@@ -24,6 +24,7 @@ export interface ProviderTextDeltaCoalescer {
     readonly emitEmpty?: boolean;
   }) => Effect.Effect<string>;
   readonly flushTurn: (turnId: string) => Effect.Effect<void>;
+  readonly flushPendingTurn: (turnId: string) => Effect.Effect<void>;
 }
 
 interface BufferedProviderText {
@@ -145,6 +146,12 @@ export const makeProviderTextDeltaCoalescer = Effect.fn("makeProviderTextDeltaCo
             return text;
           }),
         ),
+      flushPendingTurn: (turnId) =>
+        drain({
+          predicate: (message) => message.turnId === turnId,
+          completed: false,
+          onlyDirty: true,
+        }),
       flushTurn: (turnId) =>
         drain({
           predicate: (message) => message.turnId === turnId,

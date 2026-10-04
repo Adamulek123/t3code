@@ -15,12 +15,16 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Deferred from "effect/Deferred";
+import * as Exit from "effect/Exit";
+import * as Scope from "effect/Scope";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerConfig from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
@@ -40,15 +44,23 @@ const decodeCursorSettings = Schema.decodeEffect(CursorSettings);
 
 describe("CursorAdapterV2", () => {
   it.effect.each([
-    { status: "finished", model: undefined, lateModel: undefined },
+{ status: "finished", model: undefined, lateModel: undefined },
     { status: "cancelled", model: "claude-opus-4-6", lateModel: undefined },
     { status: "error", model: "custom-fable", lateModel: undefined },
     { status: "finished", model: undefined, lateModel: "gpt-6-sol" },
     { status: "finished", model: "gpt-6-sol", lateModel: null },
+    { status: "interrupted", model: undefined, lateModel: undefined },
+    { status: "teardown", model: undefined, lateModel: undefined },
   ] as const)(
     "projects Cursor tasks: $status, late model $lateModel",
     ({ status, model, lateModel }) =>
       Effect.gen(function* () {
+        const deltas = Array.from({ length: 64 }, (_, i) => `${i}:ą🙂\n`);
+        const text = deltas.join("");
+        const tailReady = yield* Deferred.make<void>();
+        const cancelled = yield* Deferred.make<void>();
+        const sessionScope = yield* Scope.make();
+        yield* Effect.addFinalizer(() => Scope.close(sessionScope, Exit.void));
         const fileSystem = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
         const workspace = yield* fileSystem.makeTempDirectoryScoped({
@@ -87,6 +99,14 @@ describe("CursorAdapterV2", () => {
                     // partial-tool-call before tool-call-started with the same args.
                     // The run then ends without tool-call-completed, which a live
                     // run cannot produce on demand.
+                    for (const delta of deltas) {
+                      yield* input.onDelta!({ type: "text-delta", text: delta }).pipe(Effect.orDie);
+                    }
+                    for (const delta of deltas) {
+                      yield* input.onDelta!({ type: "thinking-delta", text: delta }).pipe(
+                        Effect.orDie,
+                      );
+                    }
                     const taskToolCall = {
                       type: "task" as const,
                       args: {
@@ -118,28 +138,67 @@ describe("CursorAdapterV2", () => {
                         },
                       }).pipe(Effect.orDie);
                     }
+                    yield* input.onDelta!({
+                      type: "tool-call-started",
+                      modelCallId: "model-call",
+                      callId: "shell-burst",
+                      toolCall: { type: "shell", args: { command: "echo burst" } },
+                    }).pipe(Effect.orDie);
+                    for (const delta of deltas) {
+                      yield* input.onDelta!({
+                        type: "shell-output-delta",
+                        event: { stdout: delta },
+                      }).pipe(Effect.orDie);
+                    }
                     return {
                       agentId: "native-cursor-lifecycle",
                       runId: "native-cursor-run",
-                      wait: Effect.succeed({
-                        id: "native-cursor-run",
-                        requestId: "native-request",
-                        status,
-                        model: { id: "composer-2.5" },
-                        durationMs: 1,
+                      wait: Effect.gen(function* () {
+                        yield* TestClock.adjust(50);
+                        for (const delta of deltas) {
+                          yield* input.onDelta!({
+                            type: "shell-output-delta",
+                            event: { stdout: delta },
+                          }).pipe(Effect.orDie);
+                        }
+                        if (status === "finished") {
+                          yield* input.onDelta!({
+                            type: "tool-call-completed",
+                            modelCallId: "model-call",
+                            callId: "shell-burst",
+                            toolCall: { type: "shell", args: { command: "echo burst" } },
+                          }).pipe(Effect.orDie);
+                        }
+                        for (const delta of deltas) {
+                          yield* input.onDelta!({ type: "text-delta", text: delta }).pipe(
+                            Effect.orDie,
+                          );
+                        }
+                        yield* Deferred.succeed(tailReady, undefined);
+                        if (status === "teardown") return yield* Effect.never;
+                        if (status === "interrupted") yield* Deferred.await(cancelled);
+                        return {
+                          id: "native-cursor-run",
+                          requestId: "native-request",
+                          status: status === "interrupted" ? "cancelled" : status,
+                          model: { id: "composer-2.5" },
+                          durationMs: 1,
+                        };
                       }),
-                      cancel: Effect.void,
+                      cancel: Deferred.succeed(cancelled, undefined).pipe(Effect.asVoid),
                     };
                   }),
               }),
           },
         });
-        const runtime = yield* adapter.openSession({
-          threadId,
-          providerSessionId: ProviderSessionId.make("cursor-lifecycle-session"),
-          modelSelection,
-          runtimePolicy,
-        });
+        const runtime = yield* adapter
+          .openSession({
+            threadId,
+            providerSessionId: ProviderSessionId.make("cursor-lifecycle-session"),
+            modelSelection,
+            runtimePolicy,
+          })
+          .pipe(Effect.provideService(Scope.Scope, sessionScope));
         const providerThread = yield* runtime.ensureThread({
           threadId,
           modelSelection,
@@ -187,23 +246,60 @@ describe("CursorAdapterV2", () => {
             attachments: [],
           },
         });
+        yield* Deferred.await(tailReady);
+        if (status === "teardown") yield* Scope.close(sessionScope, Exit.void);
+        if (status === "interrupted") {
+          yield* runtime.interruptTurn({
+            providerThread,
+            providerTurnId: (yield* IdAllocator.IdAllocatorV2).derive.providerTurn({
+              driver: runtime.driver,
+              nativeTurnId: "native-cursor-run",
+            }),
+          });
+        }
         const events = yield* runtime.events.pipe(
           Stream.takeUntil((event) => event.type === "turn.terminal"),
           Stream.runCollect,
         );
+        const items = events
+          .filter((event) => event.type === "turn_item.updated")
+          .map((event) => event.turnItem);
+        const texts = items.filter((event) => event.type === "assistant_message");
+        const completedTexts = texts.filter((event) => !event.streaming);
+        assert.deepEqual(
+          completedTexts.map((event) => event.text),
+          [text, text],
+        );
+        assert.isBelow(texts.length, deltas.length);
+        assert.isBelow(events.length, deltas.length);
+        const reasoning = items.filter((event) => event.type === "reasoning");
+        assert.deepEqual(
+          reasoning.map((event) => event.text),
+          [text],
+        );
+        const shell = items.filter((event) => event.type === "command_execution");
+        assert.equal(shell.at(-1)?.output, text + text);
+        assert.isBelow(shell.length, deltas.length);
+        assert.equal(items[0]?.type, "assistant_message");
+        assert.equal(items[1]?.type, "reasoning");
+        assert.isBelow(completedTexts[0]!.ordinal, shell[0]!.ordinal);
+        assert.isAbove(completedTexts[1]!.ordinal, shell[0]!.ordinal);
+        assert.equal(events.at(-1)?.type, "turn.terminal");
         const rows = events.filter((event) => event.type === "subagent.updated");
         assert.equal(rows[0]?.subagent.status, "running");
         assert.equal(rows[0]?.subagent.model, model ?? null);
         assert.equal(rows.at(-1)?.subagent.model, lateModel ?? model ?? null);
         assert.equal(
           rows.at(-1)?.subagent.status,
-          lateModel !== undefined
+lateModel !== undefined
             ? "completed"
             : status === "finished"
               ? "idle"
-              : status === "cancelled"
+              : status === "cancelled" || status === "teardown"
                 ? "cancelled"
-                : "failed",
+                : status === "interrupted"
+                  ? "interrupted"
+                  : "failed",
         );
         assert.isNotNull(rows.at(-1)?.subagent.completedAt);
       }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, IdAllocator.layer))),

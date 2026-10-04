@@ -1,3 +1,4 @@
+import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
 import type {
   Event as OpenCodeEvent,
   Message as OpenCodeMessage,
@@ -289,6 +290,7 @@ interface ActiveOpenCodeTurn {
   readonly toolNamesByCallId: Map<string, string>;
   mcpServerNames?: ReadonlyArray<string>;
   readonly providerTurn: OrchestrationV2ProviderTurn;
+  lastTextDeltaPartId: string | null;
   nextItemOrdinal: number;
   nativeUserMessageId: string | null;
   admissionMessageId: string | null;
@@ -386,7 +388,6 @@ interface OpenCodeThreadState {
   appThread: OrchestrationV2AppThread | null;
   activeTurn: ActiveOpenCodeTurn | null;
   readonly providerTurns: Map<string, OrchestrationV2ProviderTurn>;
-  readonly messages: Map<string, OrchestrationV2ConversationMessage>;
   readonly runtimeRequests: Map<string, OrchestrationV2RuntimeRequest>;
   readonly messageRoles: Map<string, "user" | "assistant">;
   readonly userMessageIds: Array<string>;
@@ -1258,7 +1259,6 @@ export function makeOpenCodeAdapterV2(
               createdAt: startedAt,
               updatedAt: emittedAt,
             };
-            state.messages.set(String(message.id), message);
             yield* emitProviderEvent({
               type: "message.updated",
               driver: OPENCODE_PROVIDER,
@@ -1429,7 +1429,6 @@ export function makeOpenCodeAdapterV2(
               appThread: childThread,
               activeTurn: null,
               providerTurns: new Map(),
-              messages: new Map(),
               runtimeRequests: new Map(),
               messageRoles: new Map(),
               userMessageIds: [],
@@ -2043,6 +2042,31 @@ export function makeOpenCodeAdapterV2(
           );
         });
 
+        const textDeltas = yield* makeProviderTextDeltaCoalescer({
+          flushIntervalMs: 50,
+          emit: (update) =>
+            Effect.gen(function* () {
+              const state = threads.get(update.turnId);
+              const turn = state?.activeTurn;
+              const part = turn?.parts.get(update.itemId);
+              if (state === undefined || turn == null) return;
+              if (part?.type === "text" || part?.type === "reasoning") {
+                // Parts also arrive as full snapshots, so project the latest native text.
+                yield* emitTextPart(state, turn, part, update.completed);
+              }
+            }),
+        });
+
+        const completeTextPart = (
+          state: OpenCodeThreadState,
+          part: Extract<OpenCodePart, { type: "text" | "reasoning" }>,
+        ) =>
+          textDeltas.complete({
+            turnId: state.nativeSessionId,
+            itemId: part.id,
+            finalText: part.text,
+          });
+
         const finalizeTurn = Effect.fnUntraced(function* (
           state: OpenCodeThreadState,
           turn: ActiveOpenCodeTurn,
@@ -2061,9 +2085,10 @@ export function makeOpenCodeAdapterV2(
           const completedAt = yield* DateTime.now;
           for (const part of turn.parts.values()) {
             if (part.type === "text" || part.type === "reasoning") {
-              yield* emitTextPart(state, turn, part, true);
+              yield* completeTextPart(state, part);
             }
           }
+          yield* textDeltas.flushTurn(state.nativeSessionId);
           for (const pending of Array.from(pendingRequests.values())) {
             if (
               pending.turn.providerTurnId === turn.providerTurnId ||
@@ -2266,6 +2291,7 @@ export function makeOpenCodeAdapterV2(
             partIdsByMessage: new Map(),
             toolNamesByCallId: new Map(),
             providerTurn,
+            lastTextDeltaPartId: null,
             nextItemOrdinal: 1,
             nativeUserMessageId: message.id,
             admissionMessageId: null,
@@ -2336,7 +2362,6 @@ export function makeOpenCodeAdapterV2(
             createdAt: turn.startedAt,
             updatedAt: now,
           };
-          state.messages.set(String(messageId), projected);
           yield* emitProviderEvent({
             type: "message.updated",
             driver: OPENCODE_PROVIDER,
@@ -2519,14 +2544,24 @@ export function makeOpenCodeAdapterV2(
             state === undefined ||
             turn === null ||
             turn === undefined ||
+            turn.finalized ||
             current === undefined ||
             (current.type !== "text" && current.type !== "reasoning")
           ) {
             return;
           }
+          if (turn.lastTextDeltaPartId !== current.id) {
+            yield* textDeltas.flushPendingTurn(state.nativeSessionId);
+          }
+          turn.lastTextDeltaPartId = current.id;
           const updated = { ...current, text: current.text + event.properties.delta };
           turn.parts.set(updated.id, updated);
-          yield* emitTextPart(state, turn, updated);
+          itemOrdinal(turn, updated.id);
+          yield* textDeltas.append({
+            turnId: state.nativeSessionId,
+            itemId: updated.id,
+            delta: event.properties.delta,
+          });
         });
 
         const handleAssistantCompleted = Effect.fnUntraced(function* (
@@ -2545,12 +2580,18 @@ export function makeOpenCodeAdapterV2(
           for (const partId of turn.partIdsByMessage.get(message.id) ?? []) {
             const part = turn.parts.get(partId);
             if (part?.type === "text" || part?.type === "reasoning") {
-              yield* emitTextPart(state, turn, part, true);
+              yield* completeTextPart(state, part);
             }
           }
         });
 
         const handleEvent = Effect.fnUntraced(function* (event: OpenCodeEvent) {
+          if (event.type !== "message.part.delta") {
+            for (const state of threads.values()) {
+              if (state.activeTurn !== null)
+                yield* textDeltas.flushPendingTurn(state.nativeSessionId);
+            }
+          }
           yield* logProtocolEvent({
             direction: "incoming",
             messageKind: "notification",
@@ -2812,8 +2853,12 @@ export function makeOpenCodeAdapterV2(
 
         yield* Scope.addFinalizer(
           scope,
-          Effect.sync(() => {
+          Effect.gen(function* () {
             closing = true;
+            for (const state of threads.values()) {
+              if (state.activeTurn !== null)
+                yield* finalizeTurn(state, state.activeTurn, "cancelled");
+            }
           }),
         );
 
@@ -2834,7 +2879,6 @@ export function makeOpenCodeAdapterV2(
             appThread,
             activeTurn: null,
             providerTurns: new Map(),
-            messages: new Map(),
             runtimeRequests: new Map(),
             messageRoles: new Map(),
             userMessageIds: [],
@@ -3202,6 +3246,7 @@ export function makeOpenCodeAdapterV2(
                 partIdsByMessage: new Map(),
                 toolNamesByCallId: new Map(),
                 providerTurn,
+                lastTextDeltaPartId: null,
                 nextItemOrdinal: turnInput.providerTurnOrdinal * 100 + 1,
                 nativeUserMessageId: null,
                 admissionMessageId,
@@ -3445,6 +3490,7 @@ export function makeOpenCodeAdapterV2(
                   `OpenCode turn ${interruptInput.providerTurnId} is not active`,
                 );
               }
+              yield* textDeltas.flushPendingTurn(sessionId);
               turn.interrupted = true;
               for (const controller of commandControllers.get(sessionId) ?? []) controller.abort();
               const admissionWasPending = turn.admissionPending;
