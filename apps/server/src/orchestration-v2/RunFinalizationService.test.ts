@@ -141,6 +141,10 @@ it.effect.each(["missing-scope", "read-failure"] as const)(
     const threadId = ThreadId.make("thread:finalization-error");
     const runId = RunId.make("run:finalization-error");
     const scopeId = CheckpointScopeId.make("scope:finalization-error");
+    const readError = new ProjectionStore.ProjectionStoreReadError({
+      threadId,
+      cause: "read failed",
+    });
     const refresh = vi.fn(() => Effect.void);
     const layer = RunFinalization.layer.pipe(
       Layer.provide(
@@ -150,12 +154,7 @@ it.effect.each(["missing-scope", "read-failure"] as const)(
             getCheckpointContext: () =>
               scenario === "missing-scope"
                 ? Effect.succeed({ runs: [], checkpointScopes: [], checkpoints: [] })
-                : Effect.fail(
-                    new ProjectionStore.ProjectionStoreReadError({
-                      threadId,
-                      cause: "read failed",
-                    }),
-                  ),
+                : Effect.fail(readError),
           }),
           Layer.succeed(RunFinalization.RunFinalizationObserver, {
             refresh,
@@ -176,6 +175,7 @@ it.effect.each(["missing-scope", "read-failure"] as const)(
             error.operation,
             scenario === "missing-scope" ? "missing-checkpoint-scope" : "read-checkpoint-context",
           );
+          assert.strictEqual(error.cause, scenario === "missing-scope" ? undefined : readError);
         }
       }
       assert.equal(refresh.mock.calls.length, 0);

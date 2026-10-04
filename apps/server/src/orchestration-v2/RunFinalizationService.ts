@@ -22,7 +22,7 @@ export class RunFinalizationError extends Schema.TaggedError<RunFinalizationErro
       "missing-checkpoint-scope",
       "refresh-workspace",
     ]),
-    cause: Schema.Defect(),
+    cause: Schema.optional(Schema.Defect()),
   },
 ) {}
 
@@ -81,7 +81,6 @@ const make = Effect.gen(function* () {
       return yield* new RunFinalizationError({
         ...input,
         operation: "missing-checkpoint-scope",
-        cause: `Checkpoint scope ${input.scopeId} was not found after capture.`,
       });
     }
     yield* observer
