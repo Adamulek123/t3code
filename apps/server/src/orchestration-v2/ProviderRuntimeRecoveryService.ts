@@ -751,7 +751,6 @@ export const make = Effect.gen(function* () {
               : Effect.logError("orchestration-v2.runtime-recovery.thread-failed", {
                   trigger,
                   threadId,
-                  cause,
                 }).pipe(Effect.as(null)),
           ),
         );
