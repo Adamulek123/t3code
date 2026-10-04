@@ -313,8 +313,8 @@ export const layer: Layer.Layer<
         const obsolete: number[] = [];
         for (const row of rows) {
           if (row.imported_legacy_thread === 1) {
-            // Keep the log's high-water row even when it is imported V1 history.
-            // Consumers deriving a cursor from MAX(sequence) must not move backwards.
+            // Retain the highest-sequence row so future unfiltered cursor readers cannot regress.
+            // Current V2 cursors filter out this imported V1 history.
             if (row.sequence !== highWaterSequence) obsolete.push(row.sequence);
           } else if (row.application_event_version === 2) {
             if (
@@ -408,7 +408,7 @@ export const layer: Layer.Layer<
 
 const MAINTENANCE_INTERVAL_MS = 60 * 60 * 1_000;
 
-/** Verify before pruning; drift needs an explicit rebuild rather than automatic data replacement. */
+/** Verify before pruning; repair drift offline with `t3 projections rebuild`. */
 export const workerLive = Layer.effectDiscard(
   Effect.gen(function* () {
     const maintenance = yield* ProjectionMaintenanceV2;

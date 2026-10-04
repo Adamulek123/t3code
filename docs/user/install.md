@@ -164,6 +164,19 @@ For provider-specific setup and accounts, see [Codex](./providers-codex.md),
 [Claude](./providers-claude.md), [OpenCode](./providers-opencode.md),
 [Antigravity](./providers-antigravity.md), and [Pi](./providers-pi.md).
 
+## Repairing thread data
+
+If server logs report "Projection integrity verification failed", stop the server
+for that environment and run `npx t3 projections verify` on its machine. The
+command prints the database path and any detected inconsistencies. Run
+`npx t3 projections rebuild` to rebuild thread data from its event history, then
+restart the server. Both commands exit unsuccessfully if verification fails.
+
+For a custom data directory, pass `--base-dir <T3 home>` to both commands. Use
+`--dev-url <web URL>` only for a development server that uses the `dev` state
+directory instead of `userdata`. Take a backup of the data directory before
+rebuilding.
+
 ## Next steps
 
 - [Working with threads](./thread-sidebar.md): start tasks and organize parallel work.

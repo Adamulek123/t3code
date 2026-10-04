@@ -1,4 +1,6 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
+import * as NetService from "@t3tools/shared/Net";
 import {
   CommandId,
   EventId,
@@ -7,21 +9,34 @@ import {
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
+import * as Predicate from "effect/Predicate";
 import * as Queue from "effect/Queue";
 import * as EffectScheduler from "effect/Scheduler";
+import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
+import * as TestConsole from "effect/testing/TestConsole";
 import * as Tracer from "effect/Tracer";
+import { Command } from "effect/unstable/cli";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
-import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import { cli } from "../binCli.ts";
+import {
+  makeSqlitePersistenceLive,
+  SqlitePersistenceMemory,
+} from "../persistence/Layers/Sqlite.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
+import { ServerActivation } from "../serverActivation.ts";
+import { PersistedServerRuntimeState } from "../serverRuntimeState.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as EventSink from "./EventSink.ts";
 import * as EventStore from "./EventStore.ts";
@@ -122,7 +137,7 @@ const captureSweeps = Effect.gen(function* () {
 });
 
 it.effect(
-  "preserves the high-water row and verifies and rebuilds after compacting an actual V1 import",
+  "retains the high-water row and rebuilds the imported transcript after V1 compaction",
   () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -202,7 +217,7 @@ it.effect(
     }).pipe(Effect.provide(TestLayer)),
 );
 
-it.effect("keeps V2 command deduplication after compaction", () =>
+it.effect("deduplicates a V2 command after compaction deletes its superseded event", () =>
   Effect.gen(function* () {
     const thread = yield* seedThread("thread:maintenance-receipt");
     const sink = yield* EventSink.EventSinkV2;
@@ -227,13 +242,113 @@ it.effect("keeps V2 command deduplication after compaction", () =>
       effects: [],
     };
     const original = yield* sink.commitCommand(input);
+    yield* sink.write({
+      events: [
+        {
+          ...input.events[0]!,
+          id: EventId.make("event:maintenance-receipt:superseding"),
+          payload: { ...thread, title: "Superseding update" },
+        },
+      ],
+    });
     yield* maintenance.compactEventStore;
+    const sql = yield* SqlClient.SqlClient;
+    assert.lengthOf(
+      yield* sql`SELECT sequence FROM orchestration_events WHERE event_id = ${input.events[0]!.id}`,
+      0,
+    );
     const beforeRetry = yield* eventCount(thread.id);
     const replay = yield* sink.commitCommand(input);
+    assert.deepEqual(replay.storedEvents, []);
     assert.equal(replay.receipt.resultSequence, original.receipt.resultSequence);
     assert.deepEqual(yield* receipts.getByCommandId(commandId), Option.some(original.receipt));
     assert.equal(yield* eventCount(thread.id), beforeRetry);
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    assert.equal(
+      (yield* projections.getThreadProjection(thread.id)).thread.title,
+      "Superseding update",
+    );
   }).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect("verifies and repairs drift through the CLI and refuses a running server", () =>
+  Effect.gen(function* () {
+    const thread = yield* seedThread("thread:maintenance-cli");
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const testRoot = path.join(process.cwd(), ".t3");
+    yield* fs.makeDirectory(testRoot, { recursive: true });
+    const baseDir = yield* fs.makeTempDirectoryScoped({
+      directory: testRoot,
+      prefix: "projections-",
+    });
+    const stateDir = path.join(baseDir, "userdata");
+    yield* fs.makeDirectory(stateDir);
+    const dbPath = path.join(stateDir, "statev2.sqlite");
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`VACUUM INTO ${dbPath}`;
+    const run = (action: "verify" | "rebuild") =>
+      Command.runWith(cli, { version: "0.0.0" })([
+        "projections",
+        action,
+        "--base-dir",
+        baseDir,
+      ]).pipe(
+        // Each CLI process has its own stores, separate from the in-memory fixture.
+        Effect.provideService(Layer.CurrentMemoMap, Layer.makeMemoMapUnsafe()),
+      );
+    const onDisk = makeSqlitePersistenceLive(dbPath);
+    yield* run("verify");
+    yield* Effect.scoped(
+      Effect.gen(function* () {
+        const diskSql = yield* SqlClient.SqlClient;
+        yield* diskSql`UPDATE orchestration_v2_projection_threads SET payload_json = '{}' WHERE thread_id = ${thread.id}`;
+      }).pipe(Effect.provide(onDisk)),
+    );
+    assert.isTrue(
+      Predicate.isTagged("ProjectionVerificationFailedError")(
+        yield* run("verify").pipe(Effect.flip),
+      ),
+    );
+    yield* run("rebuild");
+    yield* run("verify");
+    const lines = (yield* TestConsole.logLines).filter(
+      (line): line is string => typeof line === "string" && line.startsWith("{"),
+    );
+    assert.lengthOf(lines, 4);
+    assert.include(String(lines[1]), '"valid": false');
+    assert.include(String(lines[1]), thread.id);
+    assert.include(String(lines[2]), '"valid": true');
+    yield* Effect.scoped(
+      Effect.gen(function* () {
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        assert.equal((yield* projections.getThreadProjection(thread.id)).thread.title, "latest");
+      }).pipe(Effect.provide(Layer.fresh(ProjectionStore.layer.pipe(Layer.provide(onDisk))))),
+    );
+    yield* fs.writeFileString(
+      path.join(stateDir, "server-runtime.json"),
+      yield* Schema.encodeEffect(Schema.fromJsonString(PersistedServerRuntimeState))({
+        version: 1,
+        pid: process.pid,
+        port: 3773,
+        origin: "http://localhost:3773",
+        startedAt: DateTime.formatIso(yield* DateTime.now),
+      }),
+    );
+    for (const action of ["verify", "rebuild"] as const) {
+      assert.isTrue(
+        Predicate.isTagged("ProjectionServerRunningError")(yield* run(action).pipe(Effect.flip)),
+      );
+    }
+  }).pipe(
+    Effect.provide([
+      TestLayer,
+      NodeServices.layer,
+      NetService.layer,
+      TestConsole.layer,
+      ConfigProvider.layer(ConfigProvider.fromUnknown({})),
+    ]),
+  ),
 );
 
 it.effect("protects unfinished runs, effects, and runtime requests until they settle", () =>
@@ -294,32 +409,41 @@ it.effect("protects unfinished runs, effects, and runtime requests until they se
   }).pipe(Effect.provide(TestLayer)),
 );
 
-it.effect("runs maintenance at registration and hourly rather than on every scheduler tick", () =>
-  Effect.gen(function* () {
-    const thread = yield* seedThread("thread:maintenance-schedule");
-    const { receipts, layer } = yield* captureSweeps;
-    yield* Effect.gen(function* () {
-      yield* withWorker();
-      assert.include(yield* Queue.take(receipts), "Projection maintenance completed");
-      assert.equal(yield* eventCount(thread.id), 2);
-      const sink = yield* EventSink.EventSinkV2;
-      const now = yield* DateTime.now;
-      yield* sink.write({
-        events: ["next-old", "next-latest"].map((title) => ({
-          id: EventId.make(`${thread.id}:${title}`),
-          type: "thread.metadata-updated" as const,
-          threadId: thread.id,
-          occurredAt: now,
-          payload: { ...thread, title },
-        })),
-      });
-      yield* TestClock.adjust("3595 seconds");
-      assert.equal(yield* eventCount(thread.id), 4);
-      yield* TestClock.adjust("5 seconds");
-      assert.include(yield* Queue.take(receipts), "Projection maintenance completed");
-      assert.equal(yield* eventCount(thread.id), 2);
-    }).pipe(Effect.provide(layer));
-  }).pipe(Effect.provide(TestLayer)),
+it.effect(
+  "parks maintenance until server activation, then runs hourly instead of on every tick",
+  () =>
+    Effect.gen(function* () {
+      const thread = yield* seedThread("thread:maintenance-schedule");
+      const { receipts, layer } = yield* captureSweeps;
+      const activation = yield* Deferred.make<void>();
+      yield* Effect.gen(function* () {
+        yield* withWorker();
+        yield* TestClock.adjust("10 seconds");
+        assert.equal(yield* eventCount(thread.id), 3);
+        yield* Deferred.succeed(activation, undefined);
+        assert.include(yield* Queue.take(receipts), "Projection maintenance completed");
+        assert.equal(yield* eventCount(thread.id), 2);
+        const sink = yield* EventSink.EventSinkV2;
+        const now = yield* DateTime.now;
+        yield* sink.write({
+          events: ["next-old", "next-latest"].map((title) => ({
+            id: EventId.make(`${thread.id}:${title}`),
+            type: "thread.metadata-updated" as const,
+            threadId: thread.id,
+            occurredAt: now,
+            payload: { ...thread, title },
+          })),
+        });
+        yield* TestClock.adjust("3595 seconds");
+        assert.equal(yield* eventCount(thread.id), 4);
+        yield* TestClock.adjust("5 seconds");
+        assert.include(yield* Queue.take(receipts), "Projection maintenance completed");
+        assert.equal(yield* eventCount(thread.id), 2);
+      }).pipe(
+        Effect.provide(layer),
+        Effect.provideService(ServerActivation, Deferred.await(activation)),
+      );
+    }).pipe(Effect.provide(TestLayer)),
 );
 
 it.effect("rechecks unfinished work after compaction discovery yields", () =>
