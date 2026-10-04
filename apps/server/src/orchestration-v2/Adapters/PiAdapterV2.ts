@@ -1413,23 +1413,28 @@ export function makePiAdapterV2(
         };
       });
 
-      const finalizeTurn = Effect.fnUntraced(function* (state: PiThreadState, readUsage = true) {
+      const finalizeTurn = Effect.fnUntraced(function* (
+        state: PiThreadState,
+        readUsage = true,
+        cancelled = false,
+      ) {
         const turn = state.activeTurn;
         if (turn === null) return;
         state.activeTurn = null;
         const completedAt = yield* DateTime.now;
         yield* completeOpenStreamItems(turn);
         if (turn.activeCompaction !== null) {
-          const status = turn.interrupted
-            ? "cancelled"
-            : turn.failure === null
-              ? "completed"
-              : "failed";
+          const status =
+            cancelled || turn.interrupted
+              ? "cancelled"
+              : turn.failure === null
+                ? "completed"
+                : "failed";
           yield* emitCompaction(turn, turn.activeCompaction, status);
           turn.activeCompaction = null;
         }
         if (turn.activeProviderRetry !== null) {
-          if (turn.interrupted) {
+          if (cancelled || turn.interrupted) {
             yield* emitProviderRetry(turn, turn.activeProviderRetry, "interrupted", completedAt);
             turn.activeProviderRetry = null;
           } else if (turn.failure === null) {
@@ -1443,7 +1448,7 @@ export function makePiAdapterV2(
         const tokenUsage = readUsage
           ? yield* readTokenUsage(turn.latestCompactionAfterTokens, completedAt)
           : undefined;
-        const failure = turn.interrupted ? null : turn.failure;
+        const failure = cancelled || turn.interrupted ? null : turn.failure;
         yield* emit({
           type: "provider_turn.updated",
           driver: PI_PROVIDER,
@@ -1453,7 +1458,13 @@ export function makePiAdapterV2(
             ...(treeRefs?.turnStartEntryId == null
               ? {}
               : { nativeTurnRef: providerRef(treeRefs.turnStartEntryId) }),
-            status: turn.interrupted ? "interrupted" : failure !== null ? "failed" : "completed",
+            status: cancelled
+              ? "cancelled"
+              : turn.interrupted
+                ? "interrupted"
+                : failure !== null
+                  ? "failed"
+                  : "completed",
             completedAt,
             ...(tokenUsage === undefined ? {} : { tokenUsage }),
           },
@@ -1515,7 +1526,7 @@ export function makePiAdapterV2(
             providerThreadId: state.providerThread.id,
             providerTurnId: turn.providerTurn.id,
             runOrdinal: turn.turnInput.runOrdinal,
-            status: turn.interrupted ? "interrupted" : "completed",
+            status: cancelled ? "cancelled" : turn.interrupted ? "interrupted" : "completed",
             failure: null,
             threadDisposition: "reusable",
           });
@@ -2854,9 +2865,7 @@ export function makePiAdapterV2(
       yield* Effect.addFinalizer(() =>
         sessionEventPermit.withPermits(1)(
           Effect.suspend(() =>
-            threadState?.activeTurn == null
-              ? Effect.void
-              : completeOpenStreamItems(threadState.activeTurn),
+            threadState?.activeTurn == null ? Effect.void : finalizeTurn(threadState, false, true),
           ),
         ),
       );

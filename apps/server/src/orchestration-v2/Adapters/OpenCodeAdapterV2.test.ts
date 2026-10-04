@@ -240,174 +240,195 @@ const makeOpenCodeRuntimeHarness = Effect.fn("makeOpenCodeRuntimeHarness")(funct
 });
 
 describe("OpenCodeAdapterV2", () => {
-  it.effect.each(["completed", "failed", "interrupted", "teardown"] as const)(
-    "coalesces text bursts in order and flushes the tail on %s",
-    (ending) =>
-      Effect.gen(function* () {
-        const sessionScope = yield* Scope.make();
-        yield* Effect.addFinalizer(() => Scope.close(sessionScope, Exit.void));
-        const nativeEvents = asyncEventStream();
-        const harness = yield* makeOpenCodeRuntimeHarness(
-          `deltas-${ending}`,
-          "root",
-          {
-            event: { subscribe: async () => ({ stream: nativeEvents.stream }) },
-            session: {
-              create: async () => ({ data: { id: "root", time: { created: 1, updated: 1 } } }),
-              promptAsync: async () => ({ data: true }),
-              abort: async () => ({ data: true }),
-              children: async () => ({ data: [] }),
-            },
+  it.effect.each(
+    (["completed", "failed", "interrupted", "teardown"] as const).flatMap((ending) =>
+      (["delta", "snapshot", "mixed"] as const).map((path) => ({ ending, path })),
+    ),
+  )("coalesces $path text bursts in order and flushes the tail on $ending", ({ ending, path }) =>
+    Effect.gen(function* () {
+      const sessionScope = yield* Scope.make();
+      yield* Effect.addFinalizer(() => Scope.close(sessionScope, Exit.void));
+      const nativeEvents = asyncEventStream();
+      const harness = yield* makeOpenCodeRuntimeHarness(
+        `deltas-${ending}`,
+        "root",
+        {
+          event: { subscribe: async () => ({ stream: nativeEvents.stream }) },
+          session: {
+            create: async () => ({ data: { id: "root", time: { created: 1, updated: 1 } } }),
+            promptAsync: async () => ({ data: true }),
+            abort: async () => ({ data: true }),
+            children: async () => ({ data: [] }),
           },
-          sessionScope,
-        );
-        yield* harness.startTurn();
-        const runningTurn = yield* Deferred.make<OrchestrationV2ProviderTurn>();
-        const received = yield* harness.runtime.events.pipe(
-          Stream.tap((event) =>
-            event.type === "provider_turn.updated" && event.providerTurn.status === "running"
-              ? Deferred.succeed(runningTurn, event.providerTurn)
-              : Effect.void,
-          ),
-          Stream.takeUntil((event) => event.type === "turn.terminal"),
-          Stream.runCollect,
-          Effect.forkScoped,
-        );
-        const push = (event: unknown) => Effect.promise(() => nativeEvents.push(event));
-        const part = (id: string, type: "text" | "reasoning", text = "") => ({
-          id,
-          type,
-          text,
-          sessionID: "root",
-          messageID: "assistant",
-          time: { start: 1 },
-        });
-        const deltas = Array.from({ length: 64 }, (_, i) => `${i}:ą🙂\n`);
-        const text = deltas.join("");
-        for (const [id, type] of [
-          ["before", "text"],
-          ["thinking", "reasoning"],
-        ] as const) {
-          yield* push({
-            type: "message.part.updated",
-            properties: { part: part(id, type, "seed:") },
-          });
-          for (const delta of deltas) {
-            yield* push({
-              type: "message.part.delta",
-              properties: {
-                sessionID: "root",
-                messageID: "assistant",
-                partID: id,
-                field: "text",
-                delta,
-              },
-            });
-          }
-        }
+        },
+        sessionScope,
+      );
+      yield* harness.startTurn();
+      const runningTurn = yield* Deferred.make<OrchestrationV2ProviderTurn>();
+      const received = yield* harness.runtime.events.pipe(
+        Stream.tap((event) =>
+          event.type === "provider_turn.updated" && event.providerTurn.status === "running"
+            ? Deferred.succeed(runningTurn, event.providerTurn)
+            : Effect.void,
+        ),
+        Stream.takeUntil((event) => event.type === "turn.terminal"),
+        Stream.runCollect,
+        Effect.forkScoped,
+      );
+      const push = (event: unknown) => Effect.promise(() => nativeEvents.push(event));
+      const part = (id: string, type: "text" | "reasoning", text = "") => ({
+        id,
+        type,
+        text,
+        sessionID: "root",
+        messageID: "assistant",
+        time: { start: 1 },
+      });
+      const deltas = Array.from({ length: 64 }, (_, i) => `${i}:ą🙂\n`);
+      const text = deltas.join("");
+      for (const [id, type] of [
+        ["before", "text"],
+        ["thinking", "reasoning"],
+      ] as const) {
         yield* push({
           type: "message.part.updated",
+          properties: { part: part(id, type, "seed:") },
+        });
+        let accumulated = "seed:";
+        for (const [index, delta] of deltas.entries()) {
+          accumulated += delta;
+          yield* push(
+            path === "snapshot" || (path === "mixed" && index % 2 === 0)
+              ? {
+                  type: "message.part.updated",
+                  properties: { part: part(id, type, accumulated) },
+                }
+              : {
+                  type: "message.part.delta",
+                  properties: {
+                    sessionID: "root",
+                    messageID: "assistant",
+                    partID: id,
+                    field: "text",
+                    delta,
+                  },
+                },
+          );
+        }
+      }
+      yield* push({
+        type: "message.part.updated",
+        properties: {
+          part: {
+            id: "tool",
+            type: "tool",
+            sessionID: "root",
+            messageID: "assistant",
+            callID: "tool-call",
+            tool: "bash",
+            state: { status: "running", input: { command: "echo test" }, time: { start: 1 } },
+          },
+        },
+      });
+      yield* push({ type: "message.part.updated", properties: { part: part("tail", "text") } });
+      for (const delta of deltas.slice(0, 32)) {
+        yield* push({
+          type: "message.part.delta",
           properties: {
-            part: {
-              id: "tool",
-              type: "tool",
+            sessionID: "root",
+            messageID: "assistant",
+            partID: "tail",
+            field: "text",
+            delta,
+          },
+        });
+      }
+      yield* TestClock.adjust(50);
+      for (const delta of deltas.slice(32)) {
+        yield* push({
+          type: "message.part.delta",
+          properties: {
+            sessionID: "root",
+            messageID: "assistant",
+            partID: "tail",
+            field: "text",
+            delta,
+          },
+        });
+      }
+      if (ending === "teardown") {
+        yield* Scope.close(sessionScope, Exit.void);
+      } else if (ending === "interrupted") {
+        const turn = yield* Deferred.await(runningTurn);
+        yield* harness.runtime.interruptTurn({
+          providerThread: harness.providerThread,
+          providerTurnId: turn.id,
+        });
+        yield* push({
+          type: "session.error",
+          properties: {
+            sessionID: "root",
+            error: { name: "MessageAbortedError", data: { message: "aborted" } },
+          },
+        });
+      } else if (ending === "failed") {
+        yield* push({
+          type: "session.error",
+          properties: {
+            sessionID: "root",
+            error: { name: "UnknownError", data: { message: "failed" } },
+          },
+        });
+      } else {
+        yield* push({
+          type: "message.updated",
+          properties: {
+            info: {
+              id: "assistant",
               sessionID: "root",
-              messageID: "assistant",
-              callID: "tool-call",
-              tool: "bash",
-              state: { status: "running", input: { command: "echo test" }, time: { start: 1 } },
+              role: "assistant",
+              time: { created: 1, completed: 2 },
             },
           },
         });
-        yield* push({ type: "message.part.updated", properties: { part: part("tail", "text") } });
-        for (const delta of deltas.slice(0, 32)) {
-          yield* push({
-            type: "message.part.delta",
-            properties: {
-              sessionID: "root",
-              messageID: "assistant",
-              partID: "tail",
-              field: "text",
-              delta,
-            },
-          });
-        }
-        yield* TestClock.adjust(50);
-        for (const delta of deltas.slice(32)) {
-          yield* push({
-            type: "message.part.delta",
-            properties: {
-              sessionID: "root",
-              messageID: "assistant",
-              partID: "tail",
-              field: "text",
-              delta,
-            },
-          });
-        }
-        if (ending === "teardown") {
-          yield* Scope.close(sessionScope, Exit.void);
-        } else if (ending === "interrupted") {
-          const turn = yield* Deferred.await(runningTurn);
-          yield* harness.runtime.interruptTurn({
-            providerThread: harness.providerThread,
-            providerTurnId: turn.id,
-          });
-          yield* push({
-            type: "session.error",
-            properties: {
-              sessionID: "root",
-              error: { name: "MessageAbortedError", data: { message: "aborted" } },
-            },
-          });
-        } else if (ending === "failed") {
-          yield* push({
-            type: "session.error",
-            properties: {
-              sessionID: "root",
-              error: { name: "UnknownError", data: { message: "failed" } },
-            },
-          });
-        } else {
-          yield* push({
-            type: "message.updated",
-            properties: {
-              info: {
-                id: "assistant",
-                sessionID: "root",
-                role: "assistant",
-                time: { created: 1, completed: 2 },
-              },
-            },
-          });
-          yield* push({
-            type: "session.status",
-            properties: { sessionID: "root", status: { type: "idle" } },
-          });
-        }
-        const events = yield* Fiber.join(received);
-        const items = events
-          .filter((event) => event.type === "turn_item.updated")
-          .map((event) => event.turnItem);
-        const texts = items.filter((event) => event.type === "assistant_message");
-        assert.isBelow(texts.length, deltas.length);
-        assert.isBelow(events.length, deltas.length);
-        const completed = texts.filter((event) => !event.streaming);
-        assert.equal(
-          completed.find((event) => event.nativeItemRef?.nativeId === "before")?.text,
-          `seed:${text}`,
-        );
-        assert.equal(completed.at(-1)?.text, text);
-        const toolIndex = items.findIndex((event) => event.type === "command_execution");
-        assert.isAbove(toolIndex, 0);
-        assert.equal(items[toolIndex - 1]?.type, "reasoning");
-        const thinking = items[toolIndex - 1];
-        assert.equal(thinking?.type === "reasoning" ? thinking.text : undefined, `seed:${text}`);
-        assert.equal(items[toolIndex + 1]?.type, "assistant_message");
-        assert.isBelow(items[0]!.ordinal, items[toolIndex]!.ordinal);
-        assert.isAbove(items[toolIndex + 1]!.ordinal, items[toolIndex]!.ordinal);
-        assert.equal(events.at(-1)?.type, "turn.terminal");
-      }).pipe(Effect.provide(IdAllocator.layer), Effect.scoped),
+        yield* push({
+          type: "session.status",
+          properties: { sessionID: "root", status: { type: "idle" } },
+        });
+      }
+      const events = yield* Fiber.join(received);
+      const items = events
+        .filter((event) => event.type === "turn_item.updated")
+        .map((event) => event.turnItem);
+      const texts = items.filter((event) => event.type === "assistant_message");
+      assert.isAtMost(texts.filter((item) => item.streaming).length, 4);
+      assert.isAtMost(
+        events.filter((event) => event.type === "message.updated" && event.message.streaming)
+          .length,
+        4,
+      );
+      const completed = texts.filter((event) => !event.streaming);
+      assert.equal(
+        completed.find((event) => event.nativeItemRef?.nativeId === "before")?.text,
+        `seed:${text}`,
+      );
+      assert.equal(completed.at(-1)?.text, text);
+      const toolIndex = items.findIndex((event) => event.type === "command_execution");
+      assert.isAbove(toolIndex, 0);
+      assert.equal(items[toolIndex - 1]?.type, "reasoning");
+      const thinking = items[toolIndex - 1];
+      assert.equal(thinking?.type === "reasoning" ? thinking.text : undefined, `seed:${text}`);
+      assert.equal(items[toolIndex + 1]?.type, "assistant_message");
+      // `ordinal` is reserved when a part first buffers a delta, so it cannot order
+      // events. The two text segments straddle the tool in emission order.
+      const leadingText = items.findIndex((event) => event.type === "assistant_message");
+      const trailingText = items.findIndex(
+        (event, index) => index > toolIndex && event.type === "assistant_message",
+      );
+      assert.isBelow(leadingText, toolIndex);
+      assert.isAbove(trailingText, toolIndex);
+      assert.equal(events.at(-1)?.type, "turn.terminal");
+    }).pipe(Effect.provide(IdAllocator.layer), Effect.scoped),
   );
 
   it.effect.each(["completed", "failed", "unresolved", "unavailable", "reconnect"] as const)(

@@ -352,8 +352,12 @@ const openRuntime = Effect.fnUntraced(function* (
     })
     .pipe(Effect.provideService(Scope.Scope, sessionScope ?? (yield* Effect.scope)));
   const emitted = yield* Queue.unbounded<ProviderAdapterV2Event>();
+  const capturedEvents: Array<ProviderAdapterV2Event> = [];
   yield* runtime.events.pipe(
-    Stream.runForEach((event) => Queue.offer(emitted, event)),
+    Stream.runForEach((event) => {
+      capturedEvents.push(event);
+      return Queue.offer(emitted, event);
+    }),
     Effect.forkScoped,
   );
   const takeEvent = (predicate: (event: ProviderAdapterV2Event) => boolean) =>
@@ -363,7 +367,7 @@ const openRuntime = Effect.fnUntraced(function* (
         if (predicate(event)) return event;
       }
     });
-  return { runtime, takeEvent };
+  return { runtime, takeEvent, capturedEvents };
 });
 
 const makeAppThread = Effect.fnUntraced(function* (model: string, threadId = THREAD_ID) {
@@ -473,7 +477,7 @@ describe("PiAdapterV2", () => {
         const fake = yield* makeFakePi;
         const sessionScope = yield* Scope.make();
         yield* Effect.addFinalizer(() => Scope.close(sessionScope, Exit.void));
-        const { runtime, takeEvent } = yield* openRuntime(
+        const { runtime, takeEvent, capturedEvents } = yield* openRuntime(
           fake,
           "default",
           THREAD_ID,
@@ -552,22 +556,18 @@ describe("PiAdapterV2", () => {
               yield* fake.emit({ type: "agent_settled" });
             }
           }
-          if (
-            event.type === "turn.terminal" ||
-            (ending === "teardown" &&
-              event.type === "turn_item.updated" &&
-              event.turnItem.type === "assistant_message" &&
-              !event.turnItem.streaming &&
-              event.turnItem.nativeItemRef?.nativeId?.endsWith(":c2") === true)
-          )
-            break;
+          if (event.type === "turn.terminal") break;
         }
         const items = events
           .filter((event) => event.type === "turn_item.updated")
           .map((event) => event.turnItem);
         const texts = items.filter((event) => event.type === "assistant_message");
-        assert.isBelow(texts.length, deltas.length);
-        assert.isBelow(events.length, deltas.length);
+        assert.isAtMost(texts.filter((item) => item.streaming).length, 4);
+        assert.isAtMost(
+          events.filter((event) => event.type === "message.updated" && event.message.streaming)
+            .length,
+          4,
+        );
         assert.deepEqual(
           texts.filter((event) => !event.streaming).map((event) => event.text),
           [text, text],
@@ -577,11 +577,26 @@ describe("PiAdapterV2", () => {
         assert.equal(items[toolIndex - 1]?.type, "reasoning");
         const thinking = items[toolIndex - 1];
         assert.equal(thinking?.type === "reasoning" ? thinking.text : undefined, text);
-        assert.isBelow(items[0]!.ordinal, items[toolIndex]!.ordinal);
-        assert.isAbove(texts.at(-1)!.ordinal, items[toolIndex]!.ordinal);
+        // `ordinal` is reserved when a segment first buffers a delta, so it cannot
+        // order events. The two text segments straddle the tool in emission order.
+        const leadingText = items.findIndex((event) => event.type === "assistant_message");
+        const trailingText = items.findIndex(
+          (event, index) => index > toolIndex && event.type === "assistant_message",
+        );
+        assert.isBelow(leadingText, toolIndex);
+        assert.isAbove(trailingText, toolIndex);
+        assert.equal(events.at(-1)?.type, "turn.terminal");
+        const terminal = events.at(-1);
         assert.equal(
-          events.at(-1)?.type,
-          ending === "teardown" ? "turn_item.updated" : "turn.terminal",
+          terminal?.type === "turn.terminal" ? terminal.status : undefined,
+          ending === "teardown" ? "cancelled" : ending,
+        );
+        // Closing an already finalized turn must leave no second terminal in the queue.
+        yield* Scope.close(sessionScope, Exit.void);
+        yield* TestClock.adjust(0);
+        assert.lengthOf(
+          capturedEvents.filter((event) => event.type === "turn.terminal"),
+          1,
         );
       }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );

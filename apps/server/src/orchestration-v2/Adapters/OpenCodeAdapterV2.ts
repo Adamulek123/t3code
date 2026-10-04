@@ -2042,10 +2042,12 @@ export function makeOpenCodeAdapterV2(
           );
         });
 
+        const pendingTextTurns = new Set<string>();
         const textDeltas = yield* makeProviderTextDeltaCoalescer({
           flushIntervalMs: 50,
           emit: (update) =>
             Effect.gen(function* () {
+              if (!update.completed) pendingTextTurns.delete(update.turnId);
               const state = threads.get(update.turnId);
               const turn = state?.activeTurn;
               const part = turn?.parts.get(update.itemId);
@@ -2061,11 +2063,32 @@ export function makeOpenCodeAdapterV2(
           state: OpenCodeThreadState,
           part: Extract<OpenCodePart, { type: "text" | "reasoning" }>,
         ) =>
-          textDeltas.complete({
-            turnId: state.nativeSessionId,
-            itemId: part.id,
-            finalText: part.text,
-          });
+          textDeltas
+            .complete({
+              turnId: state.nativeSessionId,
+              itemId: part.id,
+              finalText: part.text,
+            })
+            .pipe(
+              Effect.tap(() =>
+                Effect.sync(() => {
+                  if (state.activeTurn?.lastTextDeltaPartId === part.id)
+                    pendingTextTurns.delete(state.nativeSessionId);
+                }),
+              ),
+            );
+
+        const prepareTextPart = Effect.fnUntraced(function* (
+          state: OpenCodeThreadState,
+          turn: ActiveOpenCodeTurn,
+          partId: string,
+        ) {
+          if (turn.lastTextDeltaPartId !== partId) {
+            yield* textDeltas.flushPendingTurn(state.nativeSessionId);
+          }
+          turn.lastTextDeltaPartId = partId;
+          itemOrdinal(turn, partId);
+        });
 
         const finalizeTurn = Effect.fnUntraced(function* (
           state: OpenCodeThreadState,
@@ -2089,6 +2112,7 @@ export function makeOpenCodeAdapterV2(
             }
           }
           yield* textDeltas.flushTurn(state.nativeSessionId);
+          pendingTextTurns.delete(state.nativeSessionId);
           for (const pending of Array.from(pendingRequests.values())) {
             if (
               pending.turn.providerTurnId === turn.providerTurnId ||
@@ -2511,6 +2535,9 @@ export function makeOpenCodeAdapterV2(
             }
             return;
           }
+          if (part.type === "text" || part.type === "reasoning") {
+            yield* prepareTextPart(state, turn, part.id);
+          }
           if (part.type === "tool") {
             // Approval routing needs the tool name, without retaining its input and output.
             turn.toolNamesByCallId.set(part.callID, part.tool);
@@ -2523,7 +2550,17 @@ export function makeOpenCodeAdapterV2(
           switch (part.type) {
             case "text":
             case "reasoning":
-              yield* emitTextPart(state, turn, part);
+              if (part.time?.end !== undefined) {
+                yield* completeTextPart(state, part);
+              } else {
+                // A snapshot replaces accumulated deltas, including corrections and truncation.
+                pendingTextTurns.add(state.nativeSessionId);
+                yield* textDeltas.setText({
+                  turnId: state.nativeSessionId,
+                  itemId: part.id,
+                  text: part.text,
+                });
+              }
               return;
             case "tool":
               yield* emitToolPart(state, turn, part);
@@ -2550,13 +2587,10 @@ export function makeOpenCodeAdapterV2(
           ) {
             return;
           }
-          if (turn.lastTextDeltaPartId !== current.id) {
-            yield* textDeltas.flushPendingTurn(state.nativeSessionId);
-          }
-          turn.lastTextDeltaPartId = current.id;
+          yield* prepareTextPart(state, turn, current.id);
           const updated = { ...current, text: current.text + event.properties.delta };
           turn.parts.set(updated.id, updated);
-          itemOrdinal(turn, updated.id);
+          pendingTextTurns.add(state.nativeSessionId);
           yield* textDeltas.append({
             turnId: state.nativeSessionId,
             itemId: updated.id,
@@ -2586,10 +2620,12 @@ export function makeOpenCodeAdapterV2(
         });
 
         const handleEvent = Effect.fnUntraced(function* (event: OpenCodeEvent) {
-          if (event.type !== "message.part.delta") {
-            for (const state of threads.values()) {
-              if (state.activeTurn !== null)
-                yield* textDeltas.flushPendingTurn(state.nativeSessionId);
+          const streamingTextSnapshot =
+            event.type === "message.part.updated" &&
+            (event.properties.part.type === "text" || event.properties.part.type === "reasoning");
+          if (event.type !== "message.part.delta" && !streamingTextSnapshot) {
+            for (const sessionId of pendingTextTurns) {
+              yield* textDeltas.flushPendingTurn(sessionId);
             }
           }
           yield* logProtocolEvent({

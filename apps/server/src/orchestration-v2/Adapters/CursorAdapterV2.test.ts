@@ -270,8 +270,12 @@ describe("CursorAdapterV2", () => {
           completedTexts.map((event) => event.text),
           [text, text],
         );
-        assert.isBelow(texts.length, deltas.length);
-        assert.isBelow(events.length, deltas.length);
+        assert.isAtMost(texts.filter((item) => item.streaming).length, 4);
+        assert.isAtMost(
+          events.filter((event) => event.type === "message.updated" && event.message.streaming)
+            .length,
+          4,
+        );
         const reasoning = items.filter((event) => event.type === "reasoning");
         assert.deepEqual(
           reasoning.map((event) => event.text),
@@ -279,11 +283,36 @@ describe("CursorAdapterV2", () => {
         );
         const shell = items.filter((event) => event.type === "command_execution");
         assert.equal(shell.at(-1)?.output, text + text);
-        assert.isBelow(shell.length, deltas.length);
+        assert.isAtMost(shell.length, 5);
         assert.equal(items[0]?.type, "assistant_message");
-        assert.equal(items[1]?.type, "reasoning");
-        assert.isBelow(completedTexts[0]!.ordinal, shell[0]!.ordinal);
-        assert.isAbove(completedTexts[1]!.ordinal, shell[0]!.ordinal);
+        // `ordinal` is allocated when a stream segment first buffers a delta, so it says
+        // nothing about when an event was queued. A client only sees emission order,
+        // so these assert on the event array; every index below is an index into it.
+        const emitted = events.flatMap((event, index) =>
+          event.type === "turn_item.updated" ? [{ index, item: event.turnItem }] : [],
+        );
+        const types = emitted.map(({ item }) => item.type);
+        const firstTool = emitted.findIndex(
+          ({ item }) => item.type === "command_execution" || item.type === "subagent",
+        );
+        const reasoningItem = emitted.findIndex(({ item }) => item.type === "reasoning");
+        const lastAssistant = types.lastIndexOf("assistant_message");
+        // Reasoning stays its own item and reaches the client before the tool it precedes.
+        assert.isAbove(firstTool, 0);
+        assert.isAbove(reasoningItem, 0);
+        assert.isBelow(emitted[reasoningItem]!.index, emitted[firstTool]!.index);
+        // Text that follows the tool is projected after it, not pulled forward.
+        assert.isAbove(emitted[lastAssistant]!.index, emitted[firstTool]!.index);
+        // Shell output is a growing prefix of what arrived: coalescing never truncates
+        // or reorders it, and the terminal update carries the whole burst.
+        const shellOutputs = emitted.flatMap(({ item }) =>
+          item.type === "command_execution" ? [item.output ?? ""] : [],
+        );
+        assert.isTrue(shellOutputs.every((output) => (text + text).startsWith(output)));
+        assert.deepEqual(
+          shellOutputs,
+          [...shellOutputs].sort((left, right) => left.length - right.length),
+        );
         assert.equal(events.at(-1)?.type, "turn.terminal");
         const rows = events.filter((event) => event.type === "subagent.updated");
         assert.equal(rows[0]?.subagent.status, "running");
