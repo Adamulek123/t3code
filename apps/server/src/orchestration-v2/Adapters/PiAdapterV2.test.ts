@@ -1693,6 +1693,67 @@ describe("PiAdapterV2", () => {
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
+  it.effect("drops session approvals when pi moved to another session mid-turn", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi;
+      const { runtime, takeEvent } = yield* openRuntime(fake);
+      const providerThread = yield* runtime.ensureThread({
+        threadId: THREAD_ID,
+        modelSelection: modelSelection("default"),
+        runtimePolicy,
+      });
+      const prompt = {
+        type: "extension_ui_request",
+        method: "confirm",
+        title: "Run project extensions?",
+        message: "This project has .pi/extensions.",
+      };
+      yield* fake.emit({ ...prompt, id: "grant-in-turn" });
+      const granted = yield* takeEvent(
+        (event) =>
+          event.type === "runtime_request.updated" && event.runtimeRequest.status === "pending",
+      );
+      assert.equal(granted.type, "runtime_request.updated");
+      if (granted.type !== "runtime_request.updated") return;
+      yield* runtime.respondToRuntimeRequest({
+        requestId: granted.runtimeRequest.id,
+        decision: "acceptForSession",
+      });
+      assert.equal((yield* fake.takeRequest("extension_ui_response"))["confirmed"], true);
+
+      const runTurn = (ordinal: number) =>
+        Effect.gen(function* () {
+          yield* startTurn(runtime, providerThread, "default", [], "Hello pi", undefined, ordinal);
+          yield* fake.takeRequest("prompt");
+          yield* fake.emit({ type: "agent_start" });
+          yield* fake.emit({ type: "agent_settled" });
+          yield* takeEvent((event) => event.type === "turn.terminal");
+        });
+
+      // Same session: the cached approval still applies on the next turn.
+      yield* runTurn(1);
+      yield* fake.emit({ ...prompt, id: "same-session" });
+      assert.equal((yield* fake.takeRequest("extension_ui_response"))["id"], "same-session");
+
+      // A slash command in pi switched sessions with no adapter command.
+      // The settle probe reads the bound session, the finalize read the other.
+      fake.queueState({});
+      fake.queueState({ sessionFile: "/fake/some-other-session.jsonl" });
+      yield* runTurn(2);
+      yield* fake.emit({ ...prompt, id: "other-session" });
+      // A cached approval answers pi directly and never raises a request, so
+      // racing the two outcomes names the regression instead of timing out.
+      const askedAgain = yield* Effect.race(
+        takeEvent(
+          (event) =>
+            event.type === "runtime_request.updated" && event.runtimeRequest.status === "pending",
+        ).pipe(Effect.as(true)),
+        fake.takeRequest("extension_ui_response").pipe(Effect.as(false)),
+      );
+      assert.isTrue(askedAgain);
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
   it.effect("offers an explicit empty value for extension input dialogs", () =>
     Effect.gen(function* () {
       const fake = yield* makeFakePi;

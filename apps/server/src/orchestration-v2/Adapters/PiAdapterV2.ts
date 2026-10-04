@@ -1412,6 +1412,29 @@ export function makePiAdapterV2(
         };
       });
 
+      /**
+       * Drop cached session approvals when Pi's live session is not the one
+       * this thread is bound to. Pi can switch sessions from inside its own
+       * process, including from a slash command forwarded verbatim in the
+       * user's first message, and no adapter command reports that switch, so
+       * the boundary is only observable at turn finalize. An unreadable state
+       * clears the approvals too: an unknown identity is not evidence of an
+       * unchanged one.
+       */
+      const clearApprovalsForForeignSession = Effect.fnUntraced(function* (state: PiThreadState) {
+        // The common turn has no cached approval, so it pays no extra round trip.
+        if (sessionApprovals.size === 0) return;
+        const live = yield* request({ type: "get_state" }, 2_000).pipe(
+          Effect.orElseSucceed(() => undefined),
+        );
+        if (
+          live === undefined ||
+          recordString(live, "sessionFile") !== state.providerThread.nativeThreadRef?.nativeId
+        ) {
+          sessionApprovals.clear();
+        }
+      });
+
       const finalizeTurn = Effect.fnUntraced(function* (state: PiThreadState, readUsage = true) {
         const turn = state.activeTurn;
         if (turn === null) return;
@@ -1437,6 +1460,9 @@ export function makePiAdapterV2(
           }
         }
         yield* cancelPendingPrompts(completedAt);
+        // A dead transport (the only caller that skips reading usage) cannot
+        // ask Pi anything; the next process reads its own identity.
+        if (readUsage) yield* clearApprovalsForForeignSession(state);
         const treeRefs =
           turn.stopTreeRefs !== undefined ? turn.stopTreeRefs : yield* captureTurnTreeRefs();
         const tokenUsage = readUsage
