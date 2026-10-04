@@ -62,8 +62,8 @@ Restart continuation is an environment-owned preference, off by default. The
 [v2 recovery service](../../apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.ts)
 requires matching durable run, provider thread, session, and native resume identity.
 Queued runs never started, so recovery holds them and continues the run they wait
-behind. A finished run qualifies only when the restart cancelled its background work;
-its continuation tells the provider what will not report back.
+behind. Settled runs stay asleep after a restart. Cancelled background work is
+reported on the next user turn.
 
 Recovery retires effects tied to the lost process and records continuation intent
 in the durable outbox. That intent survives another restart before provider startup.
