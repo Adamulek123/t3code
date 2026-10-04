@@ -99,7 +99,6 @@ export const PI_PROVIDER = ProviderDriverKind.make("pi");
 const PI_DRIVER_KIND = PI_PROVIDER;
 const PI_DEFAULT_INSTANCE_ID = defaultInstanceIdForDriver(PI_DRIVER_KIND);
 const DEFAULT_PI_SETTINGS = Schema.decodeSync(PiSettings)({});
-const encodeApprovalKey = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 /**
  * Sentinel model slug meaning "do not call set_model": Pi resolves the model
@@ -1215,10 +1214,11 @@ export function makePiAdapterV2(
         }
         if (nativeRequestId === undefined) return;
         // Request ids change on repeats; every other supplied field describes the prompt.
-        const approvalKey = encodeApprovalKey(
+        // @effect-diagnostics-next-line preferSchemaOverJson:off - Cache identity for an already JSON-parsed event.
+        const approvalKey = JSON.stringify(
           Object.entries(event)
             .filter(([key]) => key !== "id")
-            .sort(([left], [right]) => left.localeCompare(right)),
+            .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)),
         );
         if (method === "confirm" && sessionApprovals.has(approvalKey)) {
           yield* connection.send({

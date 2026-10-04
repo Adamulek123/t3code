@@ -3278,6 +3278,12 @@ describe("OpenCode2 adapter", () => {
       Effect.gen(function* () {
         const steerId = `msg_t3_steer_${SESSION}:message:opencode2-adapter:steer`;
         const cancelOut = out("session.inbox.cancel", { sessionID: SESSION, inboxID: steerId });
+        const nextPrompt = [
+          out("session.prompt", { sessionID: SESSION, text: "<any>" }),
+          promptAccepted,
+          event("session.execution.started", { sessionID: SESSION }),
+          event("session.execution.succeeded", { sessionID: SESSION }),
+        ];
         const { runtime, thread } = yield* resumed([
           out("session.prompt", { sessionID: SESSION, text: "<any>" }),
           promptAccepted,
@@ -3300,7 +3306,7 @@ describe("OpenCode2 adapter", () => {
           out("session.interrupt", { sessionID: SESSION }),
           reply("session.interrupt", { interrupted: true }),
           event("session.execution.interrupted", { sessionID: SESSION }),
-          // The next turn's cancel fails, so the turn after it tries again.
+          // Cancellation fails on the first unload or next turn, then is retried.
           cancelOut,
           reply("session.inbox.cancel", {
             status: 500,
@@ -3308,16 +3314,14 @@ describe("OpenCode2 adapter", () => {
           }),
           ...(unload
             ? [
-                out("session.get", { sessionID: SESSION }),
-                replyData("session.get", sessionInfo()),
                 cancelOut,
                 reply("session.inbox.cancel", null),
+                out("session.get", { sessionID: SESSION }),
+                replyData("session.get", sessionInfo()),
+                ...noOpenRequests,
               ]
             : []),
-          out("session.prompt", { sessionID: SESSION, text: "<any>" }),
-          promptAccepted,
-          event("session.execution.started", { sessionID: SESSION }),
-          event("session.execution.succeeded", { sessionID: SESSION }),
+          ...(unload ? withInstructions(nextPrompt) : nextPrompt),
           ...(unload ? [] : [cancelOut, reply("session.inbox.cancel", null)]),
           out("session.prompt", { sessionID: SESSION, text: "<any>" }),
           promptAccepted,
@@ -3360,7 +3364,9 @@ describe("OpenCode2 adapter", () => {
         yield* Deferred.await(ended);
         if (unload) {
           yield* runtime.unloadThread!({ providerThread: thread });
-          assert.isTrue(yield* runtime.hasPendingBackgroundWork!);
+          // The first unload retained the failed cancellation; the retry must release it.
+          yield* runtime.unloadThread!({ providerThread: thread });
+          assert.isFalse(yield* runtime.hasPendingBackgroundWork!);
           yield* runtime.resumeThread({ providerThread: thread });
         }
         yield* runtime.startTurn(secondTurn(thread));
