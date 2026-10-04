@@ -44,6 +44,10 @@ import * as LegacyV1ThreadImporter from "./legacy/LegacyV1ThreadImporter.ts";
 import * as ProjectionMaintenance from "./ProjectionMaintenance.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 
+const encodePersistedServerRuntimeState = Schema.encodeEffect(
+  Schema.fromJsonString(PersistedServerRuntimeState),
+);
+
 const stores = Layer.mergeAll(EventStore.layer, ProjectionStore.layer).pipe(
   Layer.provideMerge(SqlitePersistenceMemory),
 );
@@ -136,45 +140,43 @@ const captureSweeps = Effect.gen(function* () {
   return { receipts, layer: Logger.layer([logger], { mergeWithExisting: false }) };
 });
 
-it.effect(
-  "retains the high-water row and rebuilds the imported transcript after V1 compaction",
-  () =>
-    Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient;
-      const importer = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
-      const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
-      const projections = yield* ProjectionStore.ProjectionStoreV2;
-      const threadId = ThreadId.make("thread:maintenance-import");
-      const now = DateTime.formatIso(yield* DateTime.now);
-      yield* sql`
+it.effect("drops the whole imported V1 history and rebuilds the transcript from V2 events", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const importer = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
+    const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const threadId = ThreadId.make("thread:maintenance-import");
+    const now = DateTime.formatIso(yield* DateTime.now);
+    yield* sql`
       INSERT INTO projection_threads (
         thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode,
         created_at, updated_at
       ) VALUES (${threadId}, 'project:maintenance-import', 'Imported thread',
         '{"instanceId":"codex","model":"gpt-5.4"}', 'full-access', 'default', ${now}, ${now})
     `;
-      yield* sql`
+    yield* sql`
       INSERT INTO projection_thread_messages (
         message_id, thread_id, role, text, attachments_json, is_streaming, created_at, updated_at
       ) VALUES ('message:maintenance-import', ${threadId}, 'user', 'Keep this transcript', '[]', 0, ${now}, ${now})
     `;
-      yield* sql`
+    yield* sql`
       INSERT INTO orchestration_events (
         event_id, aggregate_kind, stream_id, stream_version, event_type,
         occurred_at, actor_kind, payload_json, metadata_json, application_event_version
       ) VALUES ('event:maintenance-import:v1', 'thread', ${threadId}, 1,
         'thread.message-appended', ${now}, 'user', '{}', '{}', 1)
     `;
-      assert.equal((yield* importer.reconcileShells).importedThreadCount, 1);
-      yield* importer.ensureTranscript(threadId);
-      const before = yield* projections.getThreadProjection(threadId);
-      assert.equal(before.thread.historyOrigin, "v1_import");
-      assert.equal(before.messages[0]?.text, "Keep this transcript");
-      const verification = yield* maintenance.verify;
-      assert.isTrue(verification.valid);
+    assert.equal((yield* importer.reconcileShells).importedThreadCount, 1);
+    yield* importer.ensureTranscript(threadId);
+    const before = yield* projections.getThreadProjection(threadId);
+    assert.equal(before.thread.historyOrigin, "v1_import");
+    assert.equal(before.messages[0]?.text, "Keep this transcript");
+    const verification = yield* maintenance.verify;
+    assert.isTrue(verification.valid);
 
-      // Exercise a legacy tail above the V2 projection cursor as well as imported history below it.
-      yield* sql`
+    // Exercise a legacy tail above the V2 projection cursor as well as imported history below it.
+    yield* sql`
       INSERT INTO orchestration_events (
         event_id, aggregate_kind, stream_id, stream_version, event_type,
         occurred_at, actor_kind, payload_json, metadata_json, application_event_version
@@ -182,39 +184,38 @@ it.effect(
         'thread.message-appended', ${now}, 'user', '{}', '{}', 1
       FROM orchestration_events WHERE stream_id = ${threadId}
     `;
-      const highWater = yield* sql<{
-        readonly sequence: number;
-      }>`SELECT MAX(sequence) AS sequence FROM orchestration_events`;
-      assert.equal((yield* maintenance.compactEventStore).deletedEventCount, 1);
-      assert.deepEqual(
-        yield* sql`SELECT MAX(sequence) AS sequence FROM orchestration_events`,
-        highWater,
-      );
-      assert.deepEqual(yield* maintenance.verify, verification);
-      assert.isTrue((yield* maintenance.rebuild).valid);
-      assert.deepEqual(yield* projections.getThreadProjection(threadId), before);
+    // Sequence is INTEGER PRIMARY KEY AUTOINCREMENT, so deleting the highest row does not
+    // let SQLite hand its sequence out again. Compaction may therefore drop every imported
+    // V1 row, including the one that used to be the table's MAX(sequence).
+    assert.equal((yield* maintenance.compactEventStore).deletedEventCount, 2);
+    assert.lengthOf(
+      yield* sql`SELECT sequence FROM orchestration_events WHERE application_event_version = 1`,
+      0,
+    );
+    assert.deepEqual(yield* maintenance.verify, verification);
+    assert.isTrue((yield* maintenance.rebuild).valid);
+    assert.deepEqual(yield* projections.getThreadProjection(threadId), before);
 
-      const sink = yield* EventSink.EventSinkV2;
-      const written = yield* sink.write({
-        events: [
-          {
-            id: EventId.make("event:maintenance-import:next"),
-            type: "thread.visited",
-            threadId,
-            occurredAt: DateTime.makeUnsafe(now),
-            payload: before.thread,
-          },
-        ],
-      });
-      assert.isAbove(written[0]!.sequence, highWater[0]!.sequence);
-      yield* maintenance.compactEventStore;
-      assert.lengthOf(
-        yield* sql`SELECT sequence FROM orchestration_events WHERE application_event_version = 1`,
-        0,
-      );
-      assert.isTrue((yield* maintenance.verify).valid);
-      assert.isTrue((yield* maintenance.rebuild).valid);
-    }).pipe(Effect.provide(TestLayer)),
+    const sink = yield* EventSink.EventSinkV2;
+    yield* sink.write({
+      events: [
+        {
+          id: EventId.make("event:maintenance-import:next"),
+          type: "thread.visited",
+          threadId,
+          occurredAt: DateTime.makeUnsafe(now),
+          payload: before.thread,
+        },
+      ],
+    });
+    yield* maintenance.compactEventStore;
+    assert.lengthOf(
+      yield* sql`SELECT sequence FROM orchestration_events WHERE application_event_version = 1`,
+      0,
+    );
+    assert.isTrue((yield* maintenance.verify).valid);
+    assert.isTrue((yield* maintenance.rebuild).valid);
+  }).pipe(Effect.provide(TestLayer)),
 );
 
 it.effect("deduplicates a V2 command after compaction deletes its superseded event", () =>
@@ -305,11 +306,11 @@ it.effect("verifies and repairs drift through the CLI and refuses a running serv
         yield* diskSql`UPDATE orchestration_v2_projection_threads SET payload_json = '{}' WHERE thread_id = ${thread.id}`;
       }).pipe(Effect.provide(onDisk)),
     );
-    assert.isTrue(
-      Predicate.isTagged("ProjectionVerificationFailedError")(
-        yield* run("verify").pipe(Effect.flip),
-      ),
-    );
+    const verifyFailure = yield* run("verify").pipe(Effect.flip);
+    assert.isTrue(Predicate.isTagged("ProjectionVerificationFailedError")(verifyFailure));
+    // The failure names the affected thread and the action that repairs it.
+    assert.include(verifyFailure.message, thread.id);
+    assert.include(verifyFailure.message, "t3 projections rebuild");
     yield* run("rebuild");
     yield* run("verify");
     const lines = (yield* TestConsole.logLines).filter(
@@ -327,7 +328,7 @@ it.effect("verifies and repairs drift through the CLI and refuses a running serv
     );
     yield* fs.writeFileString(
       path.join(stateDir, "server-runtime.json"),
-      yield* Schema.encodeEffect(Schema.fromJsonString(PersistedServerRuntimeState))({
+      yield* encodePersistedServerRuntimeState({
         version: 1,
         pid: process.pid,
         port: 3773,
@@ -372,7 +373,16 @@ it.effect("protects unfinished runs, effects, and runtime requests until they se
         (run_id, thread_id, ordinal, provider, status, requested_at, payload_json)
       VALUES ('run:maintenance-busy', ${thread.id}, 1, 'codex', 'queued', ${now}, '{}')
     `;
-    for (const status of ["preparing", "queued", "starting", "running", "waiting"]) {
+    // The last status is deliberately absent from OrchestrationV2RunStatus. Any status the
+    // contract adds later must block compaction until this list names it, never permit deletion.
+    for (const status of [
+      "preparing",
+      "queued",
+      "starting",
+      "running",
+      "waiting",
+      "awaiting_input",
+    ]) {
       yield* sql`UPDATE orchestration_v2_projection_runs SET status = ${status} WHERE thread_id = ${thread.id}`;
       const summary = yield* maintenance.compactEventStore;
       assert.equal(summary.deletedEventCount, 0);
@@ -459,6 +469,8 @@ it.effect("rechecks unfinished work after compaction discovery yields", () =>
         span.end = (endTime, exit) => {
           end(endTime, exit);
           const query = span.attributes.get("db.query.text");
+          // Coupled to the `event` alias in compactEventStore's discovery query. Renaming that
+          // alias would leave this matcher dead: the test would still pass while racing nothing.
           if (typeof query === "string" && query.includes("FROM orchestration_events AS event")) {
             Deferred.doneUnsafe(discovered, Effect.void);
           }
@@ -535,14 +547,44 @@ it.effect(
         assert.equal(yield* eventCount(thread.id), 3);
         assert.deepEqual((yield* maintenance.verify).unreadableThreadIds, [thread.id]);
         assert.isTrue((yield* maintenance.rebuild).valid);
-        yield* TestClock.adjust("1 hour");
-        assert.include(yield* Queue.take(receipts), "Projection maintenance completed");
+        yield* TestClock.adjust("1 day");
+        // The daily slot re-verifies, passes on the repaired projection, and compacts. The hourly
+        // slots in between compact without verifying, so only the last receipt proves the repair.
+        const day = yield* Queue.takeAll(receipts);
+        assert.include(day.at(-1)!, "Projection maintenance completed");
         assert.equal(yield* eventCount(thread.id), 2);
       }).pipe(Effect.provide(layer));
     }).pipe(Effect.provide(TestLayer)),
 );
 
-it.effect("logs a database failure and retries on the next hourly sweep", () =>
+it.effect("keeps compaction hourly while verification runs daily", () =>
+  Effect.gen(function* () {
+    const thread = yield* seedThread("thread:maintenance-verify-cadence");
+    const sql = yield* SqlClient.SqlClient;
+    const { receipts, layer } = yield* captureSweeps;
+    yield* Effect.gen(function* () {
+      yield* withWorker();
+      assert.include(yield* Queue.take(receipts), "Projection maintenance completed");
+      assert.equal(yield* eventCount(thread.id), 2);
+      yield* sql`UPDATE orchestration_v2_projection_threads SET payload_json = '{}' WHERE thread_id = ${thread.id}`;
+      // Every hourly slot up to a day later compacts without re-verifying, so the drift is
+      // not noticed yet.
+      yield* TestClock.adjust("23 hours");
+      const hourly = yield* Queue.takeAll(receipts);
+      assert.isAbove(hourly.length, 20);
+      assert.isTrue(hourly.every((line) => line.includes("Projection maintenance completed")));
+      // The slot one day after the first sweep verifies, reports the drift, and skips compaction.
+      yield* TestClock.adjust("1 hour");
+      const daily = yield* Queue.takeAll(receipts);
+      assert.lengthOf(
+        daily.filter((line) => line.includes("Projection integrity verification failed")),
+        1,
+      );
+    }).pipe(Effect.provide(layer));
+  }).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect("logs a database failure and retries on the next daily verification", () =>
   Effect.gen(function* () {
     const thread = yield* seedThread("thread:maintenance-error");
     const sql = yield* SqlClient.SqlClient;
@@ -556,7 +598,7 @@ it.effect("logs a database failure and retries on the next hourly sweep", () =>
         CREATE INDEX orchestration_events_v2_created_threads_idx ON orchestration_events(stream_id)
         WHERE application_event_version = 2 AND aggregate_kind = 'thread' AND event_type = 'thread.created'
       `;
-      yield* TestClock.adjust("1 hour");
+      yield* TestClock.adjust("1 day");
       assert.include(yield* Queue.take(receipts), "Projection maintenance completed");
       assert.equal(yield* eventCount(thread.id), 2);
     }).pipe(Effect.provide(layer));

@@ -266,8 +266,7 @@ export const layer: Layer.Layer<
           COALESCE((SELECT MAX(sequence) FROM orchestration_events), 0) AS event_sequence,
           COALESCE((SELECT MAX(rowid) FROM orchestration_command_receipts), 0) AS receipt_row_id
       `;
-      const highWaterSequence = bounds[0]?.event_sequence ?? 0;
-      let throughSequence = highWaterSequence;
+      let throughSequence = bounds[0]?.event_sequence ?? 0;
       let throughReceiptRowId = bounds[0]?.receipt_row_id ?? 0;
       const retainedThreadIds = new Set<string>();
       const retainedEntityKeys = new Set<string>();
@@ -313,9 +312,7 @@ export const layer: Layer.Layer<
         const obsolete: number[] = [];
         for (const row of rows) {
           if (row.imported_legacy_thread === 1) {
-            // Retain the highest-sequence row so future unfiltered cursor readers cannot regress.
-            // Current V2 cursors filter out this imported V1 history.
-            if (row.sequence !== highWaterSequence) obsolete.push(row.sequence);
+            obsolete.push(row.sequence);
           } else if (row.application_event_version === 2) {
             if (
               row.aggregate_kind === "thread" &&
@@ -406,23 +403,39 @@ export const layer: Layer.Layer<
   }),
 );
 
-const MAINTENANCE_INTERVAL_MS = 60 * 60 * 1_000;
+const COMPACTION_INTERVAL_MS = 60 * 60 * 1_000;
+/**
+ * Verify pages every projection row through a synchronous schema decode, so it costs orders of
+ * magnitude more than compaction's indexed scan. Drift is not time-critical, so look for it daily
+ * instead of paying that scan on every compaction.
+ */
+const VERIFY_INTERVAL_MS = 24 * 60 * 60 * 1_000;
 
 /** Verify before pruning; repair drift offline with `t3 projections rebuild`. */
 export const workerLive = Layer.effectDiscard(
   Effect.gen(function* () {
     const maintenance = yield* ProjectionMaintenanceV2;
     const scheduler = yield* Scheduler.Scheduler;
-    let nextSweepAt = 0;
+    let nextCompactionAt = 0;
+    let nextVerifyAt = 0;
     const sweep = Effect.gen(function* () {
       const now = DateTime.toEpochMillis(yield* DateTime.now);
-      if (now < nextSweepAt) return;
-      nextSweepAt = now + MAINTENANCE_INTERVAL_MS;
-      const verification = yield* maintenance.verify;
-      if (!verification.valid) {
-        yield* Effect.logWarning("Projection integrity verification failed", verification);
-        return;
+      if (now < nextCompactionAt) return;
+      nextCompactionAt = now + COMPACTION_INTERVAL_MS;
+      // Both deadlines move before either half runs, so a failing sweep waits for its own
+      // interval instead of retrying on every scheduler tick.
+      const verifyDue = now >= nextVerifyAt;
+      if (verifyDue) nextVerifyAt = now + VERIFY_INTERVAL_MS;
+      // Compaction only drops events a replay does not need, so the hours between verifications
+      // prune on the last good result rather than on no result at all.
+      if (verifyDue) {
+        const verification = yield* maintenance.verify;
+        if (!verification.valid) {
+          yield* Effect.logWarning("Projection integrity verification failed", verification);
+          return;
+        }
       }
+      // Full-history scan from the current high-water sequence, so this never gets cheaper.
       const compaction = yield* maintenance.compactEventStore;
       yield* Effect.logInfo("Projection maintenance completed", compaction);
     });

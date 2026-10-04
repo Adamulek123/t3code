@@ -26,10 +26,24 @@ class ProjectionServerRunningError extends Schema.TaggedError<ProjectionServerRu
 
 class ProjectionVerificationFailedError extends Schema.TaggedError<ProjectionVerificationFailedError>()(
   "ProjectionVerificationFailedError",
-  {},
+  {
+    action: Schema.Literals(["verify", "rebuild"]),
+    unreadableThreadIds: Schema.Array(Schema.String),
+    missingThreadIds: Schema.Array(Schema.String),
+  },
 ) {
   override get message(): string {
-    return "Projection verification failed. Run `t3 projections rebuild` with the same location flags to repair.";
+    const affected = [...new Set([...this.unreadableThreadIds, ...this.missingThreadIds])];
+    const named =
+      affected.length === 0
+        ? ""
+        : ` Affected threads, also listed in the report above: ${affected
+            .slice(0, 5)
+            .join(", ")}${affected.length > 5 ? ` and ${affected.length - 5} more` : ""}.`;
+    if (this.action === "verify") {
+      return `Projection verification failed.${named} Run \`t3 projections rebuild\` with the same location flags to rebuild thread data from the event history.`;
+    }
+    return `Rebuild finished but thread data is still unverifiable, so the event history no longer reproduces it.${named} Restore the backup you took before rebuilding, then report this.`;
   }
 }
 
@@ -65,7 +79,13 @@ export const projectionsCommand = Command.make("projections", {
         ...verification,
       });
       yield* Console.log(output);
-      if (!verification.valid) return yield* new ProjectionVerificationFailedError();
+      if (!verification.valid) {
+        return yield* new ProjectionVerificationFailedError({
+          action: flags.action,
+          unreadableThreadIds: verification.unreadableThreadIds,
+          missingThreadIds: verification.missingThreadIds,
+        });
+      }
     }),
   ),
 );
