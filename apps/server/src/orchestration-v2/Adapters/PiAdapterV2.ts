@@ -99,6 +99,7 @@ export const PI_PROVIDER = ProviderDriverKind.make("pi");
 const PI_DRIVER_KIND = PI_PROVIDER;
 const PI_DEFAULT_INSTANCE_ID = defaultInstanceIdForDriver(PI_DRIVER_KIND);
 const DEFAULT_PI_SETTINGS = Schema.decodeSync(PiSettings)({});
+const encodeApprovalKey = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 /**
  * Sentinel model slug meaning "do not call set_model": Pi resolves the model
@@ -1213,8 +1214,12 @@ export function makePiAdapterV2(
           return;
         }
         if (nativeRequestId === undefined) return;
-        const approvalTitle = recordString(event, "title") ?? "";
-        const approvalKey = `${approvalTitle.length}:${approvalTitle}${recordString(event, "message") ?? ""}`;
+        // Request ids change on repeats; every other supplied field describes the prompt.
+        const approvalKey = encodeApprovalKey(
+          Object.entries(event)
+            .filter(([key]) => key !== "id")
+            .sort(([left], [right]) => left.localeCompare(right)),
+        );
         if (method === "confirm" && sessionApprovals.has(approvalKey)) {
           yield* connection.send({
             type: "extension_ui_response",
@@ -2011,6 +2016,8 @@ export function makePiAdapterV2(
           // Even a failed lifecycle operation can change Pi's native session.
           // Never leave the old app binding or model defaults usable afterward.
           threadState = null;
+          sessionApprovals.clear();
+          yield* cancelPendingPrompts(yield* DateTime.now);
           appliedModel = null;
           appliedThinking = null;
           appliedSessionName = null;
@@ -2537,6 +2544,8 @@ export function makePiAdapterV2(
               id: pending.nativeRequestId,
               ...response,
             });
+            // A session switch can cancel this prompt while the send is pending.
+            if (pendingPrompts.get(String(requestInput.requestId)) !== pending) return;
             // Dropped only once Pi has the answer, so a failed send leaves the
             // request retryable and still cancellable during teardown.
             pendingPrompts.delete(String(requestInput.requestId));
@@ -2666,12 +2675,14 @@ export function makePiAdapterV2(
             // message, so the rollback boundary is the first user entry of
             // the earliest turn being discarded.
             const forkEntryId = piRollbackForkEntry(rollbackInput);
+            if (forkEntryId === undefined) {
+              return yield* protocolError("Pi rollback target has no captured session-tree entry");
+            }
+            sessionApprovals.clear();
+            yield* cancelPendingPrompts(yield* DateTime.now);
             if (forkEntryId === null) {
               // Nothing after the target: the conversation is already there.
               return piThreadSnapshot(state.providerThread);
-            }
-            if (forkEntryId === undefined) {
-              return yield* protocolError("Pi rollback target has no captured session-tree entry");
             }
             const forkData = yield* lifecycleRequest({ type: "fork", entryId: forkEntryId });
             if (recordField(forkData, "cancelled") === true) {
