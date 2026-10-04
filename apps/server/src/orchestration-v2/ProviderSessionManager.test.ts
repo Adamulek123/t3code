@@ -2663,6 +2663,11 @@ it.effect.each(["approval_request", "user_input_request"] as const)(
   (requestType) =>
     Effect.gen(function* () {
       const state = yield* Ref.make(emptyState);
+      const flaky: FlakyReleaseWrites = {
+        failing: yield* Ref.make<"none" | "session" | "session-and-requests">("none"),
+        failures: yield* Queue.unbounded<void>(),
+      };
+
       const mcpConfigs = yield* Ref.make<
         ReadonlyArray<McpProviderSession.McpProviderSessionConfig | undefined>
       >([]);
@@ -2728,6 +2733,17 @@ it.effect.each(["approval_request", "user_input_request"] as const)(
           modelSelection,
           runtimePolicy,
         });
+        yield* Ref.set(flaky.failing, "session-and-requests");
+        assert.isTrue(
+          Exit.isFailure(yield* Effect.exit(manager.detach({ providerSessionId, threadId }))),
+        );
+        yield* Queue.take(flaky.failures);
+        assert.equal(
+          (yield* projectionStore.getThreadProjection(threadId)).runtimeRequests[0]?.status,
+          "pending",
+        );
+        assert.equal((yield* Ref.get(state)).closeCount, 0);
+        yield* Ref.set(flaky.failing, "none");
         yield* manager.detach({ providerSessionId, threadId, detail: "Workspace changed." });
         // A duplicate detach must leave the sibling and replacement session alone.
         yield* manager.detach({ providerSessionId, threadId });
@@ -2766,7 +2782,9 @@ it.effect.each(["approval_request", "user_input_request"] as const)(
         assert.equal((yield* registry.resolve(token!))?.threadId, threadId);
       });
       yield* effect.pipe(
-        Effect.provide(makeTestLayer({ state, idleTimeoutMs: 1_000, mcpConfigs })),
+        Effect.provide(
+          makeTestLayer({ state, idleTimeoutMs: 1_000, mcpConfigs, flakyReleaseWrites: flaky }),
+        ),
       );
     }),
 );
