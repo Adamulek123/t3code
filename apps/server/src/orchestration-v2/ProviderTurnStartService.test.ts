@@ -582,6 +582,7 @@ effectIt.effect(
       const harness = makeLocalCommandHarness({ text: "Continue", interruptRunDuringOpen: true });
       yield* harness.start;
       expect(harness.open).toHaveBeenCalledOnce();
+      expect(harness.ensureThread).not.toHaveBeenCalled();
       expect(harness.startRootRun).not.toHaveBeenCalled();
       expect(harness.events).toHaveLength(0);
       expect(harness.projection().runs.at(-1)?.status).toBe("interrupted");

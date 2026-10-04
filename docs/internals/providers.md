@@ -49,16 +49,19 @@ client connections and provider-instance rebuilds. Releases are immutable, with 
 selecting the version for new processes. Running processes hold leases on their version. Updates
 and removal must respect those leases instead of replacing executables under a running agent.
 
+## Delegated completion delivery
+
+Delegated completion delivery retries at most eight times with capped exponential
+backoff. Exhaustion logs the delivery identity and stops its in-memory retry chain.
+The durable mailbox offer remains available to result reads and recovery. A later
+mailbox re-offer, including one in the same process, starts a new retry budget.
+Cancellation does not enqueue another retry.
+
 ## Setup must not happen as a health-check side effect
 
 Provider turn startup rechecks the current attempt before opening a session and
 again before loading or forking a native thread. An attempt stopped during setup
 must not continue preparing its provider thread.
-
-Delegated completion delivery retries at most eight times with capped exponential
-backoff. Exhaustion logs the delivery identity and stops its in-memory retry chain.
-The durable mailbox offer remains available to result reads and restart recovery.
-Cancellation does not enqueue another retry.
 
 Opening a provider session can start MCP servers, run hooks, or launch a login browser.
 [Grok probes](../../apps/server/src/provider/Layers/GrokProvider.ts) avoid authentication and

@@ -9,8 +9,10 @@ import {
   type OrchestrationV2Notification,
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
+import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
@@ -142,11 +144,66 @@ describe("ProviderContinuationService", () => {
           assert.equal(exhaustedCount, failure === "projection" ? 17 : 9);
           yield* TestClock.adjust("1 day");
           assert.equal(yield* Ref.get(attempts), exhaustedCount);
+          // A durable mailbox re-offer starts another bounded retry chain.
+          yield* requests.offer({
+            threadId,
+            providerThreadId,
+            driver,
+            detail: null,
+            delegatedCompletion: { parentRunId, generation: 1, messageId: delegatedMessageId },
+          });
+          assert.equal(yield* Queue.take(attemptEvents), exhaustedCount + 1);
+          yield* TestClock.adjust("100 millis");
+          if (failure === "projection") yield* Queue.take(attemptEvents);
+          yield* Queue.take(attemptEvents);
+          assert.equal(
+            yield* Ref.get(attempts),
+            exhaustedCount + (failure === "projection" ? 3 : 2),
+          );
         }).pipe(
           Effect.provide(Layer.merge(ProviderContinuationRequests.layer, worker)),
           Effect.scoped,
         );
       }),
+  );
+  it.effect("interrupts an in-flight delegated delivery when the worker scope closes", () =>
+    Effect.gen(function* () {
+      const attempts = yield* Ref.make(0);
+      const started = yield* Deferred.make<void>();
+      const stopped = yield* Deferred.make<Exit.Exit<never>>();
+      const threads = Layer.mock(ThreadManagementService.ThreadManagementService)({
+        getThreadRecords: () => Effect.succeed(delegatedProjection()),
+        dispatch: () =>
+          Ref.update(attempts, (count) => count + 1).pipe(
+            Effect.andThen(Deferred.succeed(started, undefined)),
+            Effect.andThen(Effect.never),
+            Effect.onExit((exit) => Deferred.succeed(stopped, exit)),
+          ),
+      });
+      const worker = ProviderContinuationService.workerLive.pipe(
+        Layer.provide(
+          Layer.mergeAll(IdAllocator.layer, ProviderContinuationRequests.layer, threads),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const requests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
+        yield* requests.offer({
+          threadId,
+          providerThreadId,
+          driver,
+          detail: null,
+          delegatedCompletion: { parentRunId, generation: 1, messageId: delegatedMessageId },
+        });
+        yield* Deferred.await(started);
+      }).pipe(
+        Effect.provide(Layer.merge(ProviderContinuationRequests.layer, worker)),
+        Effect.scoped,
+      );
+      const exit = yield* Deferred.await(stopped);
+      assert.isTrue(Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause));
+      yield* TestClock.adjust("1 day");
+      assert.equal(yield* Ref.get(attempts), 1);
+    }),
   );
   it.effect("recovers an unaccepted persisted steer using the same delivery identity", () =>
     Effect.gen(function* () {
