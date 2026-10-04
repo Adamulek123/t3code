@@ -72,24 +72,16 @@ readiness or the launcher's commit boundary. Graceful shutdown captures intent b
 closing providers, then reconciles after ingestion has stopped so a late completion
 cannot be overwritten by a stale cancellation.
 
-Recovery isolates projection and reconciliation failures per thread. It logs the
-thread and trigger, then continues recovering other threads and reconciling the
-outbox. Cancellation still stops recovery. Reads of the candidate list and global
-outbox failures remain startup errors. Recovery stays serial because all writes
-share the environment's database.
+Steering restarts can reuse a thread and run ordinal. Provider activity and
+[root completion](../../apps/server/src/orchestration-v2/RunExecutionService.ts)
+therefore depend on the adapter's attempt-correlated root snapshot arriving before
+its terminal. The [native replay conformance test](../../apps/server/src/orchestration-v2/testkit/OrchestratorReplayFixtures.integration.test.ts)
+checks that order at the adapter boundary.
 
-Live provider residency tracks active starts by run attempt. A root provider-turn
-snapshot binds its native turn identity to that attempt. A start error or a matching
-terminal removes the same entry, so duplicate or delayed terminals cannot release
-a successor or sibling turn. Thread and run ordinal alone are insufficient because
-steering can reuse them. Unknown snapshots and terminals do not create activity.
-
-Adapters must emit the attempt-correlated root snapshot before its terminal. Native
-replay conformance tests check that order at the adapter boundary, while orchestration
-tests check admission with unknown identity and later snapshot learning. A start that
-fails without native events is released by attempt ID. A missing snapshot on a healthy
-stream has no idle-release deadline; explicit session close or stream failure still
-removes its live entry. Reattachment to that same entry does not reset its activity.
+A healthy stream that omits the snapshot has no idle-release deadline.
+[Session lifetime management](../../apps/server/src/orchestration-v2/ProviderSessionManager.ts)
+clears activity on explicit close or stream failure, while reattaching to the same
+live entry leaves that activity in place.
 
 The [continuation handler](../../apps/server/src/orchestration-v2/RestartContinuation.ts)
 rechecks the preference, archive state, provider selection, newer user work, a stop
