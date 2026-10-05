@@ -2825,11 +2825,20 @@ it.effect.each(["approval_request", "user_input_request"] as const)(
               now,
             });
             yield* eventSink.write({
-              events: request.events.map((event) =>
-                event.type === "turn-item.updated" && requestType === "user_input_request"
-                  ? { ...event, payload: { ...event.payload, type: requestType, questions: [] } }
-                  : event,
-              ),
+              events: request.events.map((event) => {
+                if (requestType === "user_input_request") {
+                  if (event.type === "runtime-request.updated")
+                    return { ...event, payload: { ...event.payload, kind: "user_input" } };
+                  if (event.type === "node.updated")
+                    return { ...event, payload: { ...event.payload, kind: requestType } };
+                  if (event.type === "turn-item.updated")
+                    return {
+                      ...event,
+                      payload: { ...event.payload, type: requestType, questions: [] },
+                    };
+                }
+                return event;
+              }),
             });
             return request;
           }),
@@ -2908,6 +2917,7 @@ it.effect(
       const state = yield* Ref.make(emptyState);
       const incomingWriteStarted = yield* Deferred.make<void>();
       const releaseIncomingWrite = yield* Deferred.make<void>();
+      const detachProjectionStarted = yield* Deferred.make<void>();
       const incomingCommitted = yield* Ref.make(false);
       const requestReadStates = yield* Ref.make<ReadonlyArray<boolean>>([]);
       const threadId = ThreadId.make("detach_request_race");
@@ -2944,10 +2954,11 @@ it.effect(
           return ProjectionStore.ProjectionStoreV2.of({
             ...delegate,
             getThreadRecords: (requestedThreadId, fields, options) => {
-              // The fixture has no provider turns. Keep this read synchronous so
-              // fork's immediate start reaches the request permit before returning.
               if (fields.some((field) => field === "providerThreads")) {
-                return Effect.succeed({ providerThreads: [], providerTurns: [] } as never);
+                // This read precedes the request permit, which the incoming write holds.
+                return Deferred.succeed(detachProjectionStarted, undefined).pipe(
+                  Effect.as({ providerThreads: [], providerTurns: [] } as never),
+                );
               }
               if (
                 requestedThreadId === threadId &&
@@ -3010,6 +3021,7 @@ it.effect(
         const detach = yield* manager
           .detach({ providerSessionId, threadId })
           .pipe(Effect.forkScoped({ startImmediately: true }));
+        yield* Deferred.await(detachProjectionStarted);
         yield* Deferred.succeed(releaseIncomingWrite, undefined);
         yield* Fiber.join(detach);
         assert.deepEqual(yield* Ref.get(requestReadStates), [true]);
