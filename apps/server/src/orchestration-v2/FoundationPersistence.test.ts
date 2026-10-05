@@ -625,6 +625,153 @@ it.effect.each([
     }).pipe(Effect.provide(Layer.fresh(TestLayer))),
 );
 
+it.effect.each(
+  (["approval_request", "user_input_request"] as const).flatMap((requestType) =>
+    (["cancelled", "expired"] as const).map((status) => ({ requestType, status })),
+  ),
+)(
+  "enqueues effects when guarded $status $requestType retirement has no remaining events",
+  ({ requestType, status }) =>
+    Effect.gen(function* () {
+      const sink = yield* EventSink.EventSinkV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make(`thread:guarded-retirement:${requestType}:${status}`);
+      const nodeId = NodeId.make(`node:${threadId}`);
+      const requestId = RuntimeRequestId.make(`request:${threadId}`);
+      const itemBase = {
+        id: TurnItemId.make(`item:${threadId}`),
+        threadId,
+        runId: null,
+        nodeId,
+        providerThreadId: null,
+        providerTurnId: null,
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal: 1,
+        status: "completed" as const,
+        title: null,
+        startedAt: now,
+        completedAt: now,
+        updatedAt: now,
+        requestId,
+      };
+      const answered: Array<OrchestrationV2DomainEvent> = [
+        {
+          id: EventId.make(`event:${nodeId}`),
+          type: "node.updated",
+          threadId,
+          nodeId,
+          occurredAt: now,
+          payload: {
+            id: nodeId,
+            threadId,
+            runId: null,
+            parentNodeId: null,
+            rootNodeId: nodeId,
+            kind: requestType,
+            status: "completed",
+            countsForRun: false,
+            providerThreadId: null,
+            providerTurnId: null,
+            nativeItemRef: null,
+            runtimeRequestId: requestId,
+            checkpointScopeId: null,
+            startedAt: now,
+            completedAt: now,
+          },
+        },
+        {
+          id: EventId.make(`event:${requestId}`),
+          type: "runtime-request.updated",
+          threadId,
+          occurredAt: now,
+          payload: {
+            id: requestId,
+            nodeId,
+            providerTurnId: null,
+            nativeRequestRef: null,
+            kind: requestType === "approval_request" ? "command" : "user_input",
+            status: "resolved",
+            responseCapability: {
+              type: "live",
+              providerSessionId: ProviderSessionId.make(`session:${threadId}`),
+            },
+            createdAt: now,
+            resolvedAt: now,
+          },
+        },
+        {
+          id: EventId.make(`event:${itemBase.id}`),
+          type: "turn-item.updated",
+          threadId,
+          occurredAt: now,
+          payload:
+            requestType === "approval_request"
+              ? { ...itemBase, type: requestType, requestKind: "command" }
+              : { ...itemBase, type: requestType, questions: [] },
+        },
+      ];
+      yield* sink.write({
+        events: [
+          threadCreatedEvent({ id: `event:${threadId}`, thread: makeThread(threadId, now), now }),
+          ...answered,
+        ],
+      });
+      const before = yield* sink.latestSequence();
+      const retired = answered.map((event): OrchestrationV2DomainEvent => {
+        const id = EventId.make(`${event.id}:retired`);
+        if (event.type === "runtime-request.updated")
+          return {
+            ...event,
+            id,
+            payload: {
+              ...event.payload,
+              status,
+              responseCapability: { type: "not_resumable", reason: "Session closed." },
+            },
+          };
+        if (event.type === "node.updated")
+          return {
+            ...event,
+            id,
+            payload: { ...event.payload, status: status === "expired" ? "failed" : "cancelled" },
+          };
+        if (event.type === "turn-item.updated")
+          return {
+            ...event,
+            id,
+            payload: { ...event.payload, status: status === "expired" ? "failed" : "cancelled" },
+          };
+        return event;
+      });
+      const effectId = `effect:${threadId}:cleanup`;
+      const commandId = CommandId.make(`command:${threadId}:cleanup`);
+      assert.deepEqual(
+        yield* sink.writeWithEffects({
+          guardPendingRuntimeRequestRetirements: true,
+          events: retired,
+          effects: [{ id: effectId, commandId, threadId, request: { type: "terminal.cleanup" } }],
+        }),
+        [],
+      );
+      assert.equal(yield* sink.latestSequence(), before);
+      const projection = yield* projections.getThreadProjection(threadId);
+      assert.equal(projection.runtimeRequests[0]?.status, "resolved");
+      assert.equal(projection.nodes[0]?.status, "completed");
+      assert.equal(projection.turnItems[0]?.status, "completed");
+      assert.equal((yield* outbox.listByCommandId(commandId))[0]?.status, "pending");
+      // Filtering the entire event batch must retain the outbox wakeup too.
+      yield* outbox.awaitAvailable;
+      const claimed = yield* outbox.claimNext({
+        workerId: "guarded-retirement-worker",
+        leaseDurationMs: 1_000,
+      });
+      assert.equal(Option.getOrUndefined(claimed)?.id, effectId);
+    }).pipe(Effect.provide(Layer.fresh(TestLayer))),
+);
+
 it.layer(TestLayer)("orchestration V2 foundation persistence", (it) => {
   it.effect("projects oversized tool bodies before both replay and live RPC retention", () =>
     Effect.scoped(

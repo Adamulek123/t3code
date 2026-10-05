@@ -73,11 +73,13 @@ export type EventSinkV2Error = typeof EventSinkV2Error.Type;
 export interface EventSinkV2Shape {
   readonly write: (input: {
     readonly guardPendingUserInputCancellations?: boolean;
+    readonly guardPendingRuntimeRequestRetirements?: boolean;
     readonly commandId?: CommandId;
     readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
   }) => Effect.Effect<ReadonlyArray<OrchestrationV2StoredEvent>, EventSinkV2Error>;
   readonly writeWithEffects: (input: {
     readonly guardPendingUserInputCancellations?: boolean;
+    readonly guardPendingRuntimeRequestRetirements?: boolean;
     readonly commandId?: CommandId;
     readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
     readonly effects: ReadonlyArray<EffectOutbox.PendingOrchestrationEffectV2>;
@@ -302,12 +304,17 @@ const baseLayer: Layer.Layer<
                 !staleRequests.has(event.payload.id)
               );
             case "node.updated":
-              return event.payload.status !== "cancelled" || !staleNodes.has(event.payload.id);
+              return (
+                (event.payload.status !== "cancelled" &&
+                  (!includeAllRetirements || event.payload.status !== "failed")) ||
+                !staleNodes.has(event.payload.id)
+              );
             case "turn-item.updated":
               return (
                 (event.payload.type !== "user_input_request" &&
                   (!includeAllRetirements || event.payload.type !== "approval_request")) ||
-                event.payload.status !== "cancelled" ||
+                (event.payload.status !== "cancelled" &&
+                  (!includeAllRetirements || event.payload.status !== "failed")) ||
                 !staleRequests.has(event.payload.requestId)
               );
             default:
@@ -381,9 +388,11 @@ const baseLayer: Layer.Layer<
       return yield* commitThenPublish(
         Effect.gen(function* () {
           const normalized = yield* normalizeEvents(
-            input.guardPendingUserInputCancellations === true
-              ? yield* guardRuntimeRequestRetirements(input.events)
-              : input.events,
+            input.guardPendingRuntimeRequestRetirements === true
+              ? yield* guardRuntimeRequestRetirements(input.events, true)
+              : input.guardPendingUserInputCancellations === true
+                ? yield* guardRuntimeRequestRetirements(input.events)
+                : input.events,
           );
           const committed = yield* eventStore.append({
             ...(input.commandId === undefined ? {} : { commandId: input.commandId }),

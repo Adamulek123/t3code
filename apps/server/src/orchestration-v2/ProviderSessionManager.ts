@@ -748,7 +748,7 @@ export const layerWithOptions = (
           }
 
           if (events.length > 0) {
-            yield* eventSink.write({ events });
+            yield* eventSink.write({ events, guardPendingRuntimeRequestRetirements: true });
           }
         });
 

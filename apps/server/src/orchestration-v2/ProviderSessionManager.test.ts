@@ -3,6 +3,8 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
   EnvironmentId,
+  CommandId,
+  EventId,
   type ModelSelection,
   type OrchestrationV2AppThread,
   type OrchestrationV2DomainEvent,
@@ -2768,6 +2770,174 @@ it.effect("ProviderSessionManagerV2 settles a request the event pump persists du
       Effect.provide(makeTestLayer({ state, idleTimeoutMs: 60_000, flakyReleaseWrites: flaky })),
     );
   }),
+);
+
+it.effect.each(
+  (["approval_request", "user_input_request"] as const).flatMap((requestType) =>
+    (["detach", "runtime_error"] as const).flatMap((releaseType) =>
+      [false, true].map((mixed) => ({ requestType, releaseType, mixed })),
+    ),
+  ),
+)(
+  "ProviderSessionManagerV2 preserves answered $requestType during $releaseType with mixed cleanup $mixed",
+  ({ requestType, releaseType, mixed }) =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const answerEvents = yield* Ref.make<ReadonlyArray<OrchestrationV2DomainEvent>>([]);
+      const retirementWrites = yield* Ref.make<ReadonlyArray<number>>([]);
+      const threadId = ThreadId.make(`answer-release:${requestType}:${releaseType}:${mixed}`);
+      const eventSinkLayer = Layer.effect(
+        EventSink.EventSinkV2,
+        Effect.gen(function* () {
+          const delegate = yield* EventSink.EventSinkV2;
+          return EventSink.EventSinkV2.of({
+            ...delegate,
+            write: (input) =>
+              Effect.gen(function* () {
+                const retirement = input.events.some(
+                  (event) =>
+                    event.type === "runtime-request.updated" &&
+                    (event.payload.status === "cancelled" || event.payload.status === "expired"),
+                );
+                if (retirement) {
+                  // Cleanup already read pending requests. Answers commit outside
+                  // the provider-event permit, as runtime-request.respond does.
+                  const answers = yield* Ref.getAndSet(answerEvents, []);
+                  assert.isNotEmpty(answers);
+                  const now = yield* DateTime.now;
+                  const response = yield* delegate.commitCommand({
+                    commandId: CommandId.make(`answer:${threadId}`),
+                    threadId,
+                    commandType: "runtime-request.respond",
+                    acceptedAt: now,
+                    events: answers,
+                    effects: [],
+                  });
+                  assert.equal(response.receipt.status, "accepted");
+                }
+                const stored = yield* delegate.write(input);
+                if (retirement)
+                  yield* Ref.update(retirementWrites, (writes) => [...writes, stored.length]);
+                return stored;
+              }),
+          });
+        }),
+      ).pipe(Layer.provide(TestEventSinkLayer));
+      yield* Effect.gen(function* () {
+        const eventSink = yield* EventSink.EventSinkV2;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const now = yield* DateTime.now;
+        const providerSessionId = idAllocator.derive.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+        });
+        yield* eventSink.write({
+          events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+        });
+        yield* manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy });
+        const requests = yield* Effect.forEach(Array.from({ length: mixed ? 2 : 1 }), () =>
+          makePendingRuntimeRequestEvents({
+            idAllocator,
+            threadId,
+            providerSessionId,
+            providerThread: makeProviderThread({ idAllocator, threadId, providerSessionId, now }),
+            now,
+          }),
+        );
+        const pendingEvents = requests.flatMap((request) =>
+          request.events.map((event): OrchestrationV2DomainEvent => {
+            if (requestType === "user_input_request") {
+              if (event.type === "runtime-request.updated")
+                return { ...event, payload: { ...event.payload, kind: "user_input" } };
+              if (event.type === "node.updated")
+                return { ...event, payload: { ...event.payload, kind: requestType } };
+              if (event.type === "turn-item.updated")
+                return {
+                  ...event,
+                  payload: { ...event.payload, type: requestType, questions: [] },
+                };
+            }
+            return event;
+          }),
+        );
+        yield* eventSink.write({ events: pendingEvents });
+        yield* Ref.set(
+          answerEvents,
+          pendingEvents.slice(0, 3).map((event): OrchestrationV2DomainEvent => {
+            const id = EventId.make(`${event.id}:answered`);
+            if (event.type === "runtime-request.updated")
+              return {
+                ...event,
+                id,
+                payload: {
+                  ...event.payload,
+                  status: "resolved",
+                  resolvedAt: now,
+                  ...(requestType === "user_input_request"
+                    ? { answers: { choice: "keep" } }
+                    : { decision: "accept" as const }),
+                },
+              };
+            if (event.type === "node.updated")
+              return {
+                ...event,
+                id,
+                payload: { ...event.payload, status: "completed", completedAt: now },
+              };
+            if (event.type === "turn-item.updated")
+              return {
+                ...event,
+                id,
+                payload: { ...event.payload, status: "completed", completedAt: now },
+              };
+            return event;
+          }),
+        );
+        if (releaseType === "detach") yield* manager.detach({ providerSessionId, threadId });
+        else yield* manager.release({ providerSessionId, reason: "runtime_error" });
+        const projection = yield* projections.getThreadProjection(threadId);
+        const answered = projection.runtimeRequests.find(
+          (request) => request.id === requests[0]!.requestId,
+        );
+        assert.equal(answered?.status, "resolved");
+        if (requestType === "user_input_request")
+          assert.deepEqual(answered?.answers, { choice: "keep" });
+        else assert.equal(answered?.decision, "accept");
+        assert.equal(
+          projection.nodes.find((node) => node.id === requests[0]!.nodeId)?.status,
+          "completed",
+        );
+        assert.equal(
+          projection.turnItems.find(
+            (item) =>
+              (item.type === "approval_request" || item.type === "user_input_request") &&
+              item.requestId === requests[0]!.requestId,
+          )?.status,
+          "completed",
+        );
+        if (mixed) {
+          assert.equal(
+            projection.runtimeRequests.find((request) => request.id === requests[1]!.requestId)
+              ?.status,
+            releaseType === "detach" ? "cancelled" : "expired",
+          );
+          assert.equal(
+            projection.nodes.find((node) => node.id === requests[1]!.nodeId)?.status,
+            releaseType === "detach" ? "cancelled" : "failed",
+          );
+          assert.equal(
+            projection.turnItems.find(
+              (item) =>
+                (item.type === "approval_request" || item.type === "user_input_request") &&
+                item.requestId === requests[1]!.requestId,
+            )?.status,
+            releaseType === "detach" ? "cancelled" : "failed",
+          );
+        }
+        assert.deepEqual(yield* Ref.get(retirementWrites), [mixed ? 3 : 0]);
+      }).pipe(Effect.provide(makeTestLayer({ state, idleTimeoutMs: 1_000, eventSinkLayer })));
+    }),
 );
 
 it.effect.each(["approval_request", "user_input_request"] as const)(
