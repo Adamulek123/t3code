@@ -3069,6 +3069,27 @@ it.effect.each(["approval_request", "user_input_request"] as const)(
   (requestType) =>
     Effect.gen(function* () {
       const state = yield* Ref.make(emptyState);
+      const failReattach = yield* Ref.make(false);
+      const eventSinkLayer = Layer.effect(
+        EventSink.EventSinkV2,
+        Effect.gen(function* () {
+          const delegate = yield* EventSink.EventSinkV2;
+          return EventSink.EventSinkV2.of({
+            ...delegate,
+            write: (input) =>
+              Effect.gen(function* () {
+                if (
+                  (yield* Ref.get(failReattach)) &&
+                  input.events.some((event) => event.type === "provider-session.attached")
+                ) {
+                  return yield* Effect.die(new Error("reattach commit failed"));
+                }
+                return yield* delegate.write(input);
+              }),
+          });
+        }),
+      ).pipe(Layer.provide(TestEventSinkLayer));
+
       yield* Effect.gen(function* () {
         const eventSink = yield* EventSink.EventSinkV2;
         const idAllocator = yield* IdAllocator.IdAllocatorV2;
@@ -3216,6 +3237,22 @@ it.effect.each(["approval_request", "user_input_request"] as const)(
         assert.equal(projection.runtimeRequests[0]?.status, "cancelled");
         assert.equal(projection.nodes[0]?.status, "cancelled");
         assert.equal(projection.turnItems[0]?.status, "cancelled");
+        yield* Ref.set(failReattach, true);
+        assert.isTrue(
+          Exit.isFailure(
+            yield* Effect.exit(
+              manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy }),
+            ),
+          ),
+        );
+        subscription = yield* subscribe;
+        yield* Queue.offerAll(queue, [...artifacts, marker]);
+        yield* subscription.events.pipe(Stream.runHead);
+        projection = yield* projections.getThreadProjection(threadId);
+        assert.equal(projection.runtimeRequests[0]?.status, "cancelled");
+        assert.equal(projection.nodes[0]?.status, "cancelled");
+        assert.equal(projection.turnItems[0]?.status, "cancelled");
+        yield* Ref.set(failReattach, false);
         yield* manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy });
         subscription = yield* subscribe;
         yield* Queue.offerAll(queue, [...artifacts, marker]);
@@ -3225,7 +3262,7 @@ it.effect.each(["approval_request", "user_input_request"] as const)(
           "pending",
         );
         assert.equal((yield* Ref.get(state)).openCount, 1);
-      }).pipe(Effect.provide(makeTestLayer({ state, idleTimeoutMs: 1_000 })));
+      }).pipe(Effect.provide(makeTestLayer({ state, idleTimeoutMs: 1_000, eventSinkLayer })));
     }),
 );
 

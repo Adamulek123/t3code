@@ -1183,12 +1183,9 @@ export const layerWithOptions = (
               return [false, current] as const;
             }
             const updated = new Map(current);
-            const detachedThreadIds = new Set(entry.detachedThreadIds);
-            detachedThreadIds.delete(input.threadId);
             updated.set(sessionKey(input.providerSessionId), {
               ...entry,
               attachedThreadIds: new Set([...entry.attachedThreadIds, input.threadId]),
-              detachedThreadIds,
             });
             return [true, updated] as const;
           }),
@@ -1295,6 +1292,21 @@ export const layerWithOptions = (
                     payload: entry.runtime.providerSession,
                   }),
                 );
+                yield* Ref.update(sessions, (current) => {
+                  const key = sessionKey(input.providerSessionId);
+                  const currentEntry = current.get(key);
+                  if (
+                    currentEntry?.runtime !== entry.runtime ||
+                    !currentEntry.attachedThreadIds.has(input.threadId) ||
+                    !currentEntry.detachedThreadIds.has(input.threadId)
+                  )
+                    return current;
+                  const detachedThreadIds = new Set(currentEntry.detachedThreadIds);
+                  detachedThreadIds.delete(input.threadId);
+                  const updated = new Map(current);
+                  updated.set(key, { ...currentEntry, detachedThreadIds });
+                  return updated;
+                });
               }
             }
           }).pipe(
