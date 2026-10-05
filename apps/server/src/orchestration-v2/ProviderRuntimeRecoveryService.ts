@@ -726,6 +726,7 @@ export const make = Effect.gen(function* () {
             commandId,
             threadId: projection.thread.id,
             commandType: "provider-runtime.reconcile",
+            guardPendingRuntimeRequestRetirements: true,
             acceptedAt: now,
             events,
             effects,

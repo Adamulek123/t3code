@@ -119,6 +119,7 @@ export interface EventSinkV2Shape {
     EventSinkV2Error
   >;
   readonly commitCommand: (input: {
+    readonly guardPendingRuntimeRequestRetirements?: boolean;
     readonly commandId: CommandId;
     readonly threadId: ThreadId;
     readonly commandType: string;
@@ -260,17 +261,16 @@ const baseLayer: Layer.Layer<
           );
       });
 
-    // A user can answer after terminal normalization reads the pending request.
+    // A user can answer after cleanup reads the pending request.
     // Recheck inside the write transaction so stale cleanup cannot erase answers.
-    const guardUserInputCancellations = (events: ReadonlyArray<OrchestrationV2DomainEvent>) =>
+    const guardRuntimeRequestRetirements = (events: ReadonlyArray<OrchestrationV2DomainEvent>) =>
       Effect.gen(function* () {
         const staleRequests = new Set<RuntimeRequestId>();
         const staleNodes = new Set<NodeId>();
         for (const event of events) {
           if (
             event.type !== "runtime-request.updated" ||
-            event.payload.kind !== "user_input" ||
-            event.payload.status !== "cancelled"
+            (event.payload.status !== "cancelled" && event.payload.status !== "expired")
           )
             continue;
           const current = yield* projectionStore.getRuntimeRequest(
@@ -279,7 +279,8 @@ const baseLayer: Layer.Layer<
           );
           if (
             current?.status !== "pending" ||
-            current.kind !== "user_input" ||
+            current.kind !== event.payload.kind ||
+            current.nodeId !== event.payload.nodeId ||
             current.providerTurnId !== event.payload.providerTurnId ||
             current.responseCapability.type === "message"
           ) {
@@ -290,12 +291,16 @@ const baseLayer: Layer.Layer<
         return events.filter((event) => {
           switch (event.type) {
             case "runtime-request.updated":
-              return event.payload.status !== "cancelled" || !staleRequests.has(event.payload.id);
+              return (
+                (event.payload.status !== "cancelled" && event.payload.status !== "expired") ||
+                !staleRequests.has(event.payload.id)
+              );
             case "node.updated":
               return event.payload.status !== "cancelled" || !staleNodes.has(event.payload.id);
             case "turn-item.updated":
               return (
-                event.payload.type !== "user_input_request" ||
+                (event.payload.type !== "user_input_request" &&
+                  event.payload.type !== "approval_request") ||
                 event.payload.status !== "cancelled" ||
                 !staleRequests.has(event.payload.requestId)
               );
@@ -371,7 +376,7 @@ const baseLayer: Layer.Layer<
         Effect.gen(function* () {
           const normalized = yield* normalizeEvents(
             input.guardPendingUserInputCancellations === true
-              ? yield* guardUserInputCancellations(input.events)
+              ? yield* guardRuntimeRequestRetirements(input.events)
               : input.events,
           );
           const committed = yield* eventStore.append({
@@ -429,7 +434,7 @@ const baseLayer: Layer.Layer<
 
             const normalized = yield* normalizeEvents(
               input.guardPendingUserInputCancellations === true
-                ? yield* guardUserInputCancellations(input.events)
+                ? yield* guardRuntimeRequestRetirements(input.events)
                 : input.events,
             );
             const storedEvents = yield* eventStore.append({
@@ -486,7 +491,7 @@ const baseLayer: Layer.Layer<
 
           const normalized = yield* normalizeEvents(
             input.guardPendingUserInputCancellations === true
-              ? yield* guardUserInputCancellations(input.events)
+              ? yield* guardRuntimeRequestRetirements(input.events)
               : input.events,
           );
           const storedEvents = yield* eventStore.append({
@@ -534,12 +539,22 @@ const baseLayer: Layer.Layer<
             return { ...existing, committed: false as const, cancelledEffectIds: [] };
           }
 
-          const normalized = yield* normalizeEvents(input.events);
+          const normalized = yield* normalizeEvents(
+            input.guardPendingRuntimeRequestRetirements === true
+              ? yield* guardRuntimeRequestRetirements(input.events)
+              : input.events,
+          );
           const storedEvents = yield* eventStore.append({
             commandId: input.commandId,
             events: normalized,
           });
-          const sequence = storedEvents.at(-1)?.sequence;
+          // Guarded cleanup may lose every event to a concurrent answer. It
+          // still owns its receipt and process-bound effect cancellation.
+          const sequence =
+            storedEvents.at(-1)?.sequence ??
+            (input.guardPendingRuntimeRequestRetirements === true && input.events.length > 0
+              ? yield* eventStore.latestSequence({ threadId: input.threadId })
+              : undefined);
           if (sequence === undefined) {
             return yield* Effect.die(
               new Error(`Command ${input.commandId} produced no orchestration events.`),

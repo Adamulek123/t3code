@@ -344,10 +344,14 @@ it.effect.each([
   { trigger: "shutdown", runStatus: null },
   { trigger: "startup", runStatus: "completed" },
   { trigger: "shutdown", runStatus: "completed" },
+  { trigger: "startup", runStatus: null, answerBeforeCommit: true },
+  { trigger: "shutdown", runStatus: null, answerBeforeCommit: true },
 ] as const)(
-  "recovers request transcripts through SQLite on $trigger with run status $runStatus",
-  ({ trigger, runStatus }) =>
+  "recovers request transcripts through SQLite on $trigger with run status $runStatus and race $answerBeforeCommit",
+  (scenario) =>
     Effect.gen(function* () {
+      const { trigger, runStatus } = scenario;
+      const answerBeforeCommit = "answerBeforeCommit" in scenario;
       const eventSink = yield* EventSink.EventSinkV2;
       const projections = yield* ProjectionStore.ProjectionStoreV2;
       const now = yield* DateTime.now;
@@ -507,8 +511,81 @@ it.effect.each([
           TurnItemId.make(`item:${threadId}:question`),
         ],
       );
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const pendingEffectCommandId = CommandId.make(`command:${threadId}:pending`);
+      if (answerBeforeCommit) {
+        yield* outbox.enqueue([
+          {
+            id: `effect:${threadId}:pending`,
+            commandId: pendingEffectCommandId,
+            threadId,
+            request: { type: "provider-turn.start", runId: RunId.make(`run:${threadId}`) },
+          },
+        ]);
+      }
+      const recoverySink = EventSink.EventSinkV2.of({
+        ...eventSink,
+        commitCommand: (input) =>
+          Effect.gen(function* () {
+            if (answerBeforeCommit && input.commandType === "provider-runtime.reconcile") {
+              const answers = events.flatMap((event): Array<OrchestrationV2DomainEvent> => {
+                if (
+                  event.type === "runtime-request.updated" &&
+                  event.payload.responseCapability.type !== "message"
+                ) {
+                  return [
+                    {
+                      ...event,
+                      id: EventId.make(`${event.id}:answer`),
+                      payload: { ...event.payload, status: "resolved", resolvedAt: now },
+                    },
+                  ];
+                }
+                if (
+                  event.type === "node.updated" &&
+                  event.payload.id !== `node:${threadId}:durable-question`
+                ) {
+                  return [
+                    {
+                      ...event,
+                      id: EventId.make(`${event.id}:answer`),
+                      payload: { ...event.payload, status: "completed", completedAt: now },
+                    },
+                  ];
+                }
+                if (
+                  event.type === "turn-item.updated" &&
+                  event.payload.id !== `item:${threadId}:durable-question`
+                ) {
+                  return [
+                    {
+                      ...event,
+                      id: EventId.make(`${event.id}:answer`),
+                      payload: { ...event.payload, status: "completed", completedAt: now },
+                    },
+                  ];
+                }
+                return [];
+              });
+              yield* eventSink.write({ events: answers });
+            }
+            const result = yield* eventSink.commitCommand(input);
+            if (answerBeforeCommit) {
+              assert.deepEqual(result.storedEvents, []);
+              assert.equal(result.receipt.status, "accepted");
+              assert.equal(
+                result.receipt.resultSequence,
+                yield* (yield* EventStore.EventStoreV2).latestSequence({ threadId }),
+              );
+              assert.equal(result.cancelledEffectCount, 1);
+              assert.isFalse((yield* eventSink.commitCommand(input)).committed);
+            }
+            return result;
+          }),
+      });
       const recovery = yield* ProviderRuntimeRecovery.make.pipe(
         Effect.provide(ServerSettings.layerTest()),
+        Effect.provideService(EventSink.EventSinkV2, recoverySink),
       );
       assert.equal((yield* recovery.reconcile(trigger)).closedRequests, 2);
       const final = yield* projections.getThreadProjection(threadId);
@@ -517,21 +594,33 @@ it.effect.each([
         assert.equal(
           final.runtimeRequests.find((request) => request.id === `request:${threadId}:${kind}`)
             ?.status,
-          durable ? "pending" : trigger === "startup" ? "expired" : "cancelled",
+          durable
+            ? "pending"
+            : answerBeforeCommit
+              ? "resolved"
+              : trigger === "startup"
+                ? "expired"
+                : "cancelled",
         );
         assert.equal(
           final.nodes.find((node) => node.id === `node:${threadId}:${kind}`)?.status,
-          durable ? "waiting" : "cancelled",
+          durable ? "waiting" : answerBeforeCommit ? "completed" : "cancelled",
         );
         assert.equal(
           final.turnItems.find((item) => item.id === `item:${threadId}:${kind}`)?.status,
-          durable ? "waiting" : "cancelled",
+          durable ? "waiting" : answerBeforeCommit ? "completed" : "cancelled",
         );
       }
       assert.equal(
         final.turnItems.find((item) => item.id === `item:${threadId}:terminal`)?.status,
         "completed",
       );
+      if (answerBeforeCommit) {
+        assert.equal(
+          (yield* outbox.listByCommandId(pendingEffectCommandId))[0]?.status,
+          "cancelled",
+        );
+      }
     }).pipe(Effect.provide(Layer.fresh(TestLayer))),
 );
 
