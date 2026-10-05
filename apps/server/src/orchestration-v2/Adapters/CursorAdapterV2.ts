@@ -2414,8 +2414,17 @@ export function makeCursorAdapterV2(
         );
 
         const closeSession = Effect.fnUntraced(function* () {
+          // Coalescing buffers a burst, so a session that goes away mid-response still
+          // has to project what is buffered. Dropping it loses the tail. Nothing
+          // settles the turn: closing a session is not a turn terminal.
           const context = yield* Ref.get(activeTurn);
-          if (context !== null) yield* finalizeTurn({ context, status: "cancelled" });
+          if (context !== null) {
+            yield* completeReasoning(context);
+            yield* completeAssistant(context);
+            // A tool still open here never got its completion, so it stays
+            // running rather than ending with a status nothing chose.
+            yield* shellDeltas.flushPendingTurn(context.providerTurnId);
+          }
           const existing = yield* Ref.get(liveAgent);
           if (existing !== null) {
             yield* existing.session.close.pipe(Effect.ignore);

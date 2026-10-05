@@ -2895,9 +2895,11 @@ export function makeOpenCodeAdapterV2(
           scope,
           Effect.gen(function* () {
             closing = true;
+            // Coalescing buffers a burst, so a session that goes away mid-response
+            // still has to project what is buffered. Dropping it loses the tail.
+            // Nothing here settles a turn: closing a session is not a terminal.
             for (const state of threads.values()) {
-              if (state.activeTurn !== null)
-                yield* finalizeTurn(state, state.activeTurn, "cancelled");
+              if (state.activeTurn !== null) yield* textDeltas.flushTurn(state.nativeSessionId);
             }
           }),
         );

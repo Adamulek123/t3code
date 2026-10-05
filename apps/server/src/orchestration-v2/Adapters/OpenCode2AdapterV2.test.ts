@@ -615,8 +615,8 @@ describe("OpenCode2 adapter", () => {
         [
           out("session.prompt", { sessionID: SESSION, text: "<any>" }),
           promptAccepted,
-          // A block still open when the session goes away, so the terminal the
-          // finalizer settles has to carry the text that was buffered for it.
+          // A block still open when the session goes away, so the flush the
+          // close owes has to carry the text that was buffered for it.
           event("session.text.started", {
             sessionID: SESSION,
             assistantMessageID: open,
@@ -652,7 +652,14 @@ describe("OpenCode2 adapter", () => {
             ? Deferred.succeed(buffered, void 0)
             : Effect.void,
         ),
-        Stream.takeUntil((event) => event.type === "turn.terminal"),
+        // A close settles nothing, so the block it completes is the only stop.
+        Stream.takeUntil(
+          (event) =>
+            event.type === "turn_item.updated" &&
+            event.turnItem.nativeItemRef?.nativeId === `${open}:text:0` &&
+            event.turnItem.type === "assistant_message" &&
+            !event.turnItem.streaming,
+        ),
         Stream.runCollect,
         Effect.forkScoped,
       );
@@ -660,8 +667,7 @@ describe("OpenCode2 adapter", () => {
       yield* Deferred.await(buffered);
       yield* Scope.close(scope, Exit.void);
       const seen = yield* Fiber.join(collected);
-      const terminal = seen.at(-1);
-      assert.equal(terminal?.type === "turn.terminal" ? terminal.status : undefined, "cancelled");
+      assert.isFalse(seen.some((event) => event.type === "turn.terminal"));
       const projected = seen.flatMap((event) =>
         event.type !== "turn_item.updated" ||
         event.turnItem.nativeItemRef?.nativeId !== `${open}:text:0`

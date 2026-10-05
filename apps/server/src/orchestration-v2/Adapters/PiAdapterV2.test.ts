@@ -592,7 +592,23 @@ describe("PiAdapterV2", () => {
               yield* fake.emit({ type: "agent_settled" });
             }
           }
+          // A close settles nothing, so the completed text it flushes is the only
+          // thing that ends the stream. Both text segments are complete by then.
           if (event.type === "turn.terminal") break;
+          if (
+            ending === "teardown" &&
+            event.type === "turn_item.updated" &&
+            event.turnItem.type === "assistant_message" &&
+            !event.turnItem.streaming
+          ) {
+            const completed = events.filter(
+              (candidate) =>
+                candidate.type === "turn_item.updated" &&
+                candidate.turnItem.type === "assistant_message" &&
+                !candidate.turnItem.streaming,
+            );
+            if (completed.length >= 2) break;
+          }
         }
         const items = events
           .filter((event) => event.type === "turn_item.updated")
@@ -629,19 +645,23 @@ describe("PiAdapterV2", () => {
         );
         assert.isBelow(leadingText, toolIndex);
         assert.isAbove(trailingText, toolIndex);
-        assert.equal(events.at(-1)?.type, "turn.terminal");
-        const terminal = events.at(-1);
+        // Closing the session flushes; it settles nothing.
         assert.equal(
-          terminal?.type === "turn.terminal" ? terminal.status : undefined,
-          ending === "teardown" ? "cancelled" : ending,
+          events.some((event) => event.type === "turn.terminal"),
+          ending !== "teardown",
         );
-        // Closing an already finalized turn must leave no second terminal in the queue.
-        yield* Scope.close(sessionScope, Exit.void);
-        yield* TestClock.adjust(0);
-        assert.lengthOf(
-          capturedEvents.filter((event) => event.type === "turn.terminal"),
-          1,
-        );
+        if (ending !== "teardown") {
+          assert.equal(events.at(-1)?.type, "turn.terminal");
+          const terminal = events.at(-1);
+          assert.equal(terminal?.type === "turn.terminal" ? terminal.status : undefined, ending);
+          // Closing an already finalized turn must leave no second terminal in the queue.
+          yield* Scope.close(sessionScope, Exit.void);
+          yield* TestClock.adjust(0);
+          assert.lengthOf(
+            capturedEvents.filter((event) => event.type === "turn.terminal"),
+            1,
+          );
+        }
       }).pipe(Effect.scoped, Effect.provide(testLayer)),
     // The coalescer's timer projection is awaited below, so a coalescer that
     // stopped firing it would hang there rather than fail an assertion. Bound it.

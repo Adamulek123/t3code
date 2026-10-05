@@ -29,6 +29,7 @@ import * as TestClock from "effect/testing/TestClock";
 import * as ServerConfig from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import * as IdAllocator from "../IdAllocator.ts";
+import type { ProviderAdapterV2Event } from "../ProviderAdapter.ts";
 import { ProviderAdapterV2RuntimePolicy } from "../ProviderAdapter.ts";
 import {
   cursorMcpServers,
@@ -246,6 +247,33 @@ describe("CursorAdapterV2", () => {
             attachments: [],
           },
         });
+        // Collected from the start so a session that closes mid-response is
+        // observed on the same terms as one the provider settles. Teardown has
+        // no terminal to stop at, so it waits for the flush the close owes.
+        const captured: Array<ProviderAdapterV2Event> = [];
+        const terminalArrived = yield* Deferred.make<void>();
+        // A close settles nothing, so the second completed text segment — the
+        // one only a flush can finish — is the only thing to wait for.
+        const flushed = yield* Deferred.make<void>();
+        let completedSegments = 0;
+        yield* runtime.events.pipe(
+          Stream.tap((event) => {
+            captured.push(event);
+            if (event.type === "turn.terminal") return Deferred.succeed(terminalArrived, void 0);
+            if (
+              status === "teardown" &&
+              event.type === "turn_item.updated" &&
+              event.turnItem.type === "assistant_message" &&
+              !event.turnItem.streaming &&
+              ++completedSegments === 2
+            ) {
+              return Deferred.succeed(flushed, void 0);
+            }
+            return Effect.void;
+          }),
+          Stream.runDrain,
+          Effect.forkScoped,
+        );
         yield* Deferred.await(tailReady);
         if (status === "teardown") yield* Scope.close(sessionScope, Exit.void);
         if (status === "interrupted") {
@@ -257,10 +285,8 @@ describe("CursorAdapterV2", () => {
             }),
           });
         }
-        const events = yield* runtime.events.pipe(
-          Stream.takeUntil((event) => event.type === "turn.terminal"),
-          Stream.runCollect,
-        );
+        yield* Deferred.await(status === "teardown" ? flushed : terminalArrived);
+        const events = captured;
         const items = events
           .filter((event) => event.type === "turn_item.updated")
           .map((event) => event.turnItem);
@@ -313,6 +339,21 @@ describe("CursorAdapterV2", () => {
           shellOutputs,
           [...shellOutputs].sort((left, right) => left.length - right.length),
         );
+        // The coalescer's tail is projected on every path, including a close
+        // that settles nothing.
+        assert.deepEqual(
+          completedTexts.map((event) => event.text),
+          [text, text],
+        );
+        if (status === "teardown") {
+          // Closing the session flushes, it does not settle: no terminal, and no
+          // tool or subagent row ends with the turn.
+          assert.isUndefined(events.at(-1)?.type === "turn.terminal" ? "terminal" : undefined);
+          const rows = events.filter((event) => event.type === "subagent.updated");
+          assert.equal(rows.at(-1)?.subagent.status, "running");
+          assert.isNull(rows.at(-1)?.subagent.completedAt);
+          return;
+        }
         assert.equal(events.at(-1)?.type, "turn.terminal");
         const rows = events.filter((event) => event.type === "subagent.updated");
         assert.equal(rows[0]?.subagent.status, "running");

@@ -271,7 +271,16 @@ describe("OpenCodeAdapterV2", () => {
             ? Deferred.succeed(runningTurn, event.providerTurn)
             : Effect.void,
         ),
-        Stream.takeUntil((event) => event.type === "turn.terminal"),
+        // A close settles nothing, so its flush is the only thing to stop at.
+        Stream.takeUntil(
+          (event) =>
+            event.type === "turn.terminal" ||
+            (ending === "teardown" &&
+              event.type === "turn_item.updated" &&
+              event.turnItem.type === "assistant_message" &&
+              event.turnItem.nativeItemRef?.nativeId === "tail" &&
+              !event.turnItem.streaming),
+        ),
         Stream.runCollect,
         Effect.forkScoped,
       );
@@ -427,7 +436,12 @@ describe("OpenCodeAdapterV2", () => {
       );
       assert.isBelow(leadingText, toolIndex);
       assert.isAbove(trailingText, toolIndex);
-      assert.equal(events.at(-1)?.type, "turn.terminal");
+      // Closing the session flushes; it settles nothing.
+      assert.equal(
+        events.some((event) => event.type === "turn.terminal"),
+        ending !== "teardown",
+      );
+      if (ending !== "teardown") assert.equal(events.at(-1)?.type, "turn.terminal");
     }).pipe(Effect.provide(IdAllocator.layer), Effect.scoped),
   );
 

@@ -406,7 +406,7 @@ interface ThreadState {
 }
 
 type TurnTerminal =
-  | { readonly status: "completed" | "interrupted" | "cancelled" }
+  | { readonly status: "completed" | "interrupted" }
   | { readonly status: "failed"; readonly failure: ReturnType<typeof makeProviderFailure> };
 
 type Rule = Permission.Rule;
@@ -2951,9 +2951,15 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
 
     yield* Effect.addFinalizer(() =>
       lock.withPermit(
-        Effect.forEach(threads.values(), (state) => finishTurn(state, { status: "cancelled" }), {
-          discard: true,
-        }),
+        // Coalescing buffers a burst, so a session that goes away mid-response
+        // still has to project what is buffered. Dropping it loses the tail.
+        // Nothing here settles a turn: closing a session is not a terminal.
+        Effect.forEach(
+          threads.values(),
+          (state) =>
+            state.active === undefined ? Effect.void : textDeltas.flushTurn(state.sessionId),
+          { discard: true },
+        ),
       ),
     );
     // A server T3 did not start keeps running after T3 stops, so stop the turns
