@@ -3817,6 +3817,182 @@ it.effect(
     }),
 );
 
+it.effect.each([
+  { pauseAt: "credential", terminal: false },
+  { pauseAt: "credential", terminal: true },
+  { pauseAt: "commit", terminal: false },
+  { pauseAt: "commit", terminal: true },
+] as const)(
+  "ProviderSessionManagerV2 serializes detach after reattachment $pauseAt preparation, terminal $terminal",
+  ({ pauseAt, terminal }) =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const reattaching = yield* Ref.make(false);
+      const paused = yield* Deferred.make<void>();
+      const resume = yield* Deferred.make<void>();
+      const order = yield* Ref.make<ReadonlyArray<string>>([]);
+      const threadId = ThreadId.make(`attach-detach-race:${pauseAt}:${terminal}`);
+      const gate = Effect.gen(function* () {
+        yield* Deferred.succeed(paused, undefined);
+        yield* Deferred.await(resume);
+      });
+      const eventSinkLayer = Layer.effect(
+        EventSink.EventSinkV2,
+        Effect.gen(function* () {
+          const delegate = yield* EventSink.EventSinkV2;
+          return EventSink.EventSinkV2.of({
+            ...delegate,
+            write: (input) =>
+              Effect.gen(function* () {
+                const attaching =
+                  (yield* Ref.get(reattaching)) &&
+                  input.events.some(
+                    (event) =>
+                      event.threadId === threadId && event.type === "provider-session.attached",
+                  );
+                if (attaching && pauseAt === "commit") yield* gate;
+                const result = yield* delegate.write(input);
+                if (attaching)
+                  yield* Ref.update(order, (events) => [...events, "attach-committed"]);
+                return result;
+              }),
+          });
+        }),
+      ).pipe(Layer.provide(TestEventSinkLayer));
+      const projectionStoreLayer = Layer.effect(
+        ProjectionStore.ProjectionStoreV2,
+        Effect.gen(function* () {
+          const delegate = yield* ProjectionStore.ProjectionStoreV2;
+          return ProjectionStore.ProjectionStoreV2.of({
+            ...delegate,
+            getThread: (requested) =>
+              Effect.gen(function* () {
+                if (
+                  requested === threadId &&
+                  pauseAt === "credential" &&
+                  (yield* Ref.get(reattaching))
+                )
+                  yield* gate;
+                return yield* delegate.getThread(requested);
+              }),
+            getThreadRecords: (requested, fields, options) =>
+              Effect.gen(function* () {
+                if (
+                  requested === threadId &&
+                  fields.some((field) => field === "providerThreads") &&
+                  (yield* Ref.get(reattaching))
+                ) {
+                  yield* Ref.update(order, (events) => [...events, "detach-read"]);
+                }
+                return yield* delegate.getThreadRecords(requested, fields, options);
+              }),
+          });
+        }),
+      ).pipe(Layer.provide(TestStoresLayer));
+      yield* Effect.gen(function* () {
+        const sink = yield* EventSink.EventSinkV2;
+        const ids = yield* IdAllocator.IdAllocatorV2;
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const registry = yield* McpSessionRegistry.McpSessionRegistry;
+        const now = yield* DateTime.now;
+        const siblingThreadId = ThreadId.make(`attach-detach-race-sibling:${pauseAt}:${terminal}`);
+        const providerSessionId = ids.derive.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+        });
+        const pending = yield* makePendingRuntimeRequestEvents({
+          idAllocator: ids,
+          threadId,
+          providerSessionId,
+          providerThread: makeProviderThread({
+            idAllocator: ids,
+            threadId,
+            providerSessionId,
+            now,
+          }),
+          now,
+        });
+        yield* sink.write({
+          events: [
+            yield* makeThreadCreatedEvent({ idAllocator: ids, threadId, now }),
+            yield* makeThreadCreatedEvent({ idAllocator: ids, threadId: siblingThreadId, now }),
+            ...pending.events,
+          ],
+        });
+        const runtime = yield* manager.open({
+          threadId: siblingThreadId,
+          providerSessionId,
+          modelSelection,
+          runtimePolicy,
+        });
+        yield* manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy });
+        const initialConfig = McpProviderSession.readMcpProviderSession(threadId)!;
+        const initialToken = initialConfig.authorizationHeader.replace(/^Bearer\s+/, "");
+        assert.isDefined(yield* registry.resolve(initialToken));
+        yield* manager.detach({ threadId, providerSessionId });
+        yield* Ref.set(reattaching, true);
+        const attach = yield* manager
+          .open({ threadId, providerSessionId, modelSelection, runtimePolicy })
+          .pipe(Effect.forkScoped);
+        yield* Deferred.await(paused);
+        // Immediate start reaches the queued attachment lock or the decorated
+        // projection read before its first asynchronous suspension.
+        const detach = yield* manager
+          .detach({ threadId, providerSessionId, revokeMcpCredential: terminal })
+          .pipe(Effect.forkScoped({ startImmediately: true }));
+        yield* Deferred.succeed(resume, undefined);
+        yield* Fiber.join(attach);
+        yield* Fiber.join(detach);
+        if (terminal) {
+          const remaining = McpProviderSession.readMcpProviderSession(threadId);
+          if (remaining !== undefined) {
+            assert.isUndefined(
+              yield* registry.resolve(remaining.authorizationHeader.replace(/^Bearer\s+/, "")),
+            );
+          }
+          assert.isFalse(remaining !== undefined);
+          assert.isUndefined(yield* registry.resolve(initialToken));
+        } else {
+          assert.equal(
+            McpProviderSession.readMcpProviderSession(threadId)?.providerSessionId,
+            initialConfig.providerSessionId,
+          );
+          assert.isDefined(yield* registry.resolve(initialToken));
+        }
+        yield* Ref.set(reattaching, false);
+        const subscription = yield* runtime.subscribeEvents!;
+        const queue = (yield* Ref.get(state)).eventQueues.get(String(providerSessionId))!;
+        yield* Queue.offerAll(queue, [
+          ...pending.providerEvents,
+          {
+            type: "provider_session.updated",
+            driver: CODEX_DRIVER,
+            providerSession: runtime.providerSession,
+          },
+        ]);
+        const marker = yield* subscription.events.pipe(Stream.runHead);
+        assert.equal(Option.getOrUndefined(marker)?.type, "provider_session.updated");
+        const projection = yield* projections.getThreadProjection(threadId);
+        assert.equal(projection.runtimeRequests[0]?.status, "cancelled");
+        assert.equal(projection.nodes[0]?.status, "cancelled");
+        assert.equal(projection.turnItems[0]?.status, "cancelled");
+        assert.equal((yield* Ref.get(state)).openCount, 1);
+        assert.equal((yield* Ref.get(state)).closeCount, 0);
+        assert.deepEqual(yield* Ref.get(order), ["attach-committed", "detach-read"]);
+      }).pipe(
+        Effect.provide(
+          makeTestLayer({
+            state,
+            idleTimeoutMs: 1_000,
+            eventSinkLayer,
+            projectionStoreLayer,
+            serverSettingsLayer: ServerSettings.layerTest(),
+          }),
+        ),
+      );
+    }),
+);
+
 it.effect(
   "ProviderSessionManagerV2 re-attaching a thread waits for its in-flight unload, then reloads it",
   () =>

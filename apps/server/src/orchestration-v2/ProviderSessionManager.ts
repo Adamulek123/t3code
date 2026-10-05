@@ -405,7 +405,8 @@ export const layerWithOptions = (
       const releaseRecordRetries = yield* FiberSet.make();
       const nextSubscriberId = yield* Ref.make(0);
       const sessionOpen = yield* KeyedLock.make<ProviderSessionId>();
-      // Orders a thread's attach against a detach unloading it on the same session.
+      // Orders full attach/detach lifecycles on one thread and session, including
+      // credential preparation/revocation, persistence, guard clearing and unload.
       const threadAttachment = yield* KeyedLock.make<string>();
       const threadAttachmentKey = (input: {
         readonly providerSessionId: ProviderSessionId;
@@ -1261,10 +1262,7 @@ export const layerWithOptions = (
             }
           };
           return Effect.gen(function* () {
-            const attached = yield* threadAttachment.withLock(
-              threadAttachmentKey(input),
-              attachThread(input),
-            );
+            const attached = yield* attachThread(input);
             if (attached) {
               const prepared = yield* prepareMcpSession(input.threadId, input.providerInstanceId);
               preparedForCleanup = prepared;
@@ -1331,7 +1329,7 @@ export const layerWithOptions = (
             // is only needed until then. Ensuring covers defects/interrupts.
             Effect.ensuring(Effect.sync(dropReservation)),
           );
-        });
+        }).pipe((attach) => threadAttachment.withLock(threadAttachmentKey(input), attach));
 
       const markBusy = (providerSessionId: ProviderSessionId) =>
         withActivityError(
@@ -2096,45 +2094,39 @@ export const layerWithOptions = (
             // servers) resident until the whole runtime is released.
             const unloadThread = detached.value.exposedRuntime.unloadThread;
             if (detached.value.supportsMultipleProviderThreads && unloadThread !== undefined) {
-              // Serialized with re-attachment: a thread whose next turn
-              // attaches first stays loaded, and one that attaches during the
-              // unload waits for it, so its resume reloads the native thread.
-              yield* threadAttachment.withLock(
-                threadAttachmentKey(input),
-                Effect.gen(function* () {
-                  const entry = (yield* Ref.get(sessions)).get(key);
-                  if (
-                    entry?.runtime !== detached.value.runtime ||
-                    entry.attachedThreadIds.has(input.threadId)
-                  ) {
-                    return;
-                  }
-                  yield* Effect.forEach(
-                    detachedProviderThreads.filter((thread) => thread.nativeThreadRef !== null),
-                    (providerThread) =>
-                      unloadThread({ providerThread }).pipe(
-                        // Bounded so a wedged provider cannot hold up the
-                        // thread's next attach.
-                        Effect.timeout(UNLOAD_THREAD_TIMEOUT_MS),
-                        Effect.catchCause((cause) =>
-                          Effect.logWarning(
-                            "orchestration-v2.driver-session.detach-unload-failed",
-                            {
-                              providerSessionId: input.providerSessionId,
-                              threadId: input.threadId,
-                              providerThreadId: providerThread.id,
-                              cause,
-                            },
-                          ),
-                        ),
+              // Keep the attachment lock through unload so a later reattach
+              // reloads the native thread only after this unload finishes.
+              yield* Effect.gen(function* () {
+                const entry = (yield* Ref.get(sessions)).get(key);
+                if (
+                  entry?.runtime !== detached.value.runtime ||
+                  entry.attachedThreadIds.has(input.threadId)
+                ) {
+                  return;
+                }
+                yield* Effect.forEach(
+                  detachedProviderThreads.filter((thread) => thread.nativeThreadRef !== null),
+                  (providerThread) =>
+                    unloadThread({ providerThread }).pipe(
+                      // Bounded so a wedged provider cannot hold up the
+                      // thread's next attach.
+                      Effect.timeout(UNLOAD_THREAD_TIMEOUT_MS),
+                      Effect.catchCause((cause) =>
+                        Effect.logWarning("orchestration-v2.driver-session.detach-unload-failed", {
+                          providerSessionId: input.providerSessionId,
+                          threadId: input.threadId,
+                          providerThreadId: providerThread.id,
+                          cause,
+                        }),
                       ),
-                    { concurrency: 1, discard: true },
-                  );
-                }),
-              );
+                    ),
+                  { concurrency: 1, discard: true },
+                );
+              });
             }
             yield* scheduleIdleRelease(input.providerSessionId);
           }).pipe(
+            (detach) => threadAttachment.withLock(threadAttachmentKey(input), detach),
             Effect.catchCause((cause) =>
               Effect.fail(
                 new ProviderSessionReleaseError({
