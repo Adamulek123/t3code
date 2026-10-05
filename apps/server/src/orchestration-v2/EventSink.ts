@@ -263,14 +263,19 @@ const baseLayer: Layer.Layer<
 
     // A user can answer after cleanup reads the pending request.
     // Recheck inside the write transaction so stale cleanup cannot erase answers.
-    const guardRuntimeRequestRetirements = (events: ReadonlyArray<OrchestrationV2DomainEvent>) =>
+    const guardRuntimeRequestRetirements = (
+      events: ReadonlyArray<OrchestrationV2DomainEvent>,
+      includeAllRetirements = false,
+    ) =>
       Effect.gen(function* () {
         const staleRequests = new Set<RuntimeRequestId>();
         const staleNodes = new Set<NodeId>();
         for (const event of events) {
           if (
             event.type !== "runtime-request.updated" ||
-            (event.payload.status !== "cancelled" && event.payload.status !== "expired")
+            (includeAllRetirements
+              ? event.payload.status !== "cancelled" && event.payload.status !== "expired"
+              : event.payload.kind !== "user_input" || event.payload.status !== "cancelled")
           )
             continue;
           const current = yield* projectionStore.getRuntimeRequest(
@@ -280,7 +285,7 @@ const baseLayer: Layer.Layer<
           if (
             current?.status !== "pending" ||
             current.kind !== event.payload.kind ||
-            current.nodeId !== event.payload.nodeId ||
+            (includeAllRetirements && current.nodeId !== event.payload.nodeId) ||
             current.providerTurnId !== event.payload.providerTurnId ||
             current.responseCapability.type === "message"
           ) {
@@ -292,7 +297,8 @@ const baseLayer: Layer.Layer<
           switch (event.type) {
             case "runtime-request.updated":
               return (
-                (event.payload.status !== "cancelled" && event.payload.status !== "expired") ||
+                (event.payload.status !== "cancelled" &&
+                  (!includeAllRetirements || event.payload.status !== "expired")) ||
                 !staleRequests.has(event.payload.id)
               );
             case "node.updated":
@@ -300,7 +306,7 @@ const baseLayer: Layer.Layer<
             case "turn-item.updated":
               return (
                 (event.payload.type !== "user_input_request" &&
-                  event.payload.type !== "approval_request") ||
+                  (!includeAllRetirements || event.payload.type !== "approval_request")) ||
                 event.payload.status !== "cancelled" ||
                 !staleRequests.has(event.payload.requestId)
               );
@@ -541,7 +547,7 @@ const baseLayer: Layer.Layer<
 
           const normalized = yield* normalizeEvents(
             input.guardPendingRuntimeRequestRetirements === true
-              ? yield* guardRuntimeRequestRetirements(input.events)
+              ? yield* guardRuntimeRequestRetirements(input.events, true)
               : input.events,
           );
           const storedEvents = yield* eventStore.append({
