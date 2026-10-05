@@ -1951,6 +1951,11 @@ export const layerWithOptions = (
         release: releaseEntry,
         detach: (input) =>
           Effect.gen(function* () {
+            // Archive/delete credentials cannot depend on fallible request
+            // cleanup. Plain workspace detaches retain them for reattachment.
+            if (input.revokeMcpCredential === true) {
+              yield* clearMcpSession(input.threadId).pipe(Effect.uninterruptible);
+            }
             const key = sessionKey(input.providerSessionId);
             const currentEntry = (yield* Ref.get(sessions)).get(key);
             let detachedProviderThreads: ReadonlyArray<OrchestrationV2ProviderThread> = [];
@@ -2039,8 +2044,7 @@ export const layerWithOptions = (
                       // For a plain (workspace-change) detach, the credential id stays
                       // recorded: the thread may re-attach and reuse it, and
                       // releaseEntry revokes it when the provider process finally goes
-                      // away. A terminal detach (archive/delete) prunes the record so
-                      // nothing vetoes the revocation below.
+                      // away. A terminal detach prunes the already revoked record.
                       const mcpCredentialIdByThread =
                         input.revokeMcpCredential === true
                           ? (() => {
@@ -2061,19 +2065,6 @@ export const layerWithOptions = (
                       return [Option.some(updatedEntry), updated] as const;
                     });
                   }).pipe(currentEntry.requestEventPermit.withPermits(1));
-            // Plain detaches deliberately do not revoke: a detached thread's
-            // provider process may still be alive (shared multi-thread codex
-            // session across a workspace handoff) and holds its MCP client's
-            // credential for the thread it will re-attach with. Credentials
-            // are revoked when the session entry is released (process gone)
-            // or rotated on the next attach if they stopped resolving.
-            // Terminal detaches (thread archived or deleted) revoke the
-            // thread's credentials immediately, even on a retry where the
-            // entry is already gone: there is no legitimate future re-attach,
-            // and the token must not outlive the thread.
-            if (input.revokeMcpCredential === true) {
-              yield* clearMcpSession(input.threadId);
-            }
             if (Option.isNone(detached)) {
               return;
             }

@@ -1675,6 +1675,118 @@ it.effect("ProviderSessionManagerV2 terminal detach revokes the thread's MCP cre
   }),
 );
 
+it.effect.each(["read", "write", "interruption"] as const)(
+  "ProviderSessionManagerV2 terminal detach revokes credentials despite request cleanup %s",
+  (failure) =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const mcpConfigs = yield* Ref.make<
+        ReadonlyArray<McpProviderSession.McpProviderSessionConfig | undefined>
+      >([]);
+      const failing = yield* Ref.make(false);
+      const eventSinkLayer = Layer.effect(
+        EventSink.EventSinkV2,
+        Effect.gen(function* () {
+          const delegate = yield* EventSink.EventSinkV2;
+          return EventSink.EventSinkV2.of({
+            ...delegate,
+            write: (input) =>
+              Effect.gen(function* () {
+                if (
+                  (yield* Ref.get(failing)) &&
+                  input.events.some((event) => event.type === "runtime-request.updated")
+                ) {
+                  if (failure === "write")
+                    return yield* Effect.die(new Error("retirement write failed"));
+                  if (failure === "interruption") {
+                    return yield* Effect.interrupt;
+                  }
+                }
+                return yield* delegate.write(input);
+              }),
+          });
+        }),
+      ).pipe(Layer.provide(TestEventSinkLayer));
+      const projectionStoreLayer = Layer.effect(
+        ProjectionStore.ProjectionStoreV2,
+        Effect.gen(function* () {
+          const delegate = yield* ProjectionStore.ProjectionStoreV2;
+          return ProjectionStore.ProjectionStoreV2.of({
+            ...delegate,
+            getThreadRecords: (threadId, fields, options) =>
+              Effect.gen(function* () {
+                if (
+                  failure === "read" &&
+                  (yield* Ref.get(failing)) &&
+                  fields.some((field) => field === "runtimeRequests")
+                ) {
+                  return yield* Effect.die(new Error("retirement projection read failed"));
+                }
+                return yield* delegate.getThreadRecords(threadId, fields, options);
+              }),
+          });
+        }),
+      ).pipe(Layer.provide(TestStoresLayer));
+      yield* Effect.gen(function* () {
+        const eventSink = yield* EventSink.EventSinkV2;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const registry = yield* McpSessionRegistry.McpSessionRegistry;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make(`terminal-detach-failure:${failure}`);
+        const providerSessionId = idAllocator.derive.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+        });
+        const pending = yield* makePendingRuntimeRequestEvents({
+          idAllocator,
+          threadId,
+          providerSessionId,
+          providerThread: makeProviderThread({ idAllocator, threadId, providerSessionId, now }),
+          now,
+        });
+        yield* eventSink.write({
+          events: [
+            yield* makeThreadCreatedEvent({ idAllocator, threadId, now }),
+            ...pending.events,
+          ],
+        });
+        yield* manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy });
+        const token = (yield* Ref.get(mcpConfigs))
+          .at(-1)!
+          .authorizationHeader.replace(/^Bearer\s+/, "");
+        assert.isDefined(yield* registry.resolve(token));
+        yield* Ref.set(failing, true);
+        const detach = manager.detach({ threadId, providerSessionId, revokeMcpCredential: true });
+        assert.isTrue(Exit.isFailure(yield* Effect.exit(detach)));
+        assert.isUndefined(yield* registry.resolve(token));
+        assert.isUndefined(McpProviderSession.readMcpProviderSession(threadId));
+        assert.isTrue(Option.isSome(yield* manager.get(providerSessionId)));
+        yield* Ref.set(failing, false);
+        assert.equal(
+          (yield* projections.getThreadProjection(threadId)).runtimeRequests[0]?.status,
+          "pending",
+        );
+        yield* manager.detach({ threadId, providerSessionId, revokeMcpCredential: true });
+        assert.equal(
+          (yield* projections.getThreadProjection(threadId)).runtimeRequests[0]?.status,
+          "cancelled",
+        );
+        assert.equal((yield* Ref.get(state)).closeCount, 0);
+      }).pipe(
+        Effect.provide(
+          makeTestLayer({
+            state,
+            mcpConfigs,
+            idleTimeoutMs: 1_000,
+            eventSinkLayer,
+            projectionStoreLayer,
+          }),
+        ),
+      );
+    }),
+);
+
 it.effect("ProviderSessionManagerV2 releases idle sessions without sweeping all sessions", () =>
   Effect.gen(function* () {
     const state = yield* Ref.make(emptyState);

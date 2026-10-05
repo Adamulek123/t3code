@@ -512,6 +512,7 @@ it.effect.each([
         ],
       );
       const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const eventStore = yield* EventStore.EventStoreV2;
       const pendingEffectCommandId = CommandId.make(`command:${threadId}:pending`);
       if (answerBeforeCommit) {
         yield* outbox.enqueue([
@@ -575,7 +576,7 @@ it.effect.each([
               assert.equal(result.receipt.status, "accepted");
               assert.equal(
                 result.receipt.resultSequence,
-                yield* (yield* EventStore.EventStoreV2).latestSequence({ threadId }),
+                yield* eventStore.latestSequence({ threadId }).pipe(Effect.orDie),
               );
               assert.equal(result.cancelledEffectCount, 1);
               assert.isFalse((yield* eventSink.commitCommand(input)).committed);
