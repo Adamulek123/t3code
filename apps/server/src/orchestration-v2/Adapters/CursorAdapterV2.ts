@@ -2352,6 +2352,8 @@ export function makeCursorAdapterV2(
         );
 
         const closeSession = Effect.fnUntraced(function* () {
+          const context = yield* Ref.get(activeTurn);
+          if (context !== null) yield* finalizeTurn({ context, status: "cancelled" });
           const existing = yield* Ref.get(liveAgent);
           if (existing !== null) {
             yield* existing.session.close.pipe(Effect.ignore);

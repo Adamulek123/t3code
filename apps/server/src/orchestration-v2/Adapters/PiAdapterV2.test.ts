@@ -20,12 +20,14 @@ import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as PlatformError from "effect/PlatformError";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
@@ -338,14 +340,17 @@ const openRuntime = Effect.fnUntraced(function* (
   threadId = THREAD_ID,
   providerSessionId = SESSION_ID,
   forkFake?: FakePi,
+  sessionScope?: Scope.Scope,
 ) {
   const adapter = yield* makeAdapter(fake, "", forkFake);
-  const runtime = yield* adapter.openSession({
-    threadId,
-    providerSessionId,
-    modelSelection: modelSelection(model),
-    runtimePolicy,
-  });
+  const runtime = yield* adapter
+    .openSession({
+      threadId,
+      providerSessionId,
+      modelSelection: modelSelection(model),
+      runtimePolicy,
+    })
+    .pipe(Effect.provideService(Scope.Scope, sessionScope ?? (yield* Effect.scope)));
   const emitted = yield* Queue.unbounded<ProviderAdapterV2Event>();
   yield* runtime.events.pipe(
     Stream.runForEach((event) => Queue.offer(emitted, event)),
@@ -461,6 +466,34 @@ const expectModelFailure = (errorMessage: string) =>
   }).pipe(Effect.scoped, Effect.provide(layerTest));
 
 describe("PiAdapterV2", () => {
+  it.effect("settles a live turn when the session closes", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi;
+      const sessionScope = yield* Scope.make();
+      yield* Effect.addFinalizer(() => Scope.close(sessionScope, Exit.void));
+      const { runtime, takeEvent } = yield* openRuntime(
+        fake,
+        "default",
+        THREAD_ID,
+        SESSION_ID,
+        undefined,
+        sessionScope,
+      );
+      const providerThread = yield* runtime.ensureThread({
+        threadId: THREAD_ID,
+        modelSelection: modelSelection("default"),
+        runtimePolicy,
+      });
+      yield* startTurn(runtime, providerThread);
+      yield* fake.takeRequest("prompt");
+      // The turn is live: no `agent_settled`, so nothing but the close can end it.
+      yield* fake.emit({ type: "agent_start" });
+      yield* Scope.close(sessionScope, Exit.void);
+      const terminal = yield* takeEvent((event) => event.type === "turn.terminal");
+      assert.equal(terminal.type === "turn.terminal" ? terminal.status : undefined, "cancelled");
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
   it.effect("stops provider-initiated work that has no T3 turn owner", () =>
     Effect.gen(function* () {
       const fake = yield* makeFakePi;

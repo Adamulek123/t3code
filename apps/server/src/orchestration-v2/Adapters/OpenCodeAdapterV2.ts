@@ -2812,8 +2812,12 @@ export function makeOpenCodeAdapterV2(
 
         yield* Scope.addFinalizer(
           scope,
-          Effect.sync(() => {
+          Effect.gen(function* () {
             closing = true;
+            for (const state of threads.values()) {
+              if (state.activeTurn !== null)
+                yield* finalizeTurn(state, state.activeTurn, "cancelled");
+            }
           }),
         );
 

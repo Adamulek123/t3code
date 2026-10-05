@@ -404,7 +404,7 @@ interface ThreadState {
 }
 
 type TurnTerminal =
-  | { readonly status: "completed" | "interrupted" }
+  | { readonly status: "completed" | "interrupted" | "cancelled" }
   | { readonly status: "failed"; readonly failure: ReturnType<typeof makeProviderFailure> };
 
 type Rule = Permission.Rule;
@@ -2882,6 +2882,13 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
     // Subscribed before any session or prompt call, so no event of theirs is missed.
     yield* follow(yield* connection.events).pipe(Effect.forkScoped);
 
+    yield* Effect.addFinalizer(() =>
+      lock.withPermit(
+        Effect.forEach(threads.values(), (state) => finishTurn(state, { status: "cancelled" }), {
+          discard: true,
+        }),
+      ),
+    );
     // A server T3 did not start keeps running after T3 stops, so stop the turns
     // it would otherwise finish unseen. A spawned server stops with its owner.
     if (connection.external) {

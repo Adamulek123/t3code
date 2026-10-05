@@ -15,11 +15,14 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
 import * as ServerConfig from "../../config.ts";
@@ -45,10 +48,15 @@ describe("CursorAdapterV2", () => {
     { status: "error", model: "custom-fable", lateModel: undefined },
     { status: "finished", model: undefined, lateModel: "gpt-6-sol" },
     { status: "finished", model: "gpt-6-sol", lateModel: null },
+    { status: "teardown", model: undefined, lateModel: undefined },
   ] as const)(
     "projects Cursor tasks: $status, late model $lateModel",
     ({ status, model, lateModel }) =>
       Effect.gen(function* () {
+        // A teardown ends the run by closing the session, never by the SDK
+        // answering, so the collected events have to start before it closes.
+        const sessionScope = yield* Scope.make();
+        yield* Effect.addFinalizer(() => Scope.close(sessionScope, Exit.void));
         const fileSystem = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
         const workspace = yield* fileSystem.makeTempDirectoryScoped({
@@ -121,25 +129,30 @@ describe("CursorAdapterV2", () => {
                     return {
                       agentId: "native-cursor-lifecycle",
                       runId: "native-cursor-run",
-                      wait: Effect.succeed({
-                        id: "native-cursor-run",
-                        requestId: "native-request",
-                        status,
-                        model: { id: "composer-2.5" },
-                        durationMs: 1,
-                      }),
+                      wait:
+                        status === "teardown"
+                          ? Effect.never
+                          : Effect.succeed({
+                              id: "native-cursor-run",
+                              requestId: "native-request",
+                              status,
+                              model: { id: "composer-2.5" },
+                              durationMs: 1,
+                            }),
                       cancel: Effect.void,
                     };
                   }),
               }),
           },
         });
-        const runtime = yield* adapter.openSession({
-          threadId,
-          providerSessionId: ProviderSessionId.make("cursor-lifecycle-session"),
-          modelSelection,
-          runtimePolicy,
-        });
+        const runtime = yield* adapter
+          .openSession({
+            threadId,
+            providerSessionId: ProviderSessionId.make("cursor-lifecycle-session"),
+            modelSelection,
+            runtimePolicy,
+          })
+          .pipe(Effect.provideService(Scope.Scope, sessionScope));
         const providerThread = yield* runtime.ensureThread({
           threadId,
           modelSelection,
@@ -187,21 +200,34 @@ describe("CursorAdapterV2", () => {
             attachments: [],
           },
         });
-        const events = yield* runtime.events.pipe(
+        const collected = yield* runtime.events.pipe(
           Stream.takeUntil((event) => event.type === "turn.terminal"),
           Stream.runCollect,
+          Effect.forkScoped,
         );
+        if (status === "teardown") yield* Scope.close(sessionScope, Exit.void);
+        const events = yield* Fiber.join(collected);
+        assert.equal(events.at(-1)?.type, "turn.terminal");
+const terminal = events.at(-1);
+      assert.equal(
+        terminal?.type === "turn.terminal" ? terminal.status : undefined,
+        status === "finished"
+          ? "completed"
+          : status === "cancelled" || status === "teardown"
+            ? "cancelled"
+            : "failed",
+      );
         const rows = events.filter((event) => event.type === "subagent.updated");
         assert.equal(rows[0]?.subagent.status, "running");
         assert.equal(rows[0]?.subagent.model, model ?? null);
         assert.equal(rows.at(-1)?.subagent.model, lateModel ?? model ?? null);
         assert.equal(
           rows.at(-1)?.subagent.status,
-          lateModel !== undefined
+lateModel !== undefined
             ? "completed"
             : status === "finished"
               ? "idle"
-              : status === "cancelled"
+              : status === "cancelled" || status === "teardown"
                 ? "cancelled"
                 : "failed",
         );

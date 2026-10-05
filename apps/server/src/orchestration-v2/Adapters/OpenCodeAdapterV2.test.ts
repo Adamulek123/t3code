@@ -146,6 +146,7 @@ const makeOpenCodeRuntimeHarness = Effect.fn("makeOpenCodeRuntimeHarness")(funct
   suffix: string,
   nativeSessionId: string,
   client: object,
+  sessionScope?: Scope.Scope,
 ) {
   const idAllocator = yield* IdAllocator.IdAllocatorV2;
   const instanceId = ProviderInstanceId.make(`opencode-${suffix}`);
@@ -170,12 +171,14 @@ const makeOpenCodeRuntimeHarness = Effect.fn("makeOpenCodeRuntimeHarness")(funct
       attachmentsDir: "/tmp/attachments",
     } as ServerConfig.ServerConfig["Service"],
   });
-  const runtime = yield* adapter.openSession({
-    threadId,
-    providerSessionId: ProviderSessionId.make(`session-opencode-${suffix}`),
-    modelSelection,
-    runtimePolicy: policy,
-  });
+  const runtime = yield* adapter
+    .openSession({
+      threadId,
+      providerSessionId: ProviderSessionId.make(`session-opencode-${suffix}`),
+      modelSelection,
+      runtimePolicy: policy,
+    })
+    .pipe(Effect.provideService(Scope.Scope, sessionScope ?? (yield* Effect.scope)));
   const providerThread = yield* runtime.ensureThread({
     threadId,
     modelSelection,
@@ -237,6 +240,47 @@ const makeOpenCodeRuntimeHarness = Effect.fn("makeOpenCodeRuntimeHarness")(funct
 });
 
 describe("OpenCodeAdapterV2", () => {
+  it.effect("settles a live turn when the session closes", () =>
+    Effect.gen(function* () {
+      const sessionScope = yield* Scope.make();
+      yield* Effect.addFinalizer(() => Scope.close(sessionScope, Exit.void));
+      const nativeEvents = asyncEventStream();
+      const harness = yield* makeOpenCodeRuntimeHarness(
+        "teardown",
+        "root",
+        {
+          event: { subscribe: async () => ({ stream: nativeEvents.stream }) },
+          session: {
+            create: async () => ({ data: { id: "root", time: { created: 1, updated: 1 } } }),
+            promptAsync: async () => ({ data: true }),
+            abort: async () => ({ data: true }),
+            children: async () => ({ data: [] }),
+          },
+        },
+        sessionScope,
+      );
+      const collected = yield* harness.runtime.events.pipe(
+        Stream.takeUntil((event) => event.type === "turn.terminal"),
+        Stream.runCollect,
+        Effect.forkScoped,
+      );
+      // The turn is live: no idle status, no session error, nothing to settle it
+      // but the close itself.
+      yield* harness.startTurn();
+      yield* Scope.close(sessionScope, Exit.void);
+      const events = yield* Fiber.join(collected);
+      const terminal = events.at(-1);
+      assert.equal(terminal?.type === "turn.terminal" ? terminal.status : undefined, "cancelled");
+      const settled = events.filter(
+        (event) =>
+          event.type === "provider_turn.updated" &&
+          event.providerTurn.status === "cancelled" &&
+          event.providerTurn.completedAt !== null,
+      );
+      assert.lengthOf(settled, 1);
+    }).pipe(Effect.provide(IdAllocator.layer), Effect.scoped),
+  );
+
   it.effect.each(["completed", "failed", "unresolved", "unavailable", "reconnect"] as const)(
     "normalizes OpenCode step usage for %s turns",
     (ending) =>

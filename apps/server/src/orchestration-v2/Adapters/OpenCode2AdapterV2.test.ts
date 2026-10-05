@@ -509,8 +509,16 @@ describe("OpenCode2 adapter", () => {
         ],
         { external: true },
       ).pipe(Scope.provide(scope));
+      const collected = yield* runtime.events.pipe(
+        Stream.takeUntil((event) => event.type === "turn.terminal"),
+        Stream.runCollect,
+        Effect.forkScoped,
+      );
       yield* runtime.startTurn(turnInput(thread));
       yield* Scope.close(scope, Exit.void);
+      const seen = yield* Fiber.join(collected);
+      const terminal = seen.at(-1);
+      assert.equal(terminal?.type === "turn.terminal" ? terminal.status : undefined, "cancelled");
     }),
   );
 
