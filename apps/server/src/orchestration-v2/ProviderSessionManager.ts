@@ -187,6 +187,9 @@ export class ProviderSessionManagerV2 extends Context.Service<
 
 interface LiveSessionEntry {
   readonly attachedThreadIds: ReadonlySet<ThreadId>;
+  // Adapters discover child threads without attaching them through the manager.
+  // Only an explicit detach blocks their request artifacts until reattachment.
+  readonly detachedThreadIds: ReadonlySet<ThreadId>;
   readonly loadedProviderThreadKeyByThread: ReadonlyMap<ThreadId, string>;
   /**
    * MCP credential session id issued for each attached thread. Revocation on
@@ -1180,9 +1183,12 @@ export const layerWithOptions = (
               return [false, current] as const;
             }
             const updated = new Map(current);
+            const detachedThreadIds = new Set(entry.detachedThreadIds);
+            detachedThreadIds.delete(input.threadId);
             updated.set(sessionKey(input.providerSessionId), {
               ...entry,
               attachedThreadIds: new Set([...entry.attachedThreadIds, input.threadId]),
+              detachedThreadIds,
             });
             return [true, updated] as const;
           }),
@@ -1614,7 +1620,7 @@ export const layerWithOptions = (
                       );
                       if (
                         current?.runtime !== entry.runtime ||
-                        !current.attachedThreadIds.has(requestThreadId)
+                        current.detachedThreadIds.has(requestThreadId)
                       ) {
                         return;
                       }
@@ -1835,6 +1841,7 @@ export const layerWithOptions = (
               const now = yield* Clock.currentTimeMillis;
               const entry: LiveSessionEntry = {
                 attachedThreadIds: new Set([input.threadId]),
+                detachedThreadIds: new Set(),
                 loadedProviderThreadKeyByThread: new Map(),
                 mcpCredentialIdByThread:
                   mcpCredentialId === undefined
@@ -2000,7 +2007,7 @@ export const layerWithOptions = (
                     const entry = (yield* Ref.get(sessions)).get(key);
                     if (
                       entry?.runtime !== currentEntry.runtime ||
-                      !entry.attachedThreadIds.has(input.threadId)
+                      entry.detachedThreadIds.has(input.threadId)
                     ) {
                       return Option.none<LiveSessionEntry>();
                     }
@@ -2017,12 +2024,14 @@ export const layerWithOptions = (
                       const entry = current.get(key);
                       if (
                         entry?.runtime !== currentEntry.runtime ||
-                        !entry.attachedThreadIds.has(input.threadId)
+                        entry.detachedThreadIds.has(input.threadId)
                       ) {
                         return [Option.none<LiveSessionEntry>(), current] as const;
                       }
                       const attachedThreadIds = new Set(entry.attachedThreadIds);
                       attachedThreadIds.delete(input.threadId);
+                      const detachedThreadIds = new Set(entry.detachedThreadIds);
+                      detachedThreadIds.add(input.threadId);
                       const loadedProviderThreadKeyByThread = new Map(
                         entry.loadedProviderThreadKeyByThread,
                       );
@@ -2043,6 +2052,7 @@ export const layerWithOptions = (
                       const updatedEntry = {
                         ...entry,
                         attachedThreadIds,
+                        detachedThreadIds,
                         loadedProviderThreadKeyByThread,
                         mcpCredentialIdByThread,
                       };

@@ -2952,6 +2952,171 @@ it.effect(
     }),
 );
 
+it.effect.each(["approval_request", "user_input_request"] as const)(
+  "ProviderSessionManagerV2 accepts unattached child %s artifacts and rejects explicitly detached ones",
+  (requestType) =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      yield* Effect.gen(function* () {
+        const eventSink = yield* EventSink.EventSinkV2;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make(`child-request:${requestType}`);
+        const rootThreadId = ThreadId.make(`child-request-root:${requestType}`);
+        const providerSessionId = idAllocator.derive.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+        });
+        yield* eventSink.write({
+          events: [
+            yield* makeThreadCreatedEvent({ idAllocator, threadId, now }),
+            yield* makeThreadCreatedEvent({ idAllocator, threadId: rootThreadId, now }),
+          ],
+        });
+        const runtime = yield* manager.open({
+          threadId: rootThreadId,
+          providerSessionId,
+          modelSelection,
+          runtimePolicy,
+        });
+        const pending = yield* makePendingRuntimeRequestEvents({
+          idAllocator,
+          threadId,
+          providerSessionId,
+          providerThread: makeProviderThread({ idAllocator, threadId, providerSessionId, now }),
+          now,
+        });
+        const artifacts = pending.providerEvents.map((event): ProviderAdapterV2Event => {
+          if (requestType === "user_input_request") {
+            if (event.type === "turn_item.updated")
+              return {
+                ...event,
+                turnItem: { ...event.turnItem, type: requestType, questions: [] },
+              };
+            if (event.type === "runtime_request.updated")
+              return { ...event, runtimeRequest: { ...event.runtimeRequest, kind: "user_input" } };
+            if (event.type === "node.updated")
+              return { ...event, node: { ...event.node, kind: requestType } };
+          }
+          return event;
+        });
+        const subscribe = runtime.subscribeEvents;
+        assert.isDefined(subscribe);
+        if (subscribe === undefined) return;
+        let subscription = yield* subscribe;
+        const queue = (yield* Ref.get(state)).eventQueues.get(String(providerSessionId))!;
+        const marker = {
+          type: "provider_session.updated",
+          driver: CODEX_DRIVER,
+          providerSession: runtime.providerSession,
+        } as const;
+        // Native children are discovered by adapters, without manager.open(child).
+        yield* Queue.offerAll(queue, [...artifacts, marker]);
+        assert.equal(
+          (yield* subscription.events.pipe(Stream.runHead)).pipe(Option.getOrUndefined)?.type,
+          "provider_session.updated",
+        );
+        let projection = yield* projections.getThreadProjection(threadId);
+        assert.equal(projection.runtimeRequests[0]?.status, "pending");
+        assert.equal(projection.nodes[0]?.status, "waiting");
+        assert.equal(projection.turnItems[0]?.status, "waiting");
+        // OpenCode2 native children have a provider turn but no app run: request
+        // events go to the subscriber while node/item artifacts persist directly.
+        subscription = yield* subscribe;
+        const nativeChildArtifacts = artifacts.map((event): ProviderAdapterV2Event => {
+          switch (event.type) {
+            case "runtime_request.updated":
+              return {
+                ...event,
+                runtimeRequest: {
+                  ...event.runtimeRequest,
+                  providerTurnId: ProviderTurnId.make("native-child-turn"),
+                },
+              };
+            case "node.updated":
+              return {
+                ...event,
+                node: { ...event.node, providerTurnId: ProviderTurnId.make("native-child-turn") },
+              };
+            case "turn_item.updated":
+              return {
+                ...event,
+                turnItem: {
+                  ...event.turnItem,
+                  providerTurnId: ProviderTurnId.make("native-child-turn"),
+                },
+              };
+            default:
+              return event;
+          }
+        });
+        yield* Queue.offerAll(queue, [...nativeChildArtifacts, marker]);
+        assert.deepEqual(
+          Array.from(yield* subscription.events.pipe(Stream.take(2), Stream.runCollect)).map(
+            (event) => event.type,
+          ),
+          ["runtime_request.updated", "provider_session.updated"],
+        );
+        projection = yield* projections.getThreadProjection(threadId);
+        assert.equal(projection.nodes[0]?.providerTurnId, "native-child-turn");
+        assert.equal(projection.turnItems[0]?.providerTurnId, "native-child-turn");
+        // Turn-owned frames must also reach the run subscriber for unknown children.
+        const turnArtifacts = artifacts.map((event): ProviderAdapterV2Event => {
+          switch (event.type) {
+            case "runtime_request.updated":
+              return {
+                ...event,
+                runtimeRequest: {
+                  ...event.runtimeRequest,
+                  providerTurnId: ProviderTurnId.make("child-turn"),
+                },
+              };
+            case "node.updated":
+              return { ...event, node: { ...event.node, runId: RunId.make("child-run") } };
+            case "turn_item.updated":
+              return { ...event, turnItem: { ...event.turnItem, runId: RunId.make("child-run") } };
+            default:
+              return event;
+          }
+        });
+        subscription = yield* subscribe;
+        yield* Queue.offerAll(queue, [...turnArtifacts, marker]);
+        assert.sameMembers(
+          Array.from(yield* subscription.events.pipe(Stream.take(4), Stream.runCollect)).map(
+            (event) => event.type,
+          ),
+          [
+            "runtime_request.updated",
+            "node.updated",
+            "turn_item.updated",
+            "provider_session.updated",
+          ],
+        );
+        yield* manager.detach({ threadId, providerSessionId });
+        subscription = yield* subscribe;
+        yield* Queue.offerAll(queue, [...artifacts, ...turnArtifacts, marker]);
+        assert.equal(
+          (yield* subscription.events.pipe(Stream.runHead)).pipe(Option.getOrUndefined)?.type,
+          "provider_session.updated",
+        );
+        projection = yield* projections.getThreadProjection(threadId);
+        assert.equal(projection.runtimeRequests[0]?.status, "cancelled");
+        assert.equal(projection.nodes[0]?.status, "cancelled");
+        assert.equal(projection.turnItems[0]?.status, "cancelled");
+        yield* manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy });
+        subscription = yield* subscribe;
+        yield* Queue.offerAll(queue, [...artifacts, marker]);
+        yield* subscription.events.pipe(Stream.runHead);
+        assert.equal(
+          (yield* projections.getThreadProjection(threadId)).runtimeRequests[0]?.status,
+          "pending",
+        );
+        assert.equal((yield* Ref.get(state)).openCount, 1);
+      }).pipe(Effect.provide(makeTestLayer({ state, idleTimeoutMs: 1_000 })));
+    }),
+);
+
 it.effect("ProviderSessionManagerV2 terminalizes a pending input transcript item on release", () =>
   Effect.gen(function* () {
     const state = yield* Ref.make(emptyState);
