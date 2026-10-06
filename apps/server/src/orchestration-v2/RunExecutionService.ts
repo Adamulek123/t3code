@@ -1045,16 +1045,19 @@ export const layer: Layer.Layer<
                 checkpointScope: input.checkpointScope,
                 providerThread,
                 attempt: input.attempt,
-                ...(guardRunCurrent
+                ...(guardRunCurrent || input.shouldFinalizeRun === undefined
+                  ? {}
+                  : { shouldFinalizeRun: input.shouldFinalizeRun }),
+                // Stop may commit after the ownership read. Guard normal
+                // terminals and synthetic failures with the same transaction.
+                ...(guardRunCurrent || input.shouldFinalizeRun !== undefined
                   ? {
                       writeIfRunCurrent: {
                         activeAttemptId: input.attempt.id,
                         expectedStatus: "running" as const,
                       },
                     }
-                  : input.shouldFinalizeRun === undefined
-                    ? {}
-                    : { shouldFinalizeRun: input.shouldFinalizeRun }),
+                  : {}),
                 ...(input.hasUnpairedRunInterruptRequest === undefined
                   ? {}
                   : {
@@ -1515,7 +1518,7 @@ export const layer: Layer.Layer<
   }),
 );
 
-function makeInterruptResultTurnItem(input: {
+export function makeInterruptResultTurnItem(input: {
   readonly idAllocator: IdAllocator.IdAllocatorV2Shape;
   readonly run: OrchestrationV2Run;
   readonly rootNode: OrchestrationV2ExecutionNode;

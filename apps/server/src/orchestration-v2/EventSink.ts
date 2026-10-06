@@ -590,14 +590,13 @@ const layerBase: Layer.Layer<
             return { committed: true as const, storedEvents };
           }),
           (result) =>
-            result.committed
-              ? Effect.gen(function* () {
-                  if (input.effects !== undefined && input.effects.length > 0) {
-                    yield* effectOutbox.notifyAvailable(input.effects.length);
-                  }
-                  yield* publishStoredEvents(result.storedEvents);
-                })
-              : Effect.void,
+            Effect.gen(function* () {
+              if (!result.committed) return;
+              if (input.effects !== undefined && input.effects.length > 0) {
+                yield* effectOutbox.notifyAvailable(input.effects.length);
+              }
+              yield* publishStoredEvents(result.storedEvents);
+            }),
         );
       },
     );
