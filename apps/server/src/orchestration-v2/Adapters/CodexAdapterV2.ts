@@ -5726,6 +5726,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             subagent: null,
             startedAt: now,
             itemPositions: new Map(),
+            planDeltas: new Map(),
           };
           const providerTurn = {
             id: context.providerTurnId,

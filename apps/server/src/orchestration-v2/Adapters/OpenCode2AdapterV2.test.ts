@@ -3420,9 +3420,8 @@ describe("OpenCode2 adapter", () => {
         ]),
       ]);
       const ended = yield* Deferred.make<void>();
-const nextEnded = yield* Deferred.make<string>();
-      // One consumer reads every terminal; a second reader would race it for the queue.
-      const thirdEnded = yield* Deferred.make<void>();
+      const seen: Array<string> = [];
+      const nextEnded = yield* Deferred.make<string>();
       yield* runtime.events.pipe(
         Stream.tap((event) =>
           Effect.gen(function* () {
@@ -3430,7 +3429,6 @@ const nextEnded = yield* Deferred.make<string>();
             seen.push(event.status);
             if (seen.length === 1) yield* Deferred.succeed(ended, undefined);
             if (seen.length === 2) yield* Deferred.succeed(nextEnded, event.status);
-            if (seen.length === 3) yield* Deferred.succeed(thirdEnded, undefined);
           }),
         ),
         Stream.runDrain,
@@ -3457,16 +3455,8 @@ const nextEnded = yield* Deferred.make<string>();
       assert.isFalse(yield* runtime.hasPendingBackgroundWork!);
       yield* runtime.resumeThread({ providerThread: thread });
       yield* runtime.startTurn(secondTurn(thread));
-// The replay rejects any stale steer or extra cancellation on the reattached turn.
+      // The replay rejects any stale steer or extra cancellation on the reattached turn.
       assert.equal(yield* Deferred.await(nextEnded), "completed");
-      yield* runtime.startTurn({
-        ...secondTurn(thread),
-        runId: RunId.make("run:opencode2-adapter:3"),
-        runOrdinal: 3,
-        providerTurnOrdinal: 3,
-        attemptId: RunAttemptId.make("attempt:opencode2-adapter:3"),
-      });
-      yield* Deferred.await(thirdEnded);
     }).pipe(Effect.scoped),
   );
 

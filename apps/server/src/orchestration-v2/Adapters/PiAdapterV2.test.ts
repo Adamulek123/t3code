@@ -1690,7 +1690,7 @@ describe("PiAdapterV2", () => {
       ) {
         assert.equal(asked.threadId, targetThreadId);
       }
-    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+    }).pipe(Effect.scoped, Effect.provide(layerTest)),
   );
 
   it.effect("drops session approvals when pi moved to another session mid-turn", () =>
@@ -1751,7 +1751,7 @@ describe("PiAdapterV2", () => {
         fake.takeRequest("extension_ui_response").pipe(Effect.as(false)),
       );
       assert.isTrue(askedAgain);
-    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+    }).pipe(Effect.scoped, Effect.provide(layerTest)),
   );
 
   it.effect("offers an explicit empty value for extension input dialogs", () =>

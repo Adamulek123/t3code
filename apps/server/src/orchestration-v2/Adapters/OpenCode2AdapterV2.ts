@@ -904,13 +904,18 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
     const stagedReverts = new Set<string>();
     // Starting a turn and cutting the history take turns on a session: each
     // checks that the other is not running before its own requests yield.
-const sessionGates = yield* KeyedLock.make<string>();
+    const sessionGates = yield* KeyedLock.make<string>();
+    // `KeyedLock` is not reentrant: taking a key while already holding it on
+    // the same session deadlocks. Nothing called from inside an `exclusive`
+    // block may re-enter `exclusive` for that same session. The blocks below
+    // (startTurn, unloadThread, rollback, fork) only call helpers that issue
+    // their own requests directly; keep it that way.
     const exclusive =
       (providerThread: OrchestrationV2ProviderThread) =>
       <A, E, R>(effect: Effect.Effect<A, E, R>) => {
         const sessionId = providerThread.nativeThreadRef?.nativeId;
         if (sessionId == null) return effect;
-return sessionGates.withLock(sessionId, effect);
+        return sessionGates.withLock(sessionId, effect);
       };
     const emit = (event: ProviderAdapter.ProviderAdapterV2Event) =>
       Queue.offer(events, event).pipe(Effect.asVoid);

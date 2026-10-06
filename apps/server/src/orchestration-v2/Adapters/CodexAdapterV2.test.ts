@@ -6933,7 +6933,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     ),
   );
 
-it.effect.each(["failed", "malformed", "wrong child", "blank model"] as const)(
+  it.effect.each(["failed", "malformed", "wrong child", "blank model"] as const)(
     "resumes child metadata after a %s read",
     (readResult) =>
       Effect.scoped(
