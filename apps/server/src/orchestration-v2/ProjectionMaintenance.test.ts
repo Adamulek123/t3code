@@ -26,14 +26,11 @@ import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 import * as TestConsole from "effect/testing/TestConsole";
 import * as Tracer from "effect/Tracer";
-import { Command } from "effect/unstable/cli";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { Command } from "effect/cli";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import { cli } from "../binCli.ts";
-import {
-  makeSqlitePersistenceLive,
-  SqlitePersistenceMemory,
-} from "../persistence/Layers/Sqlite.ts";
+import { layerFromPath, layerMemory } from "../persistence/Sqlite.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import { ServerActivation } from "../serverActivation.ts";
 import { PersistedServerRuntimeState } from "../serverRuntimeState.ts";
@@ -49,7 +46,7 @@ const encodePersistedServerRuntimeState = Schema.encodeEffect(
 );
 
 const stores = Layer.mergeAll(EventStore.layer, ProjectionStore.layer).pipe(
-  Layer.provideMerge(SqlitePersistenceMemory),
+  Layer.provideMerge(layerMemory),
 );
 const sink = EventSink.layer.pipe(Layer.provide(stores));
 const TestLayer = Layer.mergeAll(
@@ -298,7 +295,7 @@ it.effect("verifies and repairs drift through the CLI and refuses a running serv
         // Each CLI process has its own stores, separate from the in-memory fixture.
         Effect.provideService(Layer.CurrentMemoMap, Layer.makeMemoMapUnsafe()),
       );
-    const onDisk = makeSqlitePersistenceLive(dbPath);
+    const onDisk = layerFromPath(dbPath);
     yield* run("verify");
     yield* Effect.scoped(
       Effect.gen(function* () {
