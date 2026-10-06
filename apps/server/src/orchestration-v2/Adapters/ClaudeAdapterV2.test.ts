@@ -5012,11 +5012,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       const firstAttempt = RunAttemptId.make("held-plan-first");
       const secondAttempt = RunAttemptId.make("held-plan-second");
       const thirdAttempt = RunAttemptId.make("held-plan-third");
-      const stamp = (frame: SDKMessage, attempt: RunAttemptId) =>
-        claudeSdkFrame({
+      const stamp = Effect.fnUntraced(function* (frame: SDKMessage, attempt: RunAttemptId) {
+        return claudeSdkFrame({
           ...frame,
-          user_message_uuid: ClaudeAdapterV2.claudePromptUuid(attempt),
+          user_message_uuid: yield* ClaudeAdapterV2.claudePromptUuid(attempt),
         });
+      });
       const start = (attemptId: RunAttemptId, providerTurnOrdinal: number) =>
         harness.runtime.startTurn(
           makeClaudeTestTurnInput({
@@ -5031,13 +5032,13 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         );
       yield* start(firstAttempt, 1);
       yield* harness.offerAndWait(
-        stamp(
+        yield* stamp(
           makeAssistantTextFrame({ uuid: "00000000-0000-4000-8000-000000000801", text: "One." }),
           firstAttempt,
         ),
       );
       yield* harness.offerAndWait(
-        stamp(
+        yield* stamp(
           makeResultFrame({ uuid: "00000000-0000-4000-8000-000000000802", result: "One." }),
           firstAttempt,
         ),
@@ -5091,9 +5092,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       yield* Fiber.join(stopping);
       assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "interrupted");
       yield* start(thirdAttempt, 3);
-      yield* harness.offerAndWait(stamp(planFrame, thirdAttempt));
+      yield* harness.offerAndWait(yield* stamp(planFrame, thirdAttempt));
       yield* harness.offerAndWait(
-        stamp(
+        yield* stamp(
           makeResultFrame({ uuid: "00000000-0000-4000-8000-000000000804", result: "Three." }),
           thirdAttempt,
         ),
