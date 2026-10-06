@@ -103,7 +103,7 @@ it.effect.each([
       Layer.provide(
         Layer.mergeAll(
           NodeServices.layer,
-Layer.mock(WorkspaceEntries.WorkspaceEntries)({ refresh: () => Effect.void }),
+          Layer.mock(WorkspaceEntries.WorkspaceEntries)({ refresh: () => Effect.void }),
           IdAllocator.layer,
           Layer.mock(ProjectStore.ProjectStoreV2)({
             get: () => Effect.succeed(Option.some({ workspaceRoot: parent } as never)),

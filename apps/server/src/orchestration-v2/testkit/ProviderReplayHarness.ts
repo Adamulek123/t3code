@@ -389,7 +389,7 @@ export function layerWithRegistry<Error>(
   const layerCheckpointRollbackServiceProvided = CheckpointRollbackService.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
-Layer.mock(WorkspaceEntries.WorkspaceEntries)({ refresh: () => Effect.void }),
+        Layer.mock(WorkspaceEntries.WorkspaceEntries)({ refresh: () => Effect.void }),
         layerCheckpointServiceProvided,
         layerEventSinkProvided,
         IdAllocator.layer,
