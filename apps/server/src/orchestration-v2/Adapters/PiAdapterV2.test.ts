@@ -491,7 +491,7 @@ describe("PiAdapterV2", () => {
       yield* Scope.close(sessionScope, Exit.void);
       const terminal = yield* takeEvent((event) => event.type === "turn.terminal");
       assert.equal(terminal.type === "turn.terminal" ? terminal.status : undefined, "cancelled");
-    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+    }).pipe(Effect.scoped, Effect.provide(layerTest)),
   );
 
   it.effect("stops provider-initiated work that has no T3 turn owner", () =>

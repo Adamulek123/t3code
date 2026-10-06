@@ -1421,9 +1421,9 @@ export function makePiAdapterV2(
           const status =
             cancelled || turn.interrupted
               ? "cancelled"
-            : turn.failure === null
-              ? "completed"
-              : "failed";
+              : turn.failure === null
+                ? "completed"
+                : "failed";
           yield* emitCompaction(turn, turn.activeCompaction, status);
           turn.activeCompaction = null;
         }

@@ -208,22 +208,22 @@ describe("CursorAdapterV2", () => {
         if (status === "teardown") yield* Scope.close(sessionScope, Exit.void);
         const events = yield* Fiber.join(collected);
         assert.equal(events.at(-1)?.type, "turn.terminal");
-const terminal = events.at(-1);
-      assert.equal(
-        terminal?.type === "turn.terminal" ? terminal.status : undefined,
-        status === "finished"
-          ? "completed"
-          : status === "cancelled" || status === "teardown"
-            ? "cancelled"
-            : "failed",
-      );
+        const terminal = events.at(-1);
+        assert.equal(
+          terminal?.type === "turn.terminal" ? terminal.status : undefined,
+          status === "finished"
+            ? "completed"
+            : status === "cancelled" || status === "teardown"
+              ? "cancelled"
+              : "failed",
+        );
         const rows = events.filter((event) => event.type === "subagent.updated");
         assert.equal(rows[0]?.subagent.status, "running");
         assert.equal(rows[0]?.subagent.model, model ?? null);
         assert.equal(rows.at(-1)?.subagent.model, lateModel ?? model ?? null);
         assert.equal(
           rows.at(-1)?.subagent.status,
-lateModel !== undefined
+          lateModel !== undefined
             ? "completed"
             : status === "finished"
               ? "idle"
