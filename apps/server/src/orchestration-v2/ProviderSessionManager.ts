@@ -197,6 +197,8 @@ interface LiveSessionEntry {
   // Adapters discover child threads without attaching them through the manager.
   // Only an explicit detach blocks their request artifacts until reattachment.
   readonly detachedThreadIds: ReadonlySet<ThreadId>;
+  /** Unfinished cleanup, always a subset of detachedThreadIds; explicit retry may finish it. */
+  readonly pendingDetachThreadIds: ReadonlySet<ThreadId>;
   readonly loadedProviderThreadKeyByThread: ReadonlyMap<ThreadId, string>;
   /**
    * MCP credential session id issued for each attached thread. Revocation on
@@ -778,6 +780,10 @@ export const layerWithOptions = (
             Effect.exit(
               writeReleasedRuntimeRequestEvents({
                 entry: input.entry,
+                threadIds: new Set([
+                  ...input.entry.attachedThreadIds,
+                  ...input.entry.detachedThreadIds,
+                ]),
                 releasedAt: input.releasedAt,
                 status: releasedRuntimeRequestStatusFor(input.reason),
                 artifactStatus: input.reason === "runtime_error" ? "failed" : "cancelled",
@@ -1270,6 +1276,7 @@ export const layerWithOptions = (
       }) =>
         Effect.suspend(() => {
           let preparedForCleanup: PreparedMcpCredential | undefined;
+          let attachmentStarted = false;
           let reservationDropped = false;
           const dropReservation = () => {
             if (!reservationDropped && preparedForCleanup?.mcpCredentialId !== undefined) {
@@ -1278,8 +1285,29 @@ export const layerWithOptions = (
             }
           };
           return Effect.gen(function* () {
+            const candidate = (yield* Ref.get(sessions)).get(sessionKey(input.providerSessionId));
+            const pendingDetach =
+              candidate?.pendingDetachThreadIds.has(input.threadId) === true &&
+              (yield* withActivityError(
+                input.providerSessionId,
+                Effect.gen(function* () {
+                  const entry = (yield* Ref.get(sessions)).get(sessionKey(input.providerSessionId));
+                  if (entry?.runtime !== candidate.runtime) return false;
+                  yield* writeReleasedRuntimeRequestEvents({
+                    entry,
+                    status: "cancelled",
+                    artifactStatus: "cancelled",
+                    reason:
+                      "Thread detached from the provider session before this runtime request was resolved.",
+                    threadIds: new Set([input.threadId]),
+                    releasedAt: yield* DateTime.now,
+                  });
+                  return true;
+                }).pipe(candidate.requestEventPermit.withPermits(1)),
+              ));
+            attachmentStarted = true;
             const attached = yield* attachThread(input);
-            if (attached) {
+            if (attached || pendingDetach) {
               const prepared = yield* prepareMcpSession(input.threadId, input.providerInstanceId);
               preparedForCleanup = prepared;
               if (prepared.mcpCredentialId !== undefined) {
@@ -1317,15 +1345,17 @@ export const layerWithOptions = (
                     return current;
                   const detachedThreadIds = new Set(currentEntry.detachedThreadIds);
                   detachedThreadIds.delete(input.threadId);
+                  const pendingDetachThreadIds = new Set(currentEntry.pendingDetachThreadIds);
+                  pendingDetachThreadIds.delete(input.threadId);
                   const updated = new Map(current);
-                  updated.set(key, { ...currentEntry, detachedThreadIds });
+                  updated.set(key, { ...currentEntry, detachedThreadIds, pendingDetachThreadIds });
                   return updated;
                 });
               }
             }
           }).pipe(
             Effect.tapError(() =>
-              removeThreadAttachment(input).pipe(
+              (attachmentStarted ? removeThreadAttachment(input) : Effect.void).pipe(
                 // Revoke only a credential this attach freshly minted: a REUSED
                 // credential is by definition held by another live provider
                 // process, and revoking it thread-wide would break that
@@ -1890,6 +1920,7 @@ export const layerWithOptions = (
               const entry: LiveSessionEntry = {
                 attachedThreadIds: new Set([input.threadId]),
                 detachedThreadIds: new Set(),
+                pendingDetachThreadIds: new Set(),
                 loadedProviderThreadKeyByThread: new Map(),
                 mcpCredentialIdByThread:
                   mcpCredentialId === undefined
@@ -2060,10 +2091,30 @@ export const layerWithOptions = (
                     const entry = (yield* Ref.get(sessions)).get(key);
                     if (
                       entry?.runtime !== currentEntry.runtime ||
-                      entry.detachedThreadIds.has(input.threadId)
+                      (entry.detachedThreadIds.has(input.threadId) &&
+                        !entry.pendingDetachThreadIds.has(input.threadId))
                     ) {
                       return Option.none<LiveSessionEntry>();
                     }
+                    // Keep cleanup ownership even if the read/write fails or is
+                    // interrupted. Attachment and loaded state move only on success.
+                    yield* Ref.update(sessions, (current) => {
+                      const currentEntry = current.get(key);
+                      if (currentEntry?.runtime !== entry.runtime) return current;
+                      const updated = new Map(current);
+                      updated.set(key, {
+                        ...currentEntry,
+                        detachedThreadIds: new Set([
+                          ...currentEntry.detachedThreadIds,
+                          input.threadId,
+                        ]),
+                        pendingDetachThreadIds: new Set([
+                          ...currentEntry.pendingDetachThreadIds,
+                          input.threadId,
+                        ]),
+                      });
+                      return updated;
+                    });
                     yield* writeReleasedRuntimeRequestEvents({
                       entry,
                       status: "cancelled",
@@ -2077,7 +2128,8 @@ export const layerWithOptions = (
                       const entry = current.get(key);
                       if (
                         entry?.runtime !== currentEntry.runtime ||
-                        entry.detachedThreadIds.has(input.threadId)
+                        (entry.detachedThreadIds.has(input.threadId) &&
+                          !entry.pendingDetachThreadIds.has(input.threadId))
                       ) {
                         return [Option.none<LiveSessionEntry>(), current] as const;
                       }
@@ -2085,6 +2137,8 @@ export const layerWithOptions = (
                       attachedThreadIds.delete(input.threadId);
                       const detachedThreadIds = new Set(entry.detachedThreadIds);
                       detachedThreadIds.add(input.threadId);
+                      const pendingDetachThreadIds = new Set(entry.pendingDetachThreadIds);
+                      pendingDetachThreadIds.delete(input.threadId);
                       const loadedProviderThreadKeyByThread = new Map(
                         entry.loadedProviderThreadKeyByThread,
                       );
@@ -2105,6 +2159,7 @@ export const layerWithOptions = (
                         ...entry,
                         attachedThreadIds,
                         detachedThreadIds,
+                        pendingDetachThreadIds,
                         loadedProviderThreadKeyByThread,
                         mcpCredentialIdByThread,
                       };
