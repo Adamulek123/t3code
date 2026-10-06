@@ -18,6 +18,81 @@ import * as CheckpointStore from "../checkpointing/CheckpointStore.ts";
 import * as CheckpointService from "./CheckpointService.ts";
 import * as IdAllocator from "./IdAllocator.ts";
 
+it.effect.each(["not-repo", "git-failure", "interrupt"] as const)(
+  "distinguishes repository detection outcomes across checkpoint capture, outcome=%s",
+  (outcome) => {
+    const scope: OrchestrationV2CheckpointScope = {
+      id: CheckpointScopeId.make("checkpoint-scope:detection"),
+      threadId: ThreadId.make("thread:detection"),
+      runId: RunId.make("run:detection"),
+      nodeId: NodeId.make("node:detection"),
+      parentScopeId: null,
+      providerThreadId: ProviderThreadId.make("provider-thread:detection"),
+      kind: "root_run",
+      ordinalWithinParent: 0,
+      advancesAppRunCount: true,
+      cwd: "/repo",
+      createdAt: DateTime.makeUnsafe("2026-07-28T00:00:00.000Z"),
+    };
+    const gitFailure = new VcsProcessTimeoutError({
+      operation: "test.detect",
+      command: "git",
+      cwd: scope.cwd,
+      timeoutMs: 5000,
+    });
+    const testLayer = CheckpointService.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          Layer.mock(CheckpointStore.CheckpointStore)({
+            isGitRepository: () =>
+              outcome === "interrupt"
+                ? Effect.interrupt
+                : outcome === "git-failure"
+                  ? Effect.fail(gitFailure)
+                  : Effect.succeed(false),
+          }),
+        ),
+      ),
+      Layer.provideMerge(NodeCrypto.layer),
+    );
+    return Effect.gen(function* () {
+      const checkpoints = yield* CheckpointService.CheckpointServiceV2;
+      const baseline = checkpoints.captureBaseline({ scope, ordinalWithinScope: 0 });
+      const materialize = checkpoints.materializeBaselineCheckpoint({
+        scope,
+        ordinalWithinScope: 0,
+      });
+      const capture = checkpoints.capture({
+        scope,
+        ordinalWithinScope: 1,
+        runId: scope.runId,
+        nodeId: scope.nodeId!,
+        appRunOrdinal: 1,
+        capturedAt: scope.createdAt,
+      });
+      if (outcome === "not-repo") {
+        yield* baseline;
+        assert.equal((yield* materialize).status, "missing");
+        assert.equal((yield* capture).status, "missing");
+      } else if (outcome === "git-failure") {
+        const baselineError = yield* Effect.flip(baseline);
+        assert.equal(baselineError._tag, "CheckpointBaselineCaptureError");
+        assert.equal(baselineError.cause, gitFailure);
+        for (const operation of [materialize, capture]) {
+          const error = yield* Effect.flip(operation);
+          assert.equal(error._tag, "CheckpointCaptureError");
+          assert.equal(error.cause, gitFailure);
+        }
+      } else {
+        assert.isTrue(Exit.hasInterrupts(yield* Effect.exit(baseline)));
+        assert.isTrue(Exit.hasInterrupts(yield* Effect.exit(materialize)));
+        assert.isTrue(Exit.hasInterrupts(yield* Effect.exit(capture)));
+      }
+    }).pipe(Effect.provide(testLayer));
+  },
+);
+
 it.effect.each([false, true, "interrupt"] as const)(
   "materializes baseline, lookup fails=%s",
   (lookupFails) => {
