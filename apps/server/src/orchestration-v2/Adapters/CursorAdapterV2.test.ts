@@ -45,7 +45,7 @@ const decodeCursorSettings = Schema.decodeEffect(CursorSettings);
 
 describe("CursorAdapterV2", () => {
   it.effect.each([
-{ status: "finished", model: undefined, lateModel: undefined },
+    { status: "finished", model: undefined, lateModel: undefined },
     { status: "cancelled", model: "claude-opus-4-6", lateModel: undefined },
     { status: "error", model: "custom-fable", lateModel: undefined },
     { status: "finished", model: undefined, lateModel: "gpt-6-sol" },
@@ -361,11 +361,11 @@ describe("CursorAdapterV2", () => {
         assert.equal(rows.at(-1)?.subagent.model, lateModel ?? model ?? null);
         assert.equal(
           rows.at(-1)?.subagent.status,
-lateModel !== undefined
+          lateModel !== undefined
             ? "completed"
             : status === "finished"
               ? "idle"
-              : status === "cancelled" || status === "teardown"
+              : status === "cancelled"
                 ? "cancelled"
                 : status === "interrupted"
                   ? "interrupted"

@@ -662,7 +662,7 @@ describe("PiAdapterV2", () => {
             1,
           );
         }
-      }).pipe(Effect.scoped, Effect.provide(testLayer)),
+      }).pipe(Effect.scoped, Effect.provide(layerTest)),
     // The coalescer's timer projection is awaited below, so a coalescer that
     // stopped firing it would hang there rather than fail an assertion. Bound it.
     5_000,
