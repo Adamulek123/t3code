@@ -338,6 +338,6 @@ export const layerProduction = Layer.mergeAll(
   ),
   layerProviderContinuationWorkerProvided,
   layerAgentSessionImporterProvided,
-  ProjectionMaintenance.workerLive.pipe(Layer.provide(ProjectionMaintenance.layer)),
+  ProjectionMaintenance.workerLive.pipe(Layer.provide(layerProjectionMaintenanceProvided)),
   EffectOutbox.layerPruneWorker.pipe(Layer.provide(EffectOutbox.layer)),
 ).pipe(Layer.provide(Scheduler.layer), Layer.provideMerge(layerEventInfrastructure));
