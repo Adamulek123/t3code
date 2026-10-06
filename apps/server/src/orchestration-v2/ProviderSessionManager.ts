@@ -1,3 +1,4 @@
+import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
   ModelSelection,
@@ -32,6 +33,13 @@ import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
+import { normalizeModelMetricLabel } from "../observability/Attributes.ts";
+import {
+  providerSessionsTotal,
+  providerTurnDuration,
+  providerTurnsTotal,
+  withMetrics,
+} from "../observability/Metrics.ts";
 import { ProviderWorkspaceMissingError } from "../provider/Errors.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as McpProviderSession from "../mcp/McpProviderSession.ts";
@@ -39,7 +47,6 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "./IdAllocator.ts";
-import { makeKeyedSerialExecutor } from "./KeyedSerialExecutor.ts";
 import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
 import {
   ProviderAdapterEventStreamError,
@@ -397,9 +404,9 @@ export const layerWithOptions = (
       // cannot drop cleanup for threads only the earlier session served.
       const releaseRecordRetries = yield* FiberSet.make();
       const nextSubscriberId = yield* Ref.make(0);
-      const sessionOpen = yield* makeKeyedSerialExecutor<ProviderSessionId>();
+      const sessionOpen = yield* KeyedLock.make<ProviderSessionId>();
       // Orders a thread's attach against a detach unloading it on the same session.
-      const threadAttachment = yield* makeKeyedSerialExecutor<string>();
+      const threadAttachment = yield* KeyedLock.make<string>();
       const threadAttachmentKey = (input: {
         readonly providerSessionId: ProviderSessionId;
         readonly threadId: ThreadId;
@@ -438,7 +445,7 @@ export const layerWithOptions = (
       };
       const isMcpCredentialReserved = (threadId: ThreadId, mcpCredentialId: string) =>
         (mcpCredentialReservations.get(mcpReservationKey(threadId, mcpCredentialId)) ?? 0) > 0;
-      const mcpPrepareLock = yield* makeKeyedSerialExecutor<ThreadId>();
+      const mcpPrepareLock = yield* KeyedLock.make<ThreadId>();
       /**
        * Resolves (or mints) the thread's MCP credential and returns it with a
        * reservation held; the caller must drop the reservation exactly once.
@@ -479,8 +486,8 @@ export const layerWithOptions = (
                   const resolved = yield* mcpSessionRegistry.resolve(rawToken);
                   if (
                     resolved !== undefined &&
-                    resolved.threadId === threadId &&
-                    resolved.providerInstanceId === providerInstanceId &&
+                    resolved.thread.threadId === threadId &&
+                    resolved.thread.providerInstanceId === providerInstanceId &&
                     // A flipped browser-access setting must not survive through
                     // credential reuse: rotate so the new scope reflects it.
                     resolved.capabilities.has("preview") === browserToolsAvailable &&
@@ -953,7 +960,16 @@ export const layerWithOptions = (
                   if (Option.isSome(closeExit) && Exit.isFailure(closeExit.value)) {
                     return yield* Effect.failCause(closeExit.value.cause);
                   }
-                }),
+                }).pipe(
+                  withMetrics({
+                    counter: providerSessionsTotal,
+                    attributes: {
+                      provider: entry.runtime.driver,
+                      operation: "release",
+                      reason: input.reason,
+                    },
+                  }),
+                ),
             }),
           ([entry]) =>
             Option.match(entry, {
@@ -1427,6 +1443,18 @@ export const layerWithOptions = (
       ): ProviderAdapterV2SessionRuntime => {
         const providerSessionId = runtime.providerSessionId;
         const subscribeEvents = makeEventSubscription(eventSubscribers);
+        // Every provider's turn operations pass through here, so this is where they are
+        // counted. Only turn starts are timed: until the provider accepts the turn.
+        const turnMetrics = (operation: string, model?: string) =>
+          withMetrics({
+            counter: providerTurnsTotal,
+            ...(operation === "send" ? { timer: providerTurnDuration } : {}),
+            attributes: {
+              provider: runtime.driver,
+              operation,
+              modelFamily: normalizeModelMetricLabel(model),
+            },
+          });
         return {
           ...runtime,
           subscribeEvents,
@@ -1536,7 +1564,13 @@ export const layerWithOptions = (
               Effect.andThen(
                 Effect.uninterruptibleMask((restore) =>
                   observeActivity(providerSessionId, markBusy(runtime, input)).pipe(
-                    Effect.andThen(restore(runtime.startTurn(input))),
+                    Effect.andThen(
+                      restore(
+                        runtime
+                          .startTurn(input)
+                          .pipe(turnMetrics("send", input.modelSelection.model)),
+                      ),
+                    ),
                     Effect.onError(() =>
                       observeActivity(
                         providerSessionId,
@@ -1549,15 +1583,19 @@ export const layerWithOptions = (
             ),
           steerTurn: (input) =>
             observeActivity(providerSessionId, touchActivity(providerSessionId)).pipe(
-              Effect.andThen(runtime.steerTurn(input)),
+              Effect.andThen(runtime.steerTurn(input).pipe(turnMetrics("steer"))),
             ),
           interruptTurn: (input) =>
             observeActivity(providerSessionId, touchActivity(providerSessionId)).pipe(
-              Effect.andThen(runtime.interruptTurn(input)),
+              Effect.andThen(runtime.interruptTurn(input).pipe(turnMetrics("interrupt"))),
             ),
           respondToRuntimeRequest: (input) =>
             observeActivity(providerSessionId, touchActivity(providerSessionId)).pipe(
-              Effect.andThen(runtime.respondToRuntimeRequest(input)),
+              Effect.andThen(
+                runtime
+                  .respondToRuntimeRequest(input)
+                  .pipe(turnMetrics("runtime-request-response")),
+              ),
             ),
         };
       };
@@ -1850,6 +1888,10 @@ export const layerWithOptions = (
                         cause,
                       }),
                   ),
+                  withMetrics({
+                    counter: providerSessionsTotal,
+                    attributes: { provider: adapter.driver, operation: "open" },
+                  }),
                 );
               const eventSubscribers = yield* Ref.make<
                 ReadonlyMap<number, Queue.Queue<ProviderSessionEventSignal, Cause.Done>>
