@@ -19,10 +19,10 @@ import * as Ref from "effect/Ref";
 import * as Schedule from "effect/Schedule";
 import * as TestClock from "effect/testing/TestClock";
 import * as TestConsole from "effect/testing/TestConsole";
-import { Command } from "effect/unstable/cli";
-import { HttpClient, HttpClientResponse } from "effect/unstable/http";
+import { Command } from "effect/cli";
+import { HttpClient, HttpClientResponse } from "effect/http";
 
-import { cli } from "../bin.ts";
+import { cli } from "../binCli.ts";
 import {
   SERVICE_LAUNCHER_CONTEXT_ENV,
   SERVICE_LAUNCHER_PROTOCOL,
@@ -43,7 +43,7 @@ import {
 
 import packageJson from "../../package.json" with { type: "json" };
 
-const CliRuntimeLayer = Layer.mergeAll(NodeServices.layer, NetService.layer);
+const layerCliRuntime = Layer.mergeAll(NodeServices.layer, NetService.layer);
 
 const baseState = {
   version: 1,
@@ -105,7 +105,7 @@ describe("pair tailscale local target", () => {
 const runCli = (args: ReadonlyArray<string>) => Command.runWith(cli, { version: "0.0.0" })(args);
 
 const provideCliTestLayers = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-  Effect.provide(effect, Layer.mergeAll(CliRuntimeLayer, TestConsole.layer));
+  Effect.provide(effect, Layer.mergeAll(layerCliRuntime, TestConsole.layer));
 
 // Console output accumulates across CLI runs within a test, and each
 // Console.log call is one entry — so the latest command's output is the last
