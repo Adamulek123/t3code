@@ -5,6 +5,7 @@ import {
   CommandId,
   EventId,
   type OrchestrationV2AppThread,
+  OrchestrationV2RunStatus,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
@@ -40,6 +41,8 @@ import * as EventStore from "./EventStore.ts";
 import * as LegacyV1ThreadImporter from "./legacy/LegacyV1ThreadImporter.ts";
 import * as ProjectionMaintenance from "./ProjectionMaintenance.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
+
+const isRunStatus = Schema.is(OrchestrationV2RunStatus);
 
 const encodePersistedServerRuntimeState = Schema.encodeEffect(
   Schema.fromJsonString(PersistedServerRuntimeState),
@@ -372,6 +375,7 @@ it.effect("protects unfinished runs, effects, and runtime requests until they se
     `;
     // The last status is deliberately absent from OrchestrationV2RunStatus. Any status the
     // contract adds later must block compaction until this list names it, never permit deletion.
+    assert.isFalse(isRunStatus("awaiting_input"));
     for (const status of [
       "preparing",
       "queued",
@@ -552,6 +556,57 @@ it.effect(
         assert.equal(yield* eventCount(thread.id), 2);
       }).pipe(Effect.provide(layer));
     }).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect("compacts within an hour after each repeated invalid verification", () =>
+  Effect.gen(function* () {
+    const thread = yield* seedThread("thread:maintenance-persistent-drift");
+    const sql = yield* SqlClient.SqlClient;
+    const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
+    const sink = yield* EventSink.EventSinkV2;
+    yield* sql`UPDATE orchestration_v2_projection_threads SET payload_json = '{}' WHERE thread_id = ${thread.id}`;
+    const { receipts, layer } = yield* captureSweeps;
+    yield* Effect.gen(function* () {
+      yield* withWorker();
+      assert.include(yield* Queue.take(receipts), "Projection integrity verification failed");
+      assert.equal(yield* eventCount(thread.id), 3);
+      yield* TestClock.adjust("3595 seconds");
+      assert.equal(yield* Queue.size(receipts), 0);
+      assert.equal(yield* eventCount(thread.id), 3);
+      yield* TestClock.adjust("5 seconds");
+      assert.include(yield* Queue.take(receipts), "Projection maintenance completed");
+      assert.equal(yield* eventCount(thread.id), 2);
+      assert.isFalse((yield* maintenance.verify).valid);
+
+      // A second daily failure must not stop the following hourly compaction either.
+      yield* TestClock.adjust("23 hours");
+      const daily = yield* Queue.takeAll(receipts);
+      assert.include(daily.at(-1)!, "Projection integrity verification failed");
+      assert.lengthOf(
+        daily.filter((line) => line.includes("Projection integrity verification failed")),
+        1,
+      );
+      const now = yield* DateTime.now;
+      yield* sink.write({
+        events: [
+          {
+            id: EventId.make(`${thread.id}:next`),
+            type: "thread.visited",
+            threadId: thread.id,
+            occurredAt: now,
+            payload: thread,
+          },
+        ],
+      });
+      // EventSink repairs this projection while writing, so restore persistent drift.
+      yield* sql`UPDATE orchestration_v2_projection_threads SET payload_json = '{}' WHERE thread_id = ${thread.id}`;
+      assert.equal(yield* eventCount(thread.id), 3);
+      yield* TestClock.adjust("1 hour");
+      assert.include(yield* Queue.take(receipts), "Projection maintenance completed");
+      assert.equal(yield* eventCount(thread.id), 2);
+      assert.isFalse((yield* maintenance.verify).valid);
+    }).pipe(Effect.provide(layer));
+  }).pipe(Effect.provide(TestLayer)),
 );
 
 it.effect("keeps compaction hourly while verification runs daily", () =>

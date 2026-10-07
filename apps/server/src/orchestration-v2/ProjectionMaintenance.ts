@@ -405,13 +405,12 @@ export const layer: Layer.Layer<
 
 const COMPACTION_INTERVAL_MS = 60 * 60 * 1_000;
 /**
- * Verify pages every projection row through a synchronous schema decode, so it costs orders of
- * magnitude more than compaction's indexed scan. Drift is not time-critical, so look for it daily
- * instead of paying that scan on every compaction.
+ * Verification decodes every projection row. Scan daily rather than on every hourly compaction;
+ * the relative cost of verification and compaction has not been measured.
  */
 const VERIFY_INTERVAL_MS = 24 * 60 * 60 * 1_000;
 
-/** Verify before pruning; repair drift offline with `t3 projections rebuild`. */
+/** Daily verification skips that sweep on drift; hourly compaction resumes without repair. */
 export const workerLive = Layer.effectDiscard(
   Effect.gen(function* () {
     const maintenance = yield* ProjectionMaintenanceV2;
@@ -426,8 +425,8 @@ export const workerLive = Layer.effectDiscard(
       // interval instead of retrying on every scheduler tick.
       const verifyDue = now >= nextVerifyAt;
       if (verifyDue) nextVerifyAt = now + VERIFY_INTERVAL_MS;
-      // Compaction only drops events a replay does not need, so the hours between verifications
-      // prune on the last good result rather than on no result at all.
+      // Only a due verification gates this sweep. An invalid result skips this hour, but the
+      // next hourly sweep compacts without re-verifying, even if drift has not been repaired.
       if (verifyDue) {
         const verification = yield* maintenance.verify;
         if (!verification.valid) {
