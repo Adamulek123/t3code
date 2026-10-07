@@ -1213,13 +1213,8 @@ export function makePiAdapterV2(
           return;
         }
         if (nativeRequestId === undefined) return;
-        // Request ids change on repeats; every other supplied field describes the prompt.
-        // @effect-diagnostics-next-line preferSchemaOverJson:off - Cache identity for an already JSON-parsed event.
-        const approvalKey = JSON.stringify(
-          Object.entries(event)
-            .filter(([key]) => key !== "id")
-            .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)),
-        );
+        const approvalTitle = recordString(event, "title") ?? "";
+        const approvalKey = `${approvalTitle.length}:${approvalTitle}${recordString(event, "message") ?? ""}`;
         if (method === "confirm" && sessionApprovals.has(approvalKey)) {
           yield* connection.send({
             type: "extension_ui_response",
@@ -1421,12 +1416,17 @@ export function makePiAdapterV2(
        * clears the approvals too: an unknown identity is not evidence of an
        * unchanged one.
        */
-      const clearApprovalsForForeignSession = Effect.fnUntraced(function* (state: PiThreadState) {
+      const clearApprovalsForForeignSession = Effect.fnUntraced(function* (
+        state: PiThreadState,
+        stateData: Option.Option<unknown>,
+      ) {
         // The common turn has no cached approval, so it pays no extra round trip.
         if (sessionApprovals.size === 0) return;
-        const live = yield* request({ type: "get_state" }, 2_000).pipe(
-          Effect.orElseSucceed(() => undefined),
-        );
+        const live = Option.isSome(stateData)
+          ? stateData.value
+          : yield* request({ type: "get_state" }, 2_000).pipe(
+              Effect.orElseSucceed(() => undefined),
+            );
         if (
           live === undefined ||
           recordString(live, "sessionFile") !== state.providerThread.nativeThreadRef?.nativeId
@@ -1435,7 +1435,11 @@ export function makePiAdapterV2(
         }
       });
 
-      const finalizeTurn = Effect.fnUntraced(function* (state: PiThreadState, readUsage = true) {
+      const finalizeTurn = Effect.fnUntraced(function* (
+        state: PiThreadState,
+        readUsage = true,
+        stateData: Option.Option<unknown> = Option.none(),
+      ) {
         const turn = state.activeTurn;
         if (turn === null) return;
         state.activeTurn = null;
@@ -1462,7 +1466,7 @@ export function makePiAdapterV2(
         yield* cancelPendingPrompts(completedAt);
         // A dead transport (the only caller that skips reading usage) cannot
         // ask Pi anything; the next process reads its own identity.
-        if (readUsage) yield* clearApprovalsForForeignSession(state);
+        if (readUsage) yield* clearApprovalsForForeignSession(state, stateData);
         const treeRefs =
           turn.stopTreeRefs !== undefined ? turn.stopTreeRefs : yield* captureTurnTreeRefs();
         const tokenUsage = readUsage
@@ -1955,7 +1959,7 @@ export function makePiAdapterV2(
               (recordNumber(data, "pendingMessageCount") ?? 0) === 0
             ) {
               turn.settleWhenIdle = false;
-              if (state !== null) yield* finalizeTurn(state);
+              if (state !== null) yield* finalizeTurn(state, true, Option.some(data));
             }
             return;
           }
