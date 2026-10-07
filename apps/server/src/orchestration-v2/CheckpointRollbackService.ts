@@ -14,6 +14,7 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
+import * as WorkspaceEntries from "../workspace/WorkspaceEntries.ts";
 import {
   isCheckpointRestoreIsolated,
   SHARED_WORKSPACE_RESTORE_MESSAGE,
@@ -91,6 +92,7 @@ export const layer: Layer.Layer<
   | FileSystem.FileSystem
   | Path.Path
   | ProjectStore.ProjectStoreV2
+  | WorkspaceEntries.WorkspaceEntries
 > = Layer.effect(
   CheckpointRollbackServiceV2,
   Effect.gen(function* () {
@@ -103,6 +105,7 @@ export const layer: Layer.Layer<
     const fileSystem = yield* FileSystem.FileSystem;
     const projects = yield* ProjectStore.ProjectStoreV2;
     const path = yield* Path.Path;
+    const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
 
     const execute = Effect.fn("orchestrationV2.checkpointRollback.execute")(function* (input: {
       readonly threadId: ThreadId;
@@ -197,31 +200,6 @@ export const layer: Layer.Layer<
       });
 
       const targetOrdinal = checkpoint.appRunOrdinal ?? 0;
-      // Stopped and failed runs after the target leave the provider
-      // conversation too, so they must not stay visible.
-      const runsToRollback = projection.runs.filter(
-        (run) =>
-          run.ordinal > targetOrdinal &&
-          (run.status === "completed" ||
-            run.status === "interrupted" ||
-            run.status === "failed" ||
-            run.status === "cancelled"),
-      );
-      // Rolled-back turns stay in the audit history, but no longer exist in
-      // the provider conversation and must not be counted by a later rewind.
-      const rolledBackRunIds = new Set(
-        projection.runs.filter((run) => run.status === "rolled_back").map((run) => run.id),
-      );
-      const rolledBackAttemptIds = new Set(
-        projection.attempts
-          .filter((attempt) => rolledBackRunIds.has(attempt.runId))
-          .map((attempt) => attempt.id),
-      );
-      const providerThreadTurns = projection.providerTurns.filter(
-        (turn) =>
-          turn.providerThreadId === providerThread.id &&
-          (turn.runAttemptId === null || !rolledBackAttemptIds.has(turn.runAttemptId)),
-      );
       const rollbackTarget: ProviderAdapterV2RollbackTarget =
         targetOrdinal === 0
           ? {
@@ -254,6 +232,36 @@ export const layer: Layer.Layer<
               };
             });
 
+      if (input.restoreFiles !== false) {
+        yield* checkpoints.restore({ scope, checkpoint });
+        yield* workspaceEntries.refresh(scope.cwd);
+      }
+
+      // Stopped and failed runs after the target leave the provider
+      // conversation too, so they must not stay visible.
+      const runsToRollback = projection.runs.filter(
+        (run) =>
+          run.ordinal > targetOrdinal &&
+          (run.status === "completed" ||
+            run.status === "interrupted" ||
+            run.status === "failed" ||
+            run.status === "cancelled"),
+      );
+      // Rolled-back turns stay in the audit history, but no longer exist in
+      // the provider conversation and must not be counted by a later rewind.
+      const rolledBackRunIds = new Set(
+        projection.runs.filter((run) => run.status === "rolled_back").map((run) => run.id),
+      );
+      const rolledBackAttemptIds = new Set(
+        projection.attempts
+          .filter((attempt) => rolledBackRunIds.has(attempt.runId))
+          .map((attempt) => attempt.id),
+      );
+      const providerThreadTurns = projection.providerTurns.filter(
+        (turn) =>
+          turn.providerThreadId === providerThread.id &&
+          (turn.runAttemptId === null || !rolledBackAttemptIds.has(turn.runAttemptId)),
+      );
       const snapshot =
         runsToRollback.length === 0
           ? { providerThread }
@@ -262,7 +270,6 @@ export const layer: Layer.Layer<
               target: rollbackTarget,
               providerThreadTurns,
             });
-      if (input.restoreFiles !== false) yield* checkpoints.restore({ scope, checkpoint });
       const staleCheckpoints = projection.checkpoints.filter(
         (candidate) =>
           candidate.scopeId === scope.id &&
