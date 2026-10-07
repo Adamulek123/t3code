@@ -736,7 +736,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
       assert.equal(deleteSpy.mock.calls.length, 0);
       yield* rollback(CommandId.make("runtime-rollback-partial-next"), true);
       assert.isNull((yield* orchestrator.getThreadProjection(threadId)).thread.rollbackFailure);
-    }).pipe(Effect.scoped),
+    }).pipe(Effect.scoped, Effect.provide(Layer.fresh(layerTest))),
   );
 
   it.effect("ignores a late failure from a rollback that a newer one superseded", () =>
