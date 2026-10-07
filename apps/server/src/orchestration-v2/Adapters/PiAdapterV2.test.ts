@@ -89,8 +89,9 @@ interface FakePi {
   readonly deferNextState: () => void;
   /** Resolve the held `get_state` request. */
   readonly resolveDeferredState: (data: unknown) => Effect.Effect<void>;
-  /** Reject the next `get_state` request. */
-  readonly failNextState: () => void;
+  /** Reject the next `count` state requests, defaulting to one. */
+  readonly failNextState: (count?: number) => void;
+  readonly failedStateReads: () => number;
   readonly deferNextLifecycle: (type: "switch_session" | "new_session") => void;
   readonly queueModels: (models: ReadonlyArray<unknown>) => void;
   readonly vetoNextNewSession: () => void;
@@ -145,7 +146,8 @@ const makeFakePi: Effect.Effect<FakePi> = Effect.gen(function* () {
   const allRequests: Array<PiRpcRecord> = [];
   let deferState = false;
   let deferredStateRequest: PiRpcRecord | undefined;
-  let failState = false;
+  let stateFailuresRemaining = 0;
+  let failedStateReads = 0;
   let vetoSwitch = false;
   let vetoNewSession = false;
   let deferredLifecycle: string | undefined;
@@ -169,8 +171,9 @@ const makeFakePi: Effect.Effect<FakePi> = Effect.gen(function* () {
     };
     switch (record["type"]) {
       case "get_state":
-        if (failState) {
-          failState = false;
+        if (stateFailuresRemaining > 0) {
+          stateFailuresRemaining--;
+          failedStateReads++;
           return { ...base, success: false, error: "state unavailable" };
         }
         // Queued data overrides fields of the recorded idle state, so a test
@@ -288,9 +291,10 @@ const makeFakePi: Effect.Effect<FakePi> = Effect.gen(function* () {
           data,
         });
       }),
-    failNextState: () => {
-      failState = true;
+    failNextState: (count = 1) => {
+      stateFailuresRemaining = count;
     },
+    failedStateReads: () => failedStateReads,
     deferNextLifecycle: (type) => {
       deferredLifecycle = type;
     },
@@ -1879,6 +1883,84 @@ describe("PiAdapterV2", () => {
         );
         assert.isTrue(askedAgain);
       }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
+  it.effect("drops session approvals when both command-only state reads fail", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi;
+      const { runtime, takeEvent } = yield* openRuntime(fake);
+      const providerThread = yield* runtime.ensureThread({
+        threadId: THREAD_ID,
+        modelSelection: modelSelection("default"),
+        runtimePolicy,
+      });
+      const prompt = {
+        type: "extension_ui_request",
+        method: "confirm",
+        title: "Run project extensions?",
+        message: "This project has .pi/extensions.",
+      };
+      yield* fake.emit({ ...prompt, id: "grant-before-unreadable-state" });
+      const granted = yield* takeEvent(
+        (event) =>
+          event.type === "runtime_request.updated" && event.runtimeRequest.status === "pending",
+      );
+      assert.equal(granted.type, "runtime_request.updated");
+      if (granted.type !== "runtime_request.updated") return;
+      yield* runtime.respondToRuntimeRequest({
+        requestId: granted.runtimeRequest.id,
+        decision: "acceptForSession",
+      });
+      assert.equal((yield* fake.takeRequest("extension_ui_response"))["confirmed"], true);
+
+      const runCommand = Effect.fnUntraced(function* (ordinal: number, failedReads = 0) {
+        yield* startTurn(
+          runtime,
+          providerThread,
+          "default",
+          [],
+          "/extension-command",
+          undefined,
+          ordinal,
+        );
+        yield* fake.takeRequest("prompt");
+        if (failedReads > 0) fake.failNextState(failedReads);
+        yield* fake.emit({ type: "response", command: "prompt", success: true });
+        const terminal = yield* takeEvent((event) => event.type === "turn.terminal");
+        assert.isTrue(terminal.type === "turn.terminal" && terminal.status === "completed");
+      });
+
+      // A readable, unchanged identity keeps the cached approval after a command-only turn.
+      yield* runCommand(1);
+      assert.equal(fake.failedStateReads(), 0);
+      yield* fake.emit({ ...prompt, id: "same-readable-session" });
+      const cached = yield* fake.takeRequest("extension_ui_response");
+      assert.equal(cached["id"], "same-readable-session");
+      assert.equal(cached["confirmed"], true);
+
+      const before = fake.allRequests().filter((request) => request["type"] === "get_state").length;
+      // No foreign session is supplied: both the settle probe and finalize lookup fail.
+      yield* runCommand(2, 2);
+      assert.equal(
+        fake.allRequests().filter((request) => request["type"] === "get_state").length - before,
+        2,
+      );
+      assert.equal(fake.failedStateReads(), 2);
+
+      yield* fake.emit({ ...prompt, id: "ask-after-unreadable-state" });
+      const asked = yield* Effect.race(
+        takeEvent(
+          (event) =>
+            event.type === "runtime_request.updated" && event.runtimeRequest.status === "pending",
+        ),
+        fake.takeRequest("extension_ui_response").pipe(Effect.as(null)),
+      );
+      assert.isNotNull(asked);
+      if (asked === null || asked.type !== "runtime_request.updated") return;
+      assert.equal(asked.threadId, THREAD_ID);
+      assert.equal(asked.runtimeRequest.nativeRequestRef?.nativeId, "ask-after-unreadable-state");
+      assert.equal(asked.runtimeRequest.status, "pending");
+    }).pipe(Effect.scoped, Effect.provide(layerTest)),
   );
 
   it.effect("offers an explicit empty value for extension input dialogs", () =>
