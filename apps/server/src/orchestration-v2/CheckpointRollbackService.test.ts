@@ -474,9 +474,9 @@ it.effect.each([
   }).pipe(Effect.provide(layerTest));
 });
 
-it.effect.each([false, true])(
-  "keeps provider conversation and indexed files consistent, restoreFails=%s",
-  (restoreFails) =>
+it.effect.each(["success", "restore-fails", "provider-fails", "provider-only-fails"] as const)(
+  "reports checkpoint rollback state with %s",
+  (outcome) =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -494,6 +494,7 @@ it.effect.each([false, true])(
       const instanceId = ProviderInstanceId.make("rollback-restore-instance");
       const checkpointId = CheckpointId.make("rollback-restore-checkpoint");
       const scopeId = CheckpointScopeId.make("rollback-restore-scope");
+      const laterCheckpointId = CheckpointId.make("rollback-later-checkpoint");
       const providerThread = {
         id: providerThreadId,
         providerSessionId,
@@ -518,7 +519,10 @@ it.effect.each([false, true])(
         ],
         nodes: [],
         attempts: [{ id: "attempt-1", runId: "run-1" }],
-        checkpoints: [{ id: checkpointId, scopeId, status: "ready", appRunOrdinal: null }],
+        checkpoints: [
+          { id: checkpointId, scopeId, status: "ready", appRunOrdinal: null },
+          { id: laterCheckpointId, scopeId, status: "ready", appRunOrdinal: 1 },
+        ],
         checkpointScopes: [{ id: scopeId, cwd }],
         runs: [{ id: "run-1", ordinal: 1, status: "completed", rootNodeId: null }],
       } as unknown as OrchestrationV2ThreadProjection;
@@ -528,6 +532,8 @@ it.effect.each([false, true])(
         cause: new Error("git restore failed"),
       });
       const providerConversation = ["turn-1"];
+      const providerFailure = new Error("provider rollback failed");
+      const deletedRefs: CheckpointId[] = [];
       const persistedEvents: string[] = [];
       const testLayer = CheckpointRollbackService.layer.pipe(
         Layer.provide(
@@ -539,12 +545,16 @@ it.effect.each([false, true])(
             }),
             Layer.mock(CheckpointService.CheckpointServiceV2)({
               restore: () =>
-                restoreFails
+                outcome === "restore-fails"
                   ? Effect.fail(restoreFailure)
                   : Effect.gen(function* () {
                       yield* fs.remove(currentFile);
                       yield* fs.writeFileString(restoredFile, "checkpoint turn");
                     }).pipe(Effect.orDie),
+              deleteStaleRefs: ({ checkpoints }) =>
+                Effect.sync(() => {
+                  deletedRefs.push(...checkpoints.map((checkpoint) => checkpoint.id));
+                }),
             }),
             Layer.mock(EventSink.EventSinkV2)({
               write: ({ events }) =>
@@ -570,6 +580,9 @@ it.effect.each([false, true])(
                     Effect.gen(function* () {
                       const count = yield* resolveCodexRollbackTurnCount(input);
                       assert.equal(count, 1);
+                      if (outcome === "provider-fails" || outcome === "provider-only-fails") {
+                        return yield* Effect.fail(providerFailure);
+                      }
                       providerConversation.splice(providerConversation.length - count, count);
                       return { providerThread };
                     }),
@@ -584,21 +597,45 @@ it.effect.each([false, true])(
       const service = yield* CheckpointRollbackService.CheckpointRollbackServiceV2.pipe(
         Effect.provide(testLayer),
       );
-      const rollback = service.execute({ threadId, providerThreadId, checkpointId, scopeId });
-      if (restoreFails) {
+      const rollback = service.execute({
+        threadId,
+        providerThreadId,
+        checkpointId,
+        scopeId,
+        ...(outcome === "provider-only-fails" ? { restoreFiles: false } : {}),
+      });
+      if (outcome !== "success") {
         const error = yield* Effect.flip(rollback);
-        assert.equal(error.reason, "unexpected-failure");
-        assert.equal(error.cause, restoreFailure);
+        assert.equal(
+          error.reason,
+          outcome === "provider-fails" ? "files-restored-provider-failed" : "unexpected-failure",
+        );
+        assert.equal(error.cause, outcome === "restore-fails" ? restoreFailure : providerFailure);
         assert.deepEqual(providerConversation, ["turn-1"]);
         assert.deepEqual(persistedEvents, []);
-        assert.equal(yield* fs.readFileString(currentFile), "current turn");
+        assert.deepEqual(deletedRefs, []);
+        assert.equal(projection.runs[0]?.status, "completed");
+        assert.equal(projection.checkpoints[1]?.status, "ready");
+        if (outcome === "provider-fails") {
+          assert.include(error.message, "Files were restored to the selected checkpoint");
+          assert.equal(yield* fs.exists(currentFile), false);
+          assert.equal(yield* fs.readFileString(restoredFile), "checkpoint turn");
+        } else {
+          assert.equal(error.message, CheckpointRollbackService.ROLLBACK_FAILED_MESSAGE);
+          assert.equal(yield* fs.readFileString(currentFile), "current turn");
+          assert.equal(yield* fs.exists(restoredFile), false);
+        }
         assert.deepEqual((yield* search()).entries, [
-          { path: "rollback-current.txt", kind: "file" },
+          {
+            path: outcome === "provider-fails" ? "rollback-restored.txt" : "rollback-current.txt",
+            kind: "file",
+          },
         ]);
       } else {
         yield* rollback;
         assert.deepEqual(providerConversation, []);
         assert.include(persistedEvents, "run.updated");
+        assert.deepEqual(deletedRefs, [laterCheckpointId]);
         assert.equal(yield* fs.exists(currentFile), false);
         assert.equal(yield* fs.readFileString(restoredFile), "checkpoint turn");
         assert.deepEqual((yield* search()).entries, [

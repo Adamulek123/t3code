@@ -380,28 +380,33 @@ export const layerExecutor: Layer.Layer<
               })
               .pipe(
                 // The last failed attempt tells waiting clients it failed,
-                // instead of leaving them to time out. Clients get a fixed
-                // message; the worker logs the full cause for each attempt.
-                Effect.tapCause((cause) =>
-                  willRetry || Cause.hasInterruptsOnly(cause)
-                    ? Effect.void
-                    : threads
-                        .dispatch({
-                          type: "checkpoint.rollback.fail",
-                          commandId: CommandId.make(`${effect.commandId}:rollback-failed`),
-                          threadId: effect.threadId,
-                          requestId: effect.commandId,
-                          message: CheckpointRollbackService.ROLLBACK_FAILED_MESSAGE,
-                        })
-                        .pipe(
-                          Effect.catchCause((recordCause) =>
-                            Effect.logWarning("Failed to record rollback failure", {
-                              effectId: effect.id,
-                              cause: recordCause,
-                            }),
-                          ),
-                        ),
-                ),
+                // instead of leaving them to time out. Preserve the fixed
+                // partial-restore warning; log the full cause for each attempt.
+                Effect.tapCause((cause) => {
+                  if (willRetry || Cause.hasInterruptsOnly(cause)) return Effect.void;
+                  const failure = Cause.findErrorOption(cause);
+                  const message =
+                    Option.isSome(failure) &&
+                    failure.value.reason === "files-restored-provider-failed"
+                      ? failure.value.message
+                      : CheckpointRollbackService.ROLLBACK_FAILED_MESSAGE;
+                  return threads
+                    .dispatch({
+                      type: "checkpoint.rollback.fail",
+                      commandId: CommandId.make(`${effect.commandId}:rollback-failed`),
+                      threadId: effect.threadId,
+                      requestId: effect.commandId,
+                      message,
+                    })
+                    .pipe(
+                      Effect.catchCause((recordCause) =>
+                        Effect.logWarning("Failed to record rollback failure", {
+                          effectId: effect.id,
+                          cause: recordCause,
+                        }),
+                      ),
+                    );
+                }),
                 Effect.mapError(
                   (cause) =>
                     new OrchestrationEffectExecutionError({

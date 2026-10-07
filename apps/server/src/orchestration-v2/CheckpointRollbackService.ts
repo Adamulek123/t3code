@@ -39,6 +39,7 @@ export class CheckpointRollbackExecutionError extends Schema.TaggedError<Checkpo
       "active-provider-changed",
       "provider-turn-unavailable",
       "unexpected-failure",
+      "files-restored-provider-failed",
       "shared-workspace",
     ]),
     threadId: ThreadId,
@@ -59,6 +60,8 @@ export class CheckpointRollbackExecutionError extends Schema.TaggedError<Checkpo
         return SHARED_WORKSPACE_RESTORE_MESSAGE;
       case "unexpected-failure":
         return ROLLBACK_FAILED_MESSAGE;
+      case "files-restored-provider-failed":
+        return "Files were restored to the selected checkpoint, but the conversation rollback failed. Conversation history may not match your files. Check the provider and server logs before retrying.";
     }
   }
 }
@@ -265,11 +268,27 @@ export const layer: Layer.Layer<
       const snapshot =
         runsToRollback.length === 0
           ? { providerThread }
-          : yield* session.rollbackThread({
-              providerThread,
-              target: rollbackTarget,
-              providerThreadTurns,
-            });
+          : yield* session
+              .rollbackThread({
+                providerThread,
+                target: rollbackTarget,
+                providerThreadTurns,
+              })
+              .pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new CheckpointRollbackExecutionError({
+                      reason:
+                        input.restoreFiles === false
+                          ? "unexpected-failure"
+                          : "files-restored-provider-failed",
+                      threadId: input.threadId,
+                      providerThreadId: input.providerThreadId,
+                      checkpointId: input.checkpointId,
+                      cause,
+                    }),
+                ),
+              );
       const staleCheckpoints = projection.checkpoints.filter(
         (candidate) =>
           candidate.scopeId === scope.id &&
