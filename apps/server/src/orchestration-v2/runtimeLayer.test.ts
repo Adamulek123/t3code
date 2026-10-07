@@ -723,11 +723,10 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
       assert.equal(yield* fs.readFileString(file), "checkpoint contents");
       const failed = yield* orchestrator.getThreadProjection(threadId);
       assert.equal(failed.thread.rollbackFailure?.requestId, commandId);
-      assert.include(
+      assert.equal(
         failed.thread.rollbackFailure?.message,
-        "Files were restored to the selected checkpoint",
+        "Files were restored to the selected checkpoint, but the conversation rollback failed. Conversation history may not match your files. Check the provider and server logs before retrying.",
       );
-      assert.include(failed.thread.rollbackFailure?.message, "conversation rollback failed");
       assert.equal(failed.runs.find((candidate) => candidate.id === run.id)?.status, "completed");
       assert.equal(
         failed.checkpoints.find((candidate) => candidate.id === checkpointId)?.status,

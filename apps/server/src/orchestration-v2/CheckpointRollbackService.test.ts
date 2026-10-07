@@ -4,6 +4,7 @@ import {
   CheckpointId,
   CheckpointScopeId,
   type OrchestrationV2ThreadProjection,
+  ProviderDriverKind,
   ProviderInstanceId,
   ProviderSessionId,
   ProviderThreadId,
@@ -28,7 +29,10 @@ import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "./IdAllocator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProjectStore from "./ProjectStore.ts";
-import type { ProviderAdapterV2RollbackThreadInput } from "./ProviderAdapter.ts";
+import {
+  ProviderAdapterRollbackThreadError,
+  type ProviderAdapterV2RollbackThreadInput,
+} from "./ProviderAdapter.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
 
@@ -99,6 +103,7 @@ it.effect("rejects a non-ready checkpoint before opening a session or restoring 
       })
       .pipe(Effect.flip);
 
+    assert(error._tag === "CheckpointRollbackExecutionError");
     assert.equal(error.reason, "rollback-target-invalid");
     assert.equal(
       error.message,
@@ -176,6 +181,7 @@ it.effect("rejects a rollback when another provider thread became active", () =>
       })
       .pipe(Effect.flip);
 
+    assert(error._tag === "CheckpointRollbackExecutionError");
     assert.equal(error.reason, "active-provider-changed");
     assert.equal(
       error.message,
@@ -256,6 +262,7 @@ it.effect("rejects a rollback when provider selection changed before execution",
       })
       .pipe(Effect.flip);
 
+    assert(error._tag === "CheckpointRollbackExecutionError");
     assert.equal(error.reason, "active-provider-changed");
     assert.equal(
       error.message,
@@ -331,6 +338,7 @@ it.effect("reports a missing provider turn as a structured rollback failure", ()
       })
       .pipe(Effect.flip);
 
+    assert(error._tag === "CheckpointRollbackExecutionError");
     assert.equal(error.reason, "provider-turn-unavailable");
     assert.equal(
       error.message,
@@ -462,6 +470,7 @@ it.effect.each([
       const error = yield* Effect.flip(
         service.execute({ threadId, providerThreadId, checkpointId, scopeId, restoreFiles }),
       );
+      assert(error._tag === "CheckpointRollbackExecutionError");
       assert.equal(error.reason, "shared-workspace");
       assert.deepEqual(calls, []);
       return;
@@ -532,7 +541,12 @@ it.effect.each(["success", "restore-fails", "provider-fails", "provider-only-fai
         cause: new Error("git restore failed"),
       });
       const providerConversation = ["turn-1"];
-      const providerFailure = new Error("provider rollback failed");
+      const providerFailure = new ProviderAdapterRollbackThreadError({
+        driver: ProviderDriverKind.make("codex"),
+        providerThreadId,
+        checkpointId,
+        cause: new Error("provider rollback failed"),
+      });
       const deletedRefs: CheckpointId[] = [];
       const persistedEvents: string[] = [];
       const testLayer = CheckpointRollbackService.layer.pipe(
@@ -581,7 +595,7 @@ it.effect.each(["success", "restore-fails", "provider-fails", "provider-only-fai
                       const count = yield* resolveCodexRollbackTurnCount(input);
                       assert.equal(count, 1);
                       if (outcome === "provider-fails" || outcome === "provider-only-fails") {
-                        return yield* Effect.fail(providerFailure);
+                        return yield* providerFailure;
                       }
                       providerConversation.splice(providerConversation.length - count, count);
                       return { providerThread };
@@ -606,10 +620,9 @@ it.effect.each(["success", "restore-fails", "provider-fails", "provider-only-fai
       });
       if (outcome !== "success") {
         const error = yield* Effect.flip(rollback);
-        assert.equal(
-          error.reason,
-          outcome === "provider-fails" ? "files-restored-provider-failed" : "unexpected-failure",
-        );
+        assert.equal(error.threadId, threadId);
+        assert.equal(error.providerThreadId, providerThreadId);
+        assert.equal(error.checkpointId, checkpointId);
         assert.equal(error.cause, outcome === "restore-fails" ? restoreFailure : providerFailure);
         assert.deepEqual(providerConversation, ["turn-1"]);
         assert.deepEqual(persistedEvents, []);
@@ -617,10 +630,16 @@ it.effect.each(["success", "restore-fails", "provider-fails", "provider-only-fai
         assert.equal(projection.runs[0]?.status, "completed");
         assert.equal(projection.checkpoints[1]?.status, "ready");
         if (outcome === "provider-fails") {
-          assert.include(error.message, "Files were restored to the selected checkpoint");
+          assert(error._tag === "CheckpointRollbackPartialRestoreError");
+          assert.equal(
+            error.message,
+            "Files were restored to the selected checkpoint, but the conversation rollback failed. Conversation history may not match your files. Check the provider and server logs before retrying.",
+          );
           assert.equal(yield* fs.exists(currentFile), false);
           assert.equal(yield* fs.readFileString(restoredFile), "checkpoint turn");
         } else {
+          assert(error._tag === "CheckpointRollbackExecutionError");
+          assert.equal(error.reason, "unexpected-failure");
           assert.equal(error.message, CheckpointRollbackService.ROLLBACK_FAILED_MESSAGE);
           assert.equal(yield* fs.readFileString(currentFile), "current turn");
           assert.equal(yield* fs.exists(restoredFile), false);

@@ -387,7 +387,7 @@ export const layerExecutor: Layer.Layer<
                   const failure = Cause.findErrorOption(cause);
                   const message =
                     Option.isSome(failure) &&
-                    failure.value.reason === "files-restored-provider-failed"
+                    failure.value._tag === "CheckpointRollbackPartialRestoreError"
                       ? failure.value.message
                       : CheckpointRollbackService.ROLLBACK_FAILED_MESSAGE;
                   return threads

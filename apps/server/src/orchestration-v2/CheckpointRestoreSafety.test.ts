@@ -187,6 +187,7 @@ it.effect.each([
       const error = yield* service
         .execute({ threadId, providerThreadId, checkpointId, scopeId, restoreFiles })
         .pipe(Effect.flip);
+      assert(error._tag === "CheckpointRollbackExecutionError");
       assert.equal(error.reason, "shared-workspace");
       assert.deepEqual(calls, []);
       assert.equal(yield* fs.readFileString(otherFile), "other thread's uncommitted work");

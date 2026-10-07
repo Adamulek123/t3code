@@ -39,7 +39,6 @@ export class CheckpointRollbackExecutionError extends Schema.TaggedError<Checkpo
       "active-provider-changed",
       "provider-turn-unavailable",
       "unexpected-failure",
-      "files-restored-provider-failed",
       "shared-workspace",
     ]),
     threadId: ThreadId,
@@ -60,13 +59,27 @@ export class CheckpointRollbackExecutionError extends Schema.TaggedError<Checkpo
         return SHARED_WORKSPACE_RESTORE_MESSAGE;
       case "unexpected-failure":
         return ROLLBACK_FAILED_MESSAGE;
-      case "files-restored-provider-failed":
-        return "Files were restored to the selected checkpoint, but the conversation rollback failed. Conversation history may not match your files. Check the provider and server logs before retrying.";
     }
   }
 }
 
-const isCheckpointRollbackExecutionError = Schema.is(CheckpointRollbackExecutionError);
+export class CheckpointRollbackPartialRestoreError extends Schema.TaggedError<CheckpointRollbackPartialRestoreError>()(
+  "CheckpointRollbackPartialRestoreError",
+  {
+    threadId: ThreadId,
+    providerThreadId: ProviderThreadId,
+    checkpointId: CheckpointId,
+    cause: Schema.Defect(),
+  },
+) {
+  override get message(): string {
+    return "Files were restored to the selected checkpoint, but the conversation rollback failed. Conversation history may not match your files. Check the provider and server logs before retrying.";
+  }
+}
+
+const isCheckpointRollbackError = Schema.is(
+  Schema.Union([CheckpointRollbackExecutionError, CheckpointRollbackPartialRestoreError]),
+);
 
 export interface CheckpointRollbackServiceV2Shape {
   readonly execute: (input: {
@@ -75,7 +88,10 @@ export interface CheckpointRollbackServiceV2Shape {
     readonly checkpointId: CheckpointId;
     readonly scopeId: CheckpointScopeId;
     readonly restoreFiles?: boolean;
-  }) => Effect.Effect<void, CheckpointRollbackExecutionError>;
+  }) => Effect.Effect<
+    void,
+    CheckpointRollbackExecutionError | CheckpointRollbackPartialRestoreError
+  >;
 }
 
 export class CheckpointRollbackServiceV2 extends Context.Service<
@@ -275,18 +291,21 @@ export const layer: Layer.Layer<
                 providerThreadTurns,
               })
               .pipe(
-                Effect.mapError(
-                  (cause) =>
-                    new CheckpointRollbackExecutionError({
-                      reason:
-                        input.restoreFiles === false
-                          ? "unexpected-failure"
-                          : "files-restored-provider-failed",
-                      threadId: input.threadId,
-                      providerThreadId: input.providerThreadId,
-                      checkpointId: input.checkpointId,
-                      cause,
-                    }),
+                Effect.mapError((cause) =>
+                  input.restoreFiles === false
+                    ? new CheckpointRollbackExecutionError({
+                        reason: "unexpected-failure",
+                        threadId: input.threadId,
+                        providerThreadId: input.providerThreadId,
+                        checkpointId: input.checkpointId,
+                        cause,
+                      })
+                    : new CheckpointRollbackPartialRestoreError({
+                        threadId: input.threadId,
+                        providerThreadId: input.providerThreadId,
+                        checkpointId: input.checkpointId,
+                        cause,
+                      }),
                 ),
               );
       const staleCheckpoints = projection.checkpoints.filter(
@@ -372,7 +391,7 @@ export const layer: Layer.Layer<
       execute: (input) =>
         execute(input).pipe(
           Effect.mapError((cause) =>
-            isCheckpointRollbackExecutionError(cause)
+            isCheckpointRollbackError(cause)
               ? cause
               : new CheckpointRollbackExecutionError({
                   reason: "unexpected-failure",
