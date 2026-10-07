@@ -459,6 +459,206 @@ describe("OpenCodeAdapterV2", () => {
       }).pipe(Effect.provide(IdAllocator.layer), Effect.scoped),
   );
 
+  it.effect.each(
+    (["permission", "question"] as const).flatMap((kind) =>
+      (["unknown-owner", "inactive-owner", "rejection-error", "rejection-timeout"] as const).map(
+        (outcome) => ({ kind, outcome }),
+      ),
+    ),
+  )("reports an unroutable $kind request with $outcome", ({ kind, outcome }) =>
+    Effect.gen(function* () {
+      const nativeEvents = asyncEventStream();
+      const failed = yield* Deferred.make<void>();
+      const rejections: unknown[] = [];
+      let rejectionSignal: AbortSignal | undefined;
+      const reject = async (input: unknown, options: { signal: AbortSignal }) => {
+        rejections.push(input);
+        rejectionSignal = options.signal;
+        if (outcome === "rejection-error") return { error: { message: "rejection failed" } };
+        if (outcome === "rejection-timeout") return new Promise<never>(() => {});
+        return { data: true };
+      };
+      const harness = yield* makeOpenCodeRuntimeHarness(`unroutable-${kind}-${outcome}`, "root", {
+        event: { subscribe: async () => ({ stream: nativeEvents.stream }) },
+        session: {
+          create: async () => ({ data: { id: "root", time: { created: 1, updated: 1 } } }),
+          get: async ({ sessionID }: { sessionID: string }) =>
+            outcome === "unknown-owner" && sessionID === "child"
+              ? { error: { message: "session relation unavailable" } }
+              : { data: { id: sessionID, ...(sessionID === "root" ? {} : { parentID: "root" }) } },
+          messages: async () => ({ data: [] }),
+          promptAsync: async () => ({ data: true }),
+          abort: async () => ({ data: true }),
+          children: async () => ({ data: [] }),
+        },
+        permission: { reply: reject },
+        question: { reject },
+      });
+      if (outcome === "unknown-owner") yield* harness.startTurn();
+      const collected = yield* harness.runtime.events.pipe(
+        Stream.tap((event) =>
+          event.type === "provider_session.updated" && event.providerSession.status === "error"
+            ? Deferred.succeed(failed, undefined)
+            : Effect.void,
+        ),
+        Stream.takeUntil(
+          (event) =>
+            event.type === "provider_session.updated" && event.providerSession.status === "error",
+        ),
+        Stream.runCollect,
+        Effect.forkScoped,
+      );
+      const asked = {
+        type: `${kind}.asked`,
+        properties:
+          kind === "permission"
+            ? {
+                id: "unroutable",
+                sessionID: "child",
+                permission: "bash",
+                patterns: ["*"],
+                always: [],
+                metadata: {},
+              }
+            : {
+                id: "unroutable",
+                sessionID: "child",
+                questions: [
+                  {
+                    header: "Choice",
+                    question: "Which?",
+                    options: [{ label: "Yes", description: "Proceed" }],
+                  },
+                ],
+              },
+      };
+      yield* Effect.promise(() => nativeEvents.push(asked));
+      yield* Effect.promise(() => nativeEvents.push(asked));
+      yield* TestClock.adjust("4999 millis");
+      assert.isFalse(yield* Deferred.isDone(failed));
+      assert.isEmpty(rejections);
+      yield* TestClock.adjust("1 milli");
+      if (outcome === "rejection-timeout") {
+        yield* TestClock.adjust("10 seconds");
+        assert.isTrue(rejectionSignal?.aborted);
+      }
+      if (outcome !== "unknown-owner") assert.lengthOf(rejections, 1);
+      yield* Deferred.await(failed);
+      const received = yield* Fiber.join(collected);
+      const failure = received.at(-1)!;
+      assert.equal(failure.type, "provider_session.updated");
+      if (failure.type !== "provider_session.updated") return;
+      assert.include(failure.providerSession.lastError, `${kind} request unroutable`);
+      assert.equal(
+        failure.providerSession.lastError?.endsWith("Native rejection failed."),
+        outcome === "rejection-error" || outcome === "rejection-timeout",
+      );
+      assert.isFalse(received.some((event) => event.type === "runtime_request.updated"));
+      assert.deepEqual(
+        rejections,
+        outcome === "unknown-owner"
+          ? []
+          : [{ requestID: "unroutable", ...(kind === "permission" ? { reply: "reject" } : {}) }],
+      );
+      // A failed rejection leaves the request available if its owner becomes active.
+      if (outcome === "inactive-owner" || outcome === "rejection-error") {
+        yield* harness.startTurn();
+        yield* Effect.promise(() => nativeEvents.push(asked));
+        const snapshot = yield* harness.runtime.readThreadSnapshot({
+          providerThread: harness.providerThread,
+        });
+        assert.lengthOf(snapshot.runtimeRequests, outcome === "inactive-owner" ? 0 : 1);
+        assert.lengthOf(rejections, 1);
+      }
+    }).pipe(Effect.provide(IdAllocator.layer), Effect.scoped),
+  );
+
+  it.effect.each(["late-relation", "already-settled", "foreign-owner"] as const)(
+    "preserves a child request with %s during routing backoff",
+    (outcome) =>
+      Effect.gen(function* () {
+        const nativeEvents = asyncEventStream();
+        const rejections: unknown[] = [];
+        const harness = yield* makeOpenCodeRuntimeHarness(`routing-${outcome}`, "root", {
+          event: { subscribe: async () => ({ stream: nativeEvents.stream }) },
+          session: {
+            create: async () => ({ data: { id: "root", time: { created: 1, updated: 1 } } }),
+            get: async ({ sessionID }: { sessionID: string }) =>
+              sessionID === "root" || outcome === "foreign-owner"
+                ? {
+                    data: {
+                      id: sessionID,
+                      ...(sessionID === "child" ? { parentID: "foreign-root" } : {}),
+                    },
+                  }
+                : { error: { message: "session relation unavailable" } },
+            messages: async () => ({ data: [] }),
+            promptAsync: async () => ({ data: true }),
+            abort: async () => ({ data: true }),
+            children: async () => ({ data: [] }),
+          },
+          permission: {
+            reply: async (input: unknown) => {
+              rejections.push(input);
+              return { data: true };
+            },
+          },
+        });
+        yield* harness.startTurn();
+        const received: Array<{
+          type: string;
+          providerSession?: { status: string };
+        }> = [];
+        const routed = yield* Deferred.make<void>();
+        yield* harness.runtime.events.pipe(
+          Stream.runForEach((event) => {
+            received.push(event);
+            return event.type === "runtime_request.updated"
+              ? Deferred.succeed(routed, undefined)
+              : Effect.void;
+          }),
+          Effect.forkScoped,
+        );
+        const asked = {
+          type: "permission.asked",
+          properties: {
+            id: "child-request",
+            sessionID: "child",
+            permission: "bash",
+            patterns: ["*"],
+            always: [],
+            metadata: {},
+          },
+        };
+        yield* Effect.promise(() => nativeEvents.push(asked));
+        if (outcome === "already-settled") {
+          yield* Effect.promise(() =>
+            nativeEvents.push({
+              type: "permission.replied",
+              properties: { requestID: "child-request", sessionID: "child", reply: "once" },
+            }),
+          );
+        }
+        if (outcome !== "foreign-owner") {
+          yield* Effect.promise(() =>
+            nativeEvents.push({
+              type: "session.created",
+              properties: { info: { id: "child", parentID: "root" } },
+            }),
+          );
+        }
+        yield* Effect.promise(() => nativeEvents.push(asked));
+        yield* TestClock.adjust("5 seconds");
+        if (outcome === "late-relation") yield* Deferred.await(routed);
+        const snapshot = yield* harness.runtime.readThreadSnapshot({
+          providerThread: harness.providerThread,
+        });
+        assert.lengthOf(snapshot.runtimeRequests, outcome === "late-relation" ? 1 : 0);
+        assert.isEmpty(rejections);
+        assert.isFalse(received.some((event) => event.providerSession?.status === "error"));
+      }).pipe(Effect.provide(IdAllocator.layer), Effect.scoped),
+  );
+
   it.effect("aborts external root and descendants before closing the event stream", () =>
     Effect.gen(function* () {
       const scope = yield* Scope.make();

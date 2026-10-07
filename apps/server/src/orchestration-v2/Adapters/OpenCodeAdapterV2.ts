@@ -1978,8 +1978,9 @@ export function makeOpenCodeAdapterV2(
 
         /** Resolve the thread state a session belongs to: its own, or for a
          *  child not registered yet, the nearest known ancestor found by walking
-         *  the native parent chain. Registers every hop so later requests from
-         *  the same child resolve without another lookup. */
+         *  the native parent chain. A complete chain ending at an unknown root
+         *  returns null: it belongs to another runtime. Registers every hop so
+         *  later requests from the same child resolve without another lookup. */
         const resolveSessionOwner = Effect.fnUntraced(function* (sessionId: string) {
           const known = threads.get(sessionId) ?? relatedSessionOwners.get(sessionId);
           if (known !== undefined) return known;
@@ -1990,8 +1991,9 @@ export function makeOpenCodeAdapterV2(
               client.session.get({ sessionID: cursor }),
             ).pipe(Effect.option);
             const info = Option.getOrUndefined(response)?.data;
+            if (info === undefined) return undefined;
             const parentId = info?.parentID;
-            if (parentId === undefined) return undefined;
+            if (parentId === undefined) return null;
             hops.push(cursor);
             const owner = threads.get(parentId) ?? relatedSessionOwners.get(parentId);
             if (owner !== undefined) {
@@ -2009,8 +2011,8 @@ export function makeOpenCodeAdapterV2(
          *  arrive before the task part or session.created event that reveals
          *  its relation to a thread. The first resolution attempt runs inline
          *  (the replayable path); if the relation or the owning turn is not
-         *  established yet, a short forked backoff keeps trying instead of
-         *  dropping the request. */
+         *  established yet, a short forked backoff keeps trying. Exhaustion
+         *  reports a session error and rejects requests known to belong here. */
         const routeRuntimeRequest = Effect.fnUntraced(function* (
           nativeRequestId: string,
           sessionId: string,
@@ -2019,6 +2021,7 @@ export function makeOpenCodeAdapterV2(
             | { readonly type: "question"; readonly value: QuestionRequest },
         ) {
           if (pendingChildRequestRoutes.has(nativeRequestId)) return;
+          let unresolvedState: OpenCodeThreadState | null | undefined;
           const attempt = Effect.gen(function* () {
             if (
               settledNativeRequestIds.has(nativeRequestId) ||
@@ -2027,7 +2030,8 @@ export function makeOpenCodeAdapterV2(
               return true;
             }
             const state = yield* resolveSessionOwner(sessionId);
-            const owner = state === undefined ? undefined : topLevelRequestOwner(state);
+            unresolvedState = state;
+            const owner = state == null ? undefined : topLevelRequestOwner(state);
             if (owner === undefined) return false;
             yield* emitRuntimeRequest(owner, nativeRequestId, request);
             return true;
@@ -2039,6 +2043,37 @@ export function makeOpenCodeAdapterV2(
               yield* Effect.sleep(Duration.millis(Math.min(200 * 2 ** retry, 2_000)));
               if (yield* attempt) return;
             }
+            if (unresolvedState === null) return;
+            const detail = `OpenCode ${request.type} request ${nativeRequestId} could not be routed to an active thread.`;
+            yield* Effect.logWarning(detail, {
+              nativeSessionId: sessionId,
+              providerSessionId: input.providerSessionId,
+            });
+            // External servers broadcast other sessions' requests too. An
+            // unresolved relation is not proof that we own the native request.
+            if (unresolvedState !== undefined) {
+              const rejected = yield* (
+                request.type === "permission"
+                  ? sdkCall(
+                      "permission.reply",
+                      { requestID: nativeRequestId, reply: "reject" },
+                      (signal) =>
+                        client.permission.reply(
+                          { requestID: nativeRequestId, reply: "reject" },
+                          { signal },
+                        ),
+                    ).pipe(Effect.map((response) => unwrapData("permission.reply", response)))
+                  : sdkCall("question.reject", { requestID: nativeRequestId }, (signal) =>
+                      client.question.reject({ requestID: nativeRequestId }, { signal }),
+                    ).pipe(Effect.map((response) => unwrapData("question.reject", response)))
+              ).pipe(Effect.timeout("10 seconds"), Effect.exit);
+              if (Exit.isFailure(rejected)) {
+                yield* updateProviderSession("error", `${detail} Native rejection failed.`);
+                return;
+              }
+              rememberSettledRequest(nativeRequestId);
+            }
+            yield* updateProviderSession("error", detail);
           }).pipe(
             Effect.ensuring(Effect.sync(() => pendingChildRequestRoutes.delete(nativeRequestId))),
             Effect.forkIn(scope),
