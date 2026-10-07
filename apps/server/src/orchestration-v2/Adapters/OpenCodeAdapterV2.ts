@@ -1979,8 +1979,10 @@ export function makeOpenCodeAdapterV2(
         /** Resolve the thread state a session belongs to: its own, or for a
          *  child not registered yet, the nearest known ancestor found by walking
          *  the native parent chain. A complete chain ending at an unknown root
-         *  returns null: it belongs to another runtime. Registers every hop so
-         *  later requests from the same child resolve without another lookup. */
+         *  returns null: no registered thread owns it. This usually means
+         *  another runtime, but can also be a root not registered here yet.
+         *  Registers every owned hop so later requests from the same child
+         *  resolve without another lookup. */
         const resolveSessionOwner = Effect.fnUntraced(function* (sessionId: string) {
           const known = threads.get(sessionId) ?? relatedSessionOwners.get(sessionId);
           if (known !== undefined) return known;
@@ -2022,6 +2024,7 @@ export function makeOpenCodeAdapterV2(
         ) {
           if (pendingChildRequestRoutes.has(nativeRequestId)) return;
           let unresolvedState: OpenCodeThreadState | null | undefined;
+          let provedForeign = false;
           const attempt = Effect.gen(function* () {
             if (
               settledNativeRequestIds.has(nativeRequestId) ||
@@ -2031,6 +2034,7 @@ export function makeOpenCodeAdapterV2(
             }
             const state = yield* resolveSessionOwner(sessionId);
             unresolvedState = state;
+            if (state === null) provedForeign = true;
             const owner = state == null ? undefined : topLevelRequestOwner(state);
             if (owner === undefined) return false;
             yield* emitRuntimeRequest(owner, nativeRequestId, request);
@@ -2043,15 +2047,20 @@ export function makeOpenCodeAdapterV2(
               yield* Effect.sleep(Duration.millis(Math.min(200 * 2 ** retry, 2_000)));
               if (yield* attempt) return;
             }
-            if (unresolvedState === null) return;
+            // A later lookup failure must not erase an observed unknown root.
+            if (provedForeign) return;
             const detail = `OpenCode ${request.type} request ${nativeRequestId} could not be routed to an active thread.`;
             yield* Effect.logWarning(detail, {
               nativeSessionId: sessionId,
               providerSessionId: input.providerSessionId,
             });
-            // External servers broadcast other sessions' requests too. An
-            // unresolved relation is not proof that we own the native request.
+            // External servers broadcast other sessions' requests too. Reject
+            // only when the parent chain resolves to a registered thread here.
             if (unresolvedState !== undefined) {
+              // OpenCode permission rejection cancels every pending permission
+              // in the asking native session, including concurrent requests.
+              // The SDK has no single-request denial; question.reject cancels
+              // only the named question.
               const rejected = yield* (
                 request.type === "permission"
                   ? sdkCall(
@@ -2068,6 +2077,10 @@ export function makeOpenCodeAdapterV2(
                     ).pipe(Effect.map((response) => unwrapData("question.reject", response)))
               ).pipe(Effect.timeout("10 seconds"), Effect.exit);
               if (Exit.isFailure(rejected)) {
+                if (isOpenCodeNotFound(Cause.squash(rejected.cause))) {
+                  rememberSettledRequest(nativeRequestId);
+                  return;
+                }
                 yield* updateProviderSession("error", `${detail} Native rejection failed.`);
                 return;
               }

@@ -659,6 +659,106 @@ describe("OpenCodeAdapterV2", () => {
       }).pipe(Effect.provide(IdAllocator.layer), Effect.scoped),
   );
 
+  it.effect.each(
+    (["permission", "question"] as const).flatMap((kind) =>
+      (["foreign-then-unavailable", "already-answered"] as const).map((outcome) => ({
+        kind,
+        outcome,
+      })),
+    ),
+  )("preserves an unroutable $kind request with $outcome", ({ kind, outcome }) =>
+    Effect.gen(function* () {
+      const nativeEvents = asyncEventStream();
+      const rejections: unknown[] = [];
+      let lookups = 0;
+      const reject = async (input: unknown) => {
+        rejections.push(input);
+        if (outcome === "already-answered") {
+          // throwOnError SDK clients throw the native error response.
+          throw { name: "NotFoundError", data: { message: "Request already answered" } };
+        }
+        return { data: true };
+      };
+      const harness = yield* makeOpenCodeRuntimeHarness(`routing-${kind}-${outcome}`, "root", {
+        event: { subscribe: async () => ({ stream: nativeEvents.stream }) },
+        session: {
+          create: async () => ({ data: { id: "root", time: { created: 1, updated: 1 } } }),
+          get: async ({ sessionID }: { sessionID: string }) => {
+            if (sessionID === "root") return { data: { id: sessionID } };
+            lookups += 1;
+            if (outcome === "foreign-then-unavailable") {
+              if (lookups === 1) return { data: { id: sessionID } };
+              throw new Error("Session lookup temporarily unavailable");
+            }
+            return { data: { id: sessionID, parentID: "root" } };
+          },
+          messages: async () => ({ data: [] }),
+          promptAsync: async () => ({ data: true }),
+          abort: async () => ({ data: true }),
+          children: async () => ({ data: [] }),
+        },
+        permission: { reply: reject },
+        question: { reject },
+      });
+      if (outcome === "foreign-then-unavailable") yield* harness.startTurn();
+      const received: Array<{
+        type: string;
+        providerSession?: { status: string };
+      }> = [];
+      yield* harness.runtime.events.pipe(
+        Stream.runForEach((event) => Effect.sync(() => received.push(event))),
+        Effect.forkScoped,
+      );
+      const asked = {
+        type: `${kind}.asked`,
+        properties:
+          kind === "permission"
+            ? {
+                id: "racing-request",
+                sessionID: "asking-session",
+                permission: "bash",
+                patterns: ["*"],
+                always: [],
+                metadata: {},
+              }
+            : {
+                id: "racing-request",
+                sessionID: "asking-session",
+                questions: [
+                  {
+                    header: "Choice",
+                    question: "Which?",
+                    options: [{ label: "Yes", description: "Proceed" }],
+                  },
+                ],
+              },
+      };
+      yield* Effect.promise(() => nativeEvents.push(asked));
+      yield* TestClock.adjust("4999 millis");
+      assert.isEmpty(rejections);
+      assert.isFalse(received.some((event) => event.providerSession?.status === "error"));
+      yield* TestClock.adjust("1 milli");
+      // Drain the final retry and its queued events without advancing the clock.
+      yield* TestClock.adjust("0 millis");
+      assert.lengthOf(rejections, outcome === "already-answered" ? 1 : 0);
+      assert.equal(lookups, outcome === "foreign-then-unavailable" ? 6 : 1);
+      assert.isFalse(received.some((event) => event.providerSession?.status === "error"));
+      if (outcome === "already-answered") {
+        yield* harness.startTurn();
+        // A replay after the owner becomes active must not revive the answered request.
+        yield* Effect.promise(() => nativeEvents.push(asked));
+        yield* TestClock.adjust("5 seconds");
+        assert.lengthOf(rejections, 1);
+        assert.isFalse(received.some((event) => event.providerSession?.status === "error"));
+      }
+      const snapshot = yield* harness.runtime.readThreadSnapshot({
+        providerThread: harness.providerThread,
+      });
+      assert.isEmpty(snapshot.runtimeRequests);
+      assert.isFalse(received.some((event) => event.type === "runtime_request.updated"));
+    }).pipe(Effect.provide(IdAllocator.layer), Effect.scoped),
+  );
+
   it.effect("aborts external root and descendants before closing the event stream", () =>
     Effect.gen(function* () {
       const scope = yield* Scope.make();
