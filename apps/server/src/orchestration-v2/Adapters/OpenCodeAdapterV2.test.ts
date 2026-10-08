@@ -840,6 +840,8 @@ describe("OpenCodeAdapterV2", () => {
         }
         yield* Effect.promise(() => nativeEvents.push(asked));
         yield* TestClock.adjust("5 seconds");
+        // Drain the final retry and its queued events without advancing the clock.
+        yield* TestClock.adjust("0 millis");
         if (outcome === "late-relation") yield* Deferred.await(routed);
         const snapshot = yield* harness.runtime.readThreadSnapshot({
           providerThread: harness.providerThread,
