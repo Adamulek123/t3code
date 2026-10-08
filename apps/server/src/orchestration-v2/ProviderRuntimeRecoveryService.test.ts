@@ -18,6 +18,7 @@ import * as Effect from "effect/Effect";
 import * as Cause from "effect/Cause";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 
@@ -45,6 +46,10 @@ it.effect.each([
       const badThread = ThreadId.make("recovery-bad-thread");
       const healthyThread = ThreadId.make("recovery-healthy-thread");
       const committed = yield* Ref.make<ThreadId[]>([]);
+      const logs: Array<{ message: unknown; cause: Cause.Cause<unknown> }> = [];
+      const logger = Logger.make(({ message, cause }) => {
+        logs.push({ message, cause });
+      });
       const layer = ProviderRuntimeRecovery.layer.pipe(
         Layer.provide(ServerSettings.layerTest()),
         Layer.provide(
@@ -98,12 +103,34 @@ it.effect.each([
       );
       const summary = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService.pipe(
         Effect.flatMap((recovery) => recovery.reconcile(trigger)),
-        Effect.provide(layer),
+        Effect.provide(Layer.merge(layer, Logger.layer([logger], { mergeWithExisting: false }))),
       );
       assert.deepEqual(yield* Ref.get(committed), [healthyThread]);
       assert.equal(summary.closedRequests, 1);
       assert.equal(summary.requeuedEffects, 2);
       assert.equal(summary.retiredEffects, 3);
+      assert.equal(logs.length, 1);
+      const log = logs[0]!;
+      assert.deepEqual(log.message, [
+        "orchestration-v2.runtime-recovery.thread-failed",
+        { trigger, threadId: badThread },
+      ]);
+      if (kind === "defect") {
+        assert.equal(
+          Cause.squash(log.cause),
+          failure === "read" ? "corrupt thread projection" : "corrupt thread event",
+        );
+      } else {
+        const error = Option.getOrThrow(Cause.findErrorOption(log.cause));
+        assert.instanceOf(error, ProviderRuntimeRecovery.ProviderRuntimeRecoveryError);
+        assert.equal(error.operation, failure === "read" ? "read-projections" : "reconcile");
+        assert.equal(error.threadId, badThread);
+        if (failure === "read") {
+          assert.instanceOf(error.cause, ProjectionStore.ProjectionStoreReadError);
+        } else {
+          assert.instanceOf(error.cause, EventSink.EventSinkWriteError);
+        }
+      }
     }),
 );
 

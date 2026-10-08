@@ -748,10 +748,11 @@ export const make = Effect.gen(function* () {
           Effect.catchCause((cause) =>
             Cause.hasInterruptsOnly(cause)
               ? Effect.failCause(cause)
-              : Effect.logError("orchestration-v2.runtime-recovery.thread-failed", {
-                  trigger,
-                  threadId,
-                }).pipe(Effect.as(null)),
+              : Effect.logError(
+                  "orchestration-v2.runtime-recovery.thread-failed",
+                  { trigger, threadId },
+                  cause,
+                ).pipe(Effect.as(null)),
           ),
         );
         if (result === null) continue;
