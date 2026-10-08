@@ -2166,6 +2166,241 @@ it.effect.each([
   }),
 );
 
+it.effect.each([true, false])(
+  "keeps an explicit workspace clear during partial checkout removal: %s",
+  (removed) =>
+    Effect.gen(function* () {
+      const cleanupEntered = yield* Deferred.make<void>();
+      const cleanupResume = yield* Deferred.make<void>();
+      const harness = makeHarness({
+        createWorktree: (_input, options) =>
+          (options?.progress?.onWorktreeClaimed?.("/claimed") ?? Effect.void).pipe(
+            Effect.andThen(Effect.fail(new Error("checkout failed") as never)),
+          ),
+        removeWorktree: () =>
+          Deferred.succeed(cleanupEntered, undefined).pipe(
+            Effect.andThen(Deferred.await(cleanupResume)),
+            Effect.andThen(
+              removed ? Effect.void : Effect.fail(new Error("remove failed") as never),
+            ),
+          ),
+      });
+      yield* Effect.gen(function* () {
+        const launches = yield* ThreadLaunch.ThreadLaunchService;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const input = launchInput({
+          command: "launch:cleanup-cleared",
+          thread: "thread:cleanup-cleared",
+          message: "Start",
+          workspace: { type: "worktree", baseRef: "main" },
+        });
+        const launched = yield* launches.launch(input);
+        yield* Deferred.await(cleanupEntered);
+        yield* threads.dispatch({
+          type: "thread.metadata.update",
+          commandId: CommandId.make(`${input.commandId}:clear-binding`),
+          threadId: launched.threadId,
+          worktreePath: null,
+          branch: null,
+        });
+        yield* Deferred.succeed(cleanupResume, undefined);
+        yield* threads.streamStoredEventsFrom({ threadId: launched.threadId }).pipe(
+          Stream.filter(
+            (stored) =>
+              stored.event.type === "run.updated" && stored.event.payload.status === "failed",
+          ),
+          Stream.runHead,
+        );
+        const projection = yield* threads.getThreadProjection(launched.threadId);
+        assert.isNull(projection.thread.worktreePath);
+        assert.isNull(projection.thread.branch);
+        const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
+        assert.isNull((yield* tracker.get(launched.threadId))?.worktreePath);
+      }).pipe(Effect.provide(harness.layer));
+    }),
+);
+
+it.effect.each([
+  { removed: true, change: "clear" },
+  { removed: false, change: "clear" },
+  { removed: true, change: "aba" },
+  { removed: false, change: "aba" },
+  { removed: false, change: "title" },
+])("guards partial checkout cleanup after its binding read: %o", ({ removed, change }) =>
+  Effect.gen(function* () {
+    const cleanupEntered = yield* Deferred.make<void>();
+    const cleanupResume = yield* Deferred.make<void>();
+    const harness = makeHarness({
+      createWorktree: (_input, options) =>
+        (options?.progress?.onWorktreeClaimed?.("/claimed") ?? Effect.void).pipe(
+          Effect.andThen(Effect.fail(new Error("checkout failed") as never)),
+        ),
+      removeWorktree: () =>
+        removed ? Effect.void : Effect.fail(new Error("remove failed") as never),
+      beforeLaunchDispatch: (command) =>
+        String(command.commandId).endsWith(":cleanup-workspace")
+          ? Deferred.succeed(cleanupEntered, undefined).pipe(
+              Effect.andThen(Deferred.await(cleanupResume)),
+            )
+          : Effect.void,
+    });
+    yield* Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const input = launchInput({
+        command: `launch:cleanup-owner:${removed}:${change}`,
+        thread: `thread:cleanup-owner:${removed}:${change}`,
+        message: "Start",
+        workspace: { type: "worktree", baseRef: "main" },
+      });
+      const launched = yield* launches.launch(input);
+      yield* Deferred.await(cleanupEntered);
+      if (change === "aba") {
+        yield* threads.dispatch({
+          type: "thread.metadata.update",
+          commandId: CommandId.make(`${input.commandId}:away`),
+          threadId: launched.threadId,
+          worktreePath: "/replacement",
+          branch: "replacement",
+        });
+      }
+      yield* threads.dispatch({
+        type: "thread.metadata.update",
+        commandId: CommandId.make(`${input.commandId}:newer`),
+        threadId: launched.threadId,
+        ...(change === "title" ? { title: "New title" } : { worktreePath: null, branch: null }),
+      });
+      yield* Deferred.succeed(cleanupResume, undefined);
+      yield* threads.streamStoredEventsFrom({ threadId: launched.threadId }).pipe(
+        Stream.filter(
+          (stored) =>
+            stored.event.type === "run.updated" && stored.event.payload.status === "failed",
+        ),
+        Stream.runHead,
+      );
+      const projection = yield* threads.getThreadProjection(launched.threadId);
+      assert.equal(projection.thread.worktreePath, change === "title" ? "/claimed" : null);
+      if (change === "title") assert.equal(projection.thread.title, "New title");
+      const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
+      assert.equal(
+        (yield* tracker.get(launched.threadId))?.worktreePath,
+        change === "title" ? "/claimed" : null,
+      );
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
+it.effect("guards legacy workspace bindings without a stored ownership id", () =>
+  Effect.gen(function* () {
+    const harness = makeHarness();
+    yield* Effect.gen(function* () {
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const sql = yield* SqlClient.SqlClient;
+      const input = launchInput({ command: "launch:legacy-owner", thread: "thread:legacy-owner" });
+      yield* threads.dispatch({
+        type: "thread.create",
+        commandId: input.commandId,
+        threadId: input.threadId!,
+        projectId: input.projectId,
+        title: input.title,
+        modelSelection: input.modelSelection,
+        runtimeMode: input.runtimeMode,
+        interactionMode: input.interactionMode,
+        branch: null,
+        worktreePath: null,
+        createdBy: input.createdBy,
+        creationSource: input.creationSource,
+      });
+      // Released versions persisted the same payload without an ownership id.
+      yield* sql`UPDATE orchestration_v2_projection_threads
+        SET payload_json = json_remove(payload_json, '$.workspaceBindingId')
+        WHERE thread_id = ${input.threadId!}`;
+      assert.isUndefined((yield* threads.getThreadShell(input.threadId!))?.workspaceBindingId);
+      const commandId = CommandId.make(`${input.commandId}:clear`);
+      yield* threads.dispatch({
+        type: "thread.metadata.update",
+        commandId,
+        threadId: input.threadId!,
+        expectedWorkspaceBindingId: null,
+        worktreePath: null,
+        branch: null,
+      });
+      assert.equal(
+        (yield* threads.getThreadProjection(input.threadId!)).thread.workspaceBindingId,
+        commandId,
+      );
+      assert.equal((yield* threads.getThreadShell(input.threadId!))?.workspaceBindingId, commandId);
+      yield* threads
+        .dispatch({
+          type: "thread.metadata.update",
+          commandId: CommandId.make(`${input.commandId}:stale`),
+          threadId: input.threadId!,
+          expectedWorkspaceBindingId: null,
+          worktreePath: "/stale",
+        })
+        .pipe(Effect.flip);
+      assert.isNull((yield* threads.getThreadProjection(input.threadId!)).thread.worktreePath);
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
+it.effect.each(["clear", "aba", "title"] as const)(
+  "guards successful checkout publication against %s metadata changes",
+  (change) =>
+    Effect.gen(function* () {
+      const checkoutEntered = yield* Deferred.make<void>();
+      const checkoutResume = yield* Deferred.make<void>();
+      const harness = makeHarness({
+        createWorktree: (_input, options) =>
+          (options?.progress?.onWorktreeClaimed?.("/claimed") ?? Effect.void).pipe(
+            Effect.andThen(Deferred.succeed(checkoutEntered, undefined)),
+            Effect.andThen(Deferred.await(checkoutResume)),
+            Effect.as({ worktree: { path: "/claimed", refName: "feature" } } as never),
+          ),
+      });
+      yield* Effect.gen(function* () {
+        const launches = yield* ThreadLaunch.ThreadLaunchService;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const input = launchInput({
+          command: `launch:publication-owner:${change}`,
+          thread: `thread:publication-owner:${change}`,
+          message: "Start",
+          workspace: { type: "worktree", baseRef: "main" },
+        });
+        const launched = yield* launches.launch(input);
+        yield* Deferred.await(checkoutEntered);
+        if (change === "aba")
+          yield* threads.dispatch({
+            type: "thread.metadata.update",
+            commandId: CommandId.make(`${input.commandId}:away`),
+            threadId: launched.threadId,
+            worktreePath: "/replacement",
+            branch: "replacement",
+          });
+        yield* threads.dispatch({
+          type: "thread.metadata.update",
+          commandId: CommandId.make(`${input.commandId}:newer`),
+          threadId: launched.threadId,
+          ...(change === "title" ? { title: "New title" } : { worktreePath: null, branch: null }),
+        });
+        yield* Deferred.succeed(checkoutResume, undefined);
+        yield* threads.streamStoredEventsFrom({ threadId: launched.threadId }).pipe(
+          Stream.filter((stored) =>
+            change === "title"
+              ? stored.commandId === CommandId.make(`${input.commandId}:release`) &&
+                stored.event.type === "run.updated"
+              : stored.event.type === "run.updated" && stored.event.payload.status === "failed",
+          ),
+          Stream.runHead,
+        );
+        const projection = yield* threads.getThreadProjection(launched.threadId);
+        assert.equal(projection.thread.worktreePath, change === "title" ? "/claimed" : null);
+        assert.equal(projection.thread.branch, change === "title" ? "feature" : null);
+        assert.equal(harness.removeWorktree.mock.calls.length, change === "title" ? 0 : 1);
+      }).pipe(Effect.provide(harness.layer));
+    }),
+);
+
 it.effect("keeps a recorded failed launch worktree without attempting cleanup", () => {
   const harness = makeHarness({
     runSetup: () => Effect.fail(new Error("setup failed") as never),
@@ -2248,6 +2483,52 @@ it.effect("stops branch renaming before removing a cancelled launch worktree", (
       assert.isNull(projection.thread.branch);
       assert.equal(harness.removeWorktree.mock.calls.length, 1);
       assert.isNull((yield* tracker.get(launched.threadId))?.setupScript);
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
+it.effect("keeps a same-valued newer binding after a delayed branch rename", () =>
+  Effect.gen(function* () {
+    const renameEntered = yield* Deferred.make<void>();
+    const renameResume = yield* Deferred.make<void>();
+    const renameDispatched = yield* Deferred.make<void>();
+    const harness = makeHarness({
+      beforeLaunchDispatch: (command) =>
+        String(command.commandId).endsWith(":branch-rename")
+          ? Deferred.succeed(renameEntered, undefined).pipe(
+              Effect.andThen(Deferred.await(renameResume)),
+            )
+          : Effect.void,
+      afterLaunchDispatch: (command) =>
+        String(command.commandId).endsWith(":branch-rename")
+          ? Deferred.succeed(renameDispatched, undefined)
+          : Effect.void,
+    });
+    yield* Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const input = launchInput({
+        command: "launch:rename-owner",
+        thread: "thread:rename-owner",
+        message: "Start",
+        workspace: { type: "worktree", baseRef: "main", branch: "t3code/abcd1234" },
+      });
+      const launched = yield* launches.launch(input);
+      yield* Deferred.await(renameEntered);
+      const commandId = CommandId.make(`${input.commandId}:user-binding`);
+      yield* threads.dispatch({
+        type: "thread.metadata.update",
+        commandId,
+        threadId: launched.threadId,
+        worktreePath: "/repo-worktrees/feature",
+        branch: "t3code/abcd1234",
+      });
+      yield* Deferred.succeed(renameResume, undefined);
+      yield* Deferred.await(renameDispatched);
+      const projection = yield* threads.getThreadProjection(launched.threadId);
+      assert.equal(projection.thread.worktreePath, "/repo-worktrees/feature");
+      assert.equal(projection.thread.branch, "t3code/abcd1234");
+      assert.equal(projection.thread.workspaceBindingId, commandId);
     }).pipe(Effect.provide(harness.layer));
   }),
 );

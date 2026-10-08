@@ -2205,6 +2205,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       interactionMode: command.interactionMode,
       branch: command.branch,
       worktreePath: command.worktreePath,
+      workspaceBindingId: command.commandId,
       activeProviderThreadId: null,
       lineage: {
         parentThreadId: null,
@@ -2473,7 +2474,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       command.type === "thread.metadata.update" &&
       ((command.expectedWorktreePath !== undefined &&
         command.expectedWorktreePath !== thread.worktreePath) ||
-        (command.expectedBranch !== undefined && command.expectedBranch !== thread.branch))
+        (command.expectedBranch !== undefined && command.expectedBranch !== thread.branch) ||
+        (command.expectedWorkspaceBindingId !== undefined &&
+          command.expectedWorkspaceBindingId !== (thread.workspaceBindingId ?? null)))
     ) {
       return yield* new OrchestratorDispatchError({
         commandId: command.commandId,
@@ -2938,6 +2941,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 : {}),
             ...(command.branch === undefined ? {} : { branch: command.branch }),
             ...(command.worktreePath === undefined ? {} : { worktreePath: command.worktreePath }),
+            ...(command.branch === undefined && command.worktreePath === undefined
+              ? {}
+              : { workspaceBindingId: command.commandId }),
             ...(command.linkedPullRequest === undefined
               ? {}
               : {
@@ -7827,7 +7833,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         (command.phase !== "setup" ||
           state.run.workspacePreparation?.type !== "worktree" ||
           projection.thread.worktreePath !== workspace.expectedWorktreePath ||
-          projection.thread.branch !== workspace.expectedBranch)
+          projection.thread.branch !== workspace.expectedBranch ||
+          (workspace.expectedWorkspaceBindingId !== undefined &&
+            workspace.expectedWorkspaceBindingId !==
+              (projection.thread.workspaceBindingId ?? null)))
       ) {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
@@ -7847,6 +7856,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             ...projection.thread,
             worktreePath: workspace.worktreePath,
             branch: workspace.branch,
+            workspaceBindingId: command.commandId,
             updatedAt: now,
           },
         });
