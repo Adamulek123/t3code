@@ -379,12 +379,16 @@ export const layerExecutor: Layer.Layer<
                   : { restoreFiles: effect.request.restoreFiles }),
               })
               .pipe(
-                // The last failed attempt tells waiting clients it failed,
-                // instead of leaving them to time out. Preserve the fixed
-                // partial-restore warning; log the full cause for each attempt.
+                // A provider failure after restore is terminal: replaying the
+                // restore could overwrite edits made after this attempt.
+                // Other failures notify waiting clients only after retries end.
                 Effect.tapCause((cause) => {
-                  if (willRetry || Cause.hasInterruptsOnly(cause)) return Effect.void;
+                  if (Cause.hasInterruptsOnly(cause)) return Effect.void;
                   const failure = Cause.findErrorOption(cause);
+                  const partialRestore =
+                    Option.isSome(failure) &&
+                    failure.value._tag === "CheckpointRollbackPartialRestoreError";
+                  if (willRetry && !partialRestore) return Effect.void;
                   const message =
                     Option.isSome(failure) &&
                     failure.value._tag === "CheckpointRollbackPartialRestoreError"
@@ -709,6 +713,11 @@ export const layerWithOptions = (
 
           const error = Cause.pretty(exit.cause);
           const nonRetryable = isNonRetryableProviderTurnControlFailure(effect.request.type, error);
+          const failure = Cause.findErrorOption(exit.cause);
+          const partialRestore =
+            effect.request.type === "provider-thread.rollback" &&
+            Option.isSome(failure) &&
+            CheckpointRollbackService.isCheckpointRollbackPartialRestoreError(failure.value.cause);
           yield* Effect.logWarning("Orchestration effect execution failed", {
             effectId: effect.id,
             effectType: effect.request.type,
@@ -722,7 +731,7 @@ export const layerWithOptions = (
             ? yield* outbox
                 .succeed({ effectId: effect.id, workerId })
                 .pipe(Effect.onError((cause) => terminalizeClaim(effect, cause)))
-            : effect.attemptCount >= maxAttempts
+            : partialRestore || effect.attemptCount >= maxAttempts
               ? yield* outbox
                   .fail({ effectId: effect.id, workerId, error })
                   .pipe(Effect.onError((cause) => terminalizeClaim(effect, cause)))

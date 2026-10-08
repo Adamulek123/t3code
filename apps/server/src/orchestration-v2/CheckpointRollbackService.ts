@@ -77,6 +77,10 @@ export class CheckpointRollbackPartialRestoreError extends Schema.TaggedError<Ch
   }
 }
 
+export const isCheckpointRollbackPartialRestoreError = Schema.is(
+  CheckpointRollbackPartialRestoreError,
+);
+
 const isCheckpointRollbackError = Schema.is(
   Schema.Union([CheckpointRollbackExecutionError, CheckpointRollbackPartialRestoreError]),
 );
