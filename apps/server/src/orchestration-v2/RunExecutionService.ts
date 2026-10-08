@@ -1392,6 +1392,7 @@ export const layer: Layer.Layer<
               Effect.gen(function* () {
                 const terminal = yield* Ref.get(terminalEvent);
                 if (terminal === null) {
+                  if (yield* eventSubscription.closedForShutdown ?? Effect.succeed(false)) return;
                   yield* finalizeRootRun(
                     makeFailedTerminalEvent(
                       makeProviderFailure({

@@ -14,11 +14,15 @@ import {
   type OrchestrationV2DomainEvent,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
+import * as SqlClient from "effect/sql/SqlClient";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as EffectWorker from "./EffectWorker.ts";
 import * as EventSink from "./EventSink.ts";
@@ -30,6 +34,13 @@ import {
   type ProviderAdapterV2TurnInput,
 } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
+import * as ProviderSessionManager from "./ProviderSessionManager.ts";
+import * as ProviderRuntimeRecoveryService from "./ProviderRuntimeRecoveryService.ts";
+import * as ProjectionStore from "./ProjectionStore.ts";
+import * as EffectOutbox from "./EffectOutbox.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import * as ServerSettings from "../serverSettings.ts";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 
@@ -425,11 +436,14 @@ const composerSelection = {
 const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function* (
   name: string,
   supportsRestart = false,
+  observeStreamClose = false,
+  databaseLayer?: Layer.Layer<SqlClient.SqlClient>,
 ) {
   const cwd = yield* checkpointWorkspace(name);
-  const events = yield* Queue.unbounded<ProviderAdapterV2Event>();
+  const events = yield* Queue.unbounded<ProviderAdapterV2Event, Cause.Done>();
   const started: ProviderAdapterV2TurnInput[] = [];
   const steered: string[] = [];
+  const subscriptionClosed = yield* Deferred.make<void>();
   const capabilities = {
     ...CodexProviderCapabilitiesV2,
     turns: {
@@ -558,7 +572,11 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
   const layer = ProviderReplayHarness.layerWithRegistry(
     { name },
     ProviderAdapterRegistry.layerSingle(adapter),
-    { runEffectWorker: false },
+    {
+      runEffectWorker: false,
+      ...(observeStreamClose ? { continueThreadsAfterServerUpdate: true } : {}),
+      ...(databaseLayer === undefined ? {} : { databaseLayer }),
+    },
   );
   // Creates the thread and starts its first turn on `runSelection`.
   const startFirstTurn = Effect.gen(function* () {
@@ -599,12 +617,176 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
       createdBy: "user",
       creationSource: "web",
     });
+    if (observeStreamClose) {
+      const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const projection = yield* orchestrator.getThreadProjection(threadId);
+      const providerSessionId = projection.providerThreads[0]!.providerSessionId;
+      assert.isNotNull(providerSessionId);
+      const runtime = yield* manager.open({
+        threadId,
+        providerSessionId: providerSessionId!,
+        modelSelection: runSelection,
+        runtimePolicy: { runtimeMode: "full-access", interactionMode: "default", cwd },
+      });
+      const subscribe = runtime.subscribeEvents!;
+      // Observe the real execution consumer's cleanup without changing its
+      // stream or the manager's close/release behavior.
+      Object.assign(runtime, {
+        subscribeEvents: subscribe.pipe(
+          Effect.map((subscription) => ({
+            ...subscription,
+            close: subscription.close.pipe(
+              Effect.andThen(Deferred.succeed(subscriptionClosed, undefined)),
+            ),
+          })),
+        ),
+      });
+    }
     yield* worker.drain();
     yield* Fiber.join(running);
     return threadId;
   });
-  return { events, started, steered, layer, startFirstTurn };
+  return { events, started, steered, layer, startFirstTurn, subscriptionClosed };
 });
+
+it.effect("preserves shutdown cancellation and delivers its prepared restart continuation", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const database = Layer.succeed(SqlClient.SqlClient, yield* SqlClient.SqlClient);
+      const { layer, startFirstTurn, subscriptionClosed } = yield* nextTurnSelectionHarness(
+        "shutdown-stream-restart",
+        false,
+        true,
+        database,
+      );
+      const { threadId, sourceRunId } = yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        const recovery = yield* ProviderRuntimeRecoveryService.make;
+        const threadId = yield* startFirstTurn;
+        const original = (yield* orchestrator.getThreadProjection(threadId)).runs[0]!;
+        yield* recovery.prepareForShutdown;
+        const effectId = `effect:restart-continuation:${original.id}`;
+        assert.isTrue(Option.isSome(yield* outbox.get(effectId)));
+        yield* manager.shutdown;
+        yield* Deferred.await(subscriptionClosed);
+        assert.equal(
+          (yield* orchestrator.getThreadProjection(threadId)).runs[0]?.status,
+          "running",
+          "clean managed shutdown leaves settlement to runtime recovery",
+        );
+        yield* recovery.reconcile("shutdown");
+        const cancelled = yield* orchestrator.getThreadProjection(threadId);
+        assert.equal(cancelled.runs[0]?.status, "cancelled");
+        assert.equal(cancelled.attempts[0]?.status, "cancelled");
+        assert.isFalse(cancelled.turnItems.some((item) => item.type === "error"));
+        return { threadId, sourceRunId: original.id };
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            layer,
+            ProjectionStore.layer.pipe(Layer.provide(database)),
+            EffectOutbox.layer.pipe(Layer.provide(database)),
+            ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
+            IdAllocator.layer,
+          ),
+        ),
+      );
+      // Restart with a fresh manager and worker over the same SQLite state.
+      const restarted = yield* nextTurnSelectionHarness(
+        "shutdown-stream-resumed",
+        false,
+        true,
+        database,
+      );
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const running = yield* orchestrator.streamDomainEvents.pipe(
+          Stream.filter(
+            (event) => event.type === "provider-turn.updated" && event.payload.status === "running",
+          ),
+          Stream.take(1),
+          Stream.runDrain,
+          Effect.forkScoped,
+        );
+        yield* worker.drain();
+        yield* Fiber.join(running);
+        const resumed = yield* orchestrator.getThreadProjection(threadId);
+        assert.isTrue(
+          resumed.messages.some(
+            (message) =>
+              message.id === MessageId.make(`message:restart-continuation:${sourceRunId}`),
+          ),
+        );
+        assert.lengthOf(restarted.started, 1);
+        assert.equal(resumed.runs[0]?.status, "cancelled");
+        assert.equal(resumed.runs[1]?.restartContinuationOfRunId, sourceRunId);
+        assert.equal(resumed.runs[1]?.status, "running");
+        assert.equal(resumed.providerTurns.at(-1)?.status, "running");
+      }).pipe(Effect.provide(restarted.layer));
+    }),
+  ).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect.each(["unexpected drain", "manual release", "provider stop", "root terminal"] as const)(
+  "settles a managed execution correctly on %s",
+  (ending) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { layer, events, startFirstTurn, subscriptionClosed, started } =
+          yield* nextTurnSelectionHarness(
+            `managed-stream-${ending.replaceAll(" ", "-")}`,
+            false,
+            true,
+          );
+        yield* Effect.gen(function* () {
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+          const threadId = yield* startFirstTurn;
+          const projection = yield* orchestrator.getThreadProjection(threadId);
+          const session = projection.providerSessions[0]!;
+          if (ending === "manual release") {
+            yield* manager.release({ providerSessionId: session.id, reason: "manual_shutdown" });
+          } else if (ending === "unexpected drain") {
+            yield* Queue.end(events);
+          } else if (ending === "provider stop") {
+            yield* Queue.offer(events, {
+              type: "provider_session.updated",
+              driver,
+              providerSession: { ...session, status: "stopped" },
+            });
+            yield* Queue.end(events);
+          } else {
+            const turn = started[0]!;
+            yield* Queue.offer(events, {
+              type: "turn.terminal",
+              driver,
+              providerThreadId: turn.providerThread.id,
+              providerTurnId: ProviderTurnId.make(`provider-turn:${turn.attemptId}`),
+              runOrdinal: turn.runOrdinal,
+              status: "completed",
+              failure: null,
+              threadDisposition: "reusable",
+            });
+          }
+          yield* Deferred.await(subscriptionClosed);
+          if (ending === "root terminal") yield* manager.shutdown;
+          const settled = yield* orchestrator.getThreadProjection(threadId);
+          assert.equal(settled.runs[0]?.status, ending === "root terminal" ? "waiting" : "failed");
+          assert.equal(
+            settled.attempts[0]?.status,
+            ending === "root terminal" ? "completed" : "failed",
+          );
+          assert.equal(
+            settled.turnItems.filter((item) => item.type === "error").length,
+            ending === "root terminal" ? 0 : 1,
+          );
+        }).pipe(Effect.provide(layer));
+      }),
+    ),
+);
 
 it.effect("learns a restarted production attempt's root and rejects its predecessor terminal", () =>
   Effect.scoped(
