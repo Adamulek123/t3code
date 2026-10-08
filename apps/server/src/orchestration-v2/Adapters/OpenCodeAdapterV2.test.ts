@@ -1,6 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import type { OpencodeClient, ToolPart } from "@opencode-ai/sdk/v2";
+import { createOpencodeClient, type OpencodeClient, type ToolPart } from "@opencode-ai/sdk/v2";
 import {
   CheckpointId,
   NodeId,
@@ -852,21 +852,43 @@ describe("OpenCodeAdapterV2", () => {
 
   it.effect.each(
     (["permission", "question"] as const).flatMap((kind) =>
-      (["foreign-then-unavailable", "already-answered"] as const).map((outcome) => ({
-        kind,
-        outcome,
-      })),
+      (["foreign-then-unavailable", "already-answered", "sdk-already-answered"] as const).map(
+        (outcome) => ({
+          kind,
+          outcome,
+        }),
+      ),
     ),
   )("preserves an unroutable $kind request with $outcome", ({ kind, outcome }) =>
     Effect.gen(function* () {
       const nativeEvents = asyncEventStream();
       const rejections: unknown[] = [];
       let lookups = 0;
+      // Exercise the installed SDK's throwOnError path, including the public
+      // client's error interceptor that adds HTTP status to the tagged body.
+      const sdk = createOpencodeClient({
+        baseUrl: "http://test.invalid",
+        throwOnError: true,
+        fetch: async () =>
+          Response.json(
+            {
+              _tag: kind === "permission" ? "PermissionNotFoundError" : "QuestionNotFoundError",
+              requestID: "racing-request",
+              message: "Request already answered",
+            },
+            { status: 404 },
+          ),
+      });
       const reject = async (input: unknown) => {
         rejections.push(input);
         if (outcome === "already-answered") {
-          // throwOnError SDK clients throw the native error response.
+          // Older clients can throw the named native error response directly.
           throw { name: "NotFoundError", data: { message: "Request already answered" } };
+        }
+        if (outcome === "sdk-already-answered") {
+          return kind === "permission"
+            ? sdk.permission.reply({ requestID: "racing-request", reply: "reject" })
+            : sdk.question.reject({ requestID: "racing-request" });
         }
         return { data: true };
       };
@@ -931,10 +953,10 @@ describe("OpenCodeAdapterV2", () => {
       yield* TestClock.adjust("1 milli");
       // Drain the final retry and its queued events without advancing the clock.
       yield* TestClock.adjust("0 millis");
-      assert.lengthOf(rejections, outcome === "already-answered" ? 1 : 0);
+      assert.lengthOf(rejections, outcome === "foreign-then-unavailable" ? 0 : 1);
       assert.equal(lookups, outcome === "foreign-then-unavailable" ? 6 : 1);
       assert.isFalse(received.some((event) => event.providerSession?.status === "error"));
-      if (outcome === "already-answered") {
+      if (outcome !== "foreign-then-unavailable") {
         yield* harness.startTurn();
         // A replay after the owner becomes active must not revive the answered request.
         yield* Effect.promise(() => nativeEvents.push(asked));
