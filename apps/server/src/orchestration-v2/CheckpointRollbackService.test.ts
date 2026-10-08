@@ -11,6 +11,8 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Cause from "effect/Cause";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Option from "effect/Option";
@@ -502,7 +504,16 @@ it.effect.each([
   }).pipe(Effect.provide(layerTest));
 });
 
-it.effect.each(["success", "restore-fails", "provider-fails", "provider-only-fails"] as const)(
+const checkpointRollbackStateOutcomes = [
+  "success",
+  "restore-fails",
+  "refresh-defect",
+  "refresh-interrupted",
+  "provider-fails",
+  "provider-only-fails",
+] as const;
+
+it.effect.each(checkpointRollbackStateOutcomes)(
   "reports checkpoint rollback state with %s",
   (outcome) =>
     Effect.gen(function* () {
@@ -560,6 +571,8 @@ it.effect.each(["success", "restore-fails", "provider-fails", "provider-only-fai
         cause: new Error("git restore failed"),
       });
       const providerConversation = ["turn-1"];
+      const refreshFailure = new Error("index refresh defect");
+      let providerCalls = 0;
       const providerFailure = new ProviderAdapterRollbackThreadError({
         driver: ProviderDriverKind.make("codex"),
         providerThreadId,
@@ -573,7 +586,15 @@ it.effect.each(["success", "restore-fails", "provider-fails", "provider-only-fai
           Layer.mergeAll(
             IdAllocator.layer,
             ThreadCommandExecutor.layer,
-            Layer.succeed(WorkspaceEntries.WorkspaceEntries, workspaceEntries),
+            Layer.succeed(WorkspaceEntries.WorkspaceEntries, {
+              ...workspaceEntries,
+              refresh:
+                outcome === "refresh-defect"
+                  ? () => Effect.die(refreshFailure)
+                  : outcome === "refresh-interrupted"
+                    ? () => Effect.interrupt
+                    : workspaceEntries.refresh,
+            }),
             Layer.mock(ProjectStore.ProjectStoreV2)({
               get: () => Effect.succeed(unrelatedProject),
             }),
@@ -612,6 +633,7 @@ it.effect.each(["success", "restore-fails", "provider-fails", "provider-only-fai
                 Effect.succeed({
                   rollbackThread: (input: ProviderAdapterV2RollbackThreadInput) =>
                     Effect.gen(function* () {
+                      providerCalls += 1;
                       const count = yield* resolveCodexRollbackTurnCount(input);
                       assert.equal(count, 1);
                       if (outcome === "provider-fails" || outcome === "provider-only-fails") {
@@ -638,22 +660,49 @@ it.effect.each(["success", "restore-fails", "provider-fails", "provider-only-fai
         scopeId,
         ...(outcome === "provider-only-fails" ? { restoreFiles: false } : {}),
       });
-      if (outcome !== "success") {
+      if (outcome === "refresh-interrupted") {
+        const exit = yield* Effect.exit(rollback);
+        assert(Exit.isFailure(exit));
+        assert(Cause.hasInterruptsOnly(exit.cause));
+        assert.equal(providerCalls, 0);
+        assert.deepEqual(providerConversation, ["turn-1"]);
+        assert.deepEqual(persistedEvents, []);
+        assert.deepEqual(deletedRefs, []);
+        assert.equal(yield* fs.readFileString(restoredFile), "checkpoint turn");
+      } else if (outcome !== "success") {
         const error = yield* Effect.flip(rollback);
         assert.equal(error.threadId, threadId);
         assert.equal(error.providerThreadId, providerThreadId);
         assert.equal(error.checkpointId, checkpointId);
-        assert.equal(error.cause, outcome === "restore-fails" ? restoreFailure : providerFailure);
+        assert.equal(
+          error.cause,
+          outcome === "restore-fails"
+            ? restoreFailure
+            : outcome === "refresh-defect"
+              ? refreshFailure
+              : providerFailure,
+        );
+        assert.equal(
+          providerCalls,
+          outcome === "restore-fails" || outcome === "refresh-defect" ? 0 : 1,
+        );
         assert.deepEqual(providerConversation, ["turn-1"]);
         assert.deepEqual(persistedEvents, []);
         assert.deepEqual(deletedRefs, []);
         assert.equal(projection.runs[0]?.status, "completed");
         assert.equal(projection.checkpoints[1]?.status, "ready");
-        if (outcome === "provider-fails") {
-          assert(error._tag === "CheckpointRollbackPartialRestoreError");
+        if (outcome === "provider-fails" || outcome === "refresh-defect") {
+          assert.equal(
+            error._tag,
+            outcome === "refresh-defect"
+              ? "CheckpointRollbackIndexRefreshError"
+              : "CheckpointRollbackPartialRestoreError",
+          );
           assert.equal(
             error.message,
-            "Files were restored to the selected checkpoint, but the conversation rollback failed. Conversation history may not match your files. Check the provider and server logs before retrying.",
+            outcome === "refresh-defect"
+              ? "Files were restored to the selected checkpoint, but the workspace index could not be refreshed. The conversation rollback was not attempted. Conversation history may not match your files. Check the server logs before retrying."
+              : "Files were restored to the selected checkpoint, but the conversation rollback failed. Conversation history may not match your files. Check the provider and server logs before retrying.",
           );
           assert.equal(yield* fs.exists(currentFile), false);
           assert.equal(yield* fs.readFileString(restoredFile), "checkpoint turn");
@@ -664,12 +713,13 @@ it.effect.each(["success", "restore-fails", "provider-fails", "provider-only-fai
           assert.equal(yield* fs.readFileString(currentFile), "current turn");
           assert.equal(yield* fs.exists(restoredFile), false);
         }
-        assert.deepEqual((yield* search()).entries, [
-          {
-            path: outcome === "provider-fails" ? "rollback-restored.txt" : "rollback-current.txt",
-            kind: "file",
-          },
-        ]);
+        if (outcome !== "refresh-defect")
+          assert.deepEqual((yield* search()).entries, [
+            {
+              path: outcome === "provider-fails" ? "rollback-restored.txt" : "rollback-current.txt",
+              kind: "file",
+            },
+          ]);
       } else {
         yield* rollback;
         assert.deepEqual(providerConversation, []);

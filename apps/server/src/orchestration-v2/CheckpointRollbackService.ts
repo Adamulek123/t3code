@@ -78,12 +78,30 @@ export class CheckpointRollbackPartialRestoreError extends Schema.TaggedError<Ch
   }
 }
 
-export const isCheckpointRollbackPartialRestoreError = Schema.is(
-  CheckpointRollbackPartialRestoreError,
+export class CheckpointRollbackIndexRefreshError extends Schema.TaggedError<CheckpointRollbackIndexRefreshError>()(
+  "CheckpointRollbackIndexRefreshError",
+  {
+    threadId: ThreadId,
+    providerThreadId: ProviderThreadId,
+    checkpointId: CheckpointId,
+    cause: Schema.Defect(),
+  },
+) {
+  override get message(): string {
+    return "Files were restored to the selected checkpoint, but the workspace index could not be refreshed. The conversation rollback was not attempted. Conversation history may not match your files. Check the server logs before retrying.";
+  }
+}
+
+export const isCheckpointRollbackPostRestoreError = Schema.is(
+  Schema.Union([CheckpointRollbackPartialRestoreError, CheckpointRollbackIndexRefreshError]),
 );
 
 const isCheckpointRollbackError = Schema.is(
-  Schema.Union([CheckpointRollbackExecutionError, CheckpointRollbackPartialRestoreError]),
+  Schema.Union([
+    CheckpointRollbackExecutionError,
+    CheckpointRollbackPartialRestoreError,
+    CheckpointRollbackIndexRefreshError,
+  ]),
 );
 
 export interface CheckpointRollbackServiceV2Shape {
@@ -95,7 +113,9 @@ export interface CheckpointRollbackServiceV2Shape {
     readonly restoreFiles?: boolean;
   }) => Effect.Effect<
     void,
-    CheckpointRollbackExecutionError | CheckpointRollbackPartialRestoreError
+    | CheckpointRollbackExecutionError
+    | CheckpointRollbackPartialRestoreError
+    | CheckpointRollbackIndexRefreshError
   >;
 }
 
@@ -260,7 +280,20 @@ export const layer: Layer.Layer<
 
       if (input.restoreFiles !== false) {
         yield* checkpoints.restore({ scope, checkpoint });
-        yield* workspaceEntries.refresh(scope.cwd);
+        // Refresh already recovers typed index errors. An escaping defect must
+        // not cause the worker to replay this completed file restoration.
+        yield* workspaceEntries.refresh(scope.cwd).pipe(
+          Effect.catchDefect((cause) =>
+            Effect.fail(
+              new CheckpointRollbackIndexRefreshError({
+                threadId: input.threadId,
+                providerThreadId: input.providerThreadId,
+                checkpointId: input.checkpointId,
+                cause,
+              }),
+            ),
+          ),
+        );
       }
 
       // Stopped and failed runs after the target leave the provider

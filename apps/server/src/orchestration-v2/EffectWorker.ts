@@ -379,19 +379,19 @@ export const layerExecutor: Layer.Layer<
                   : { restoreFiles: effect.request.restoreFiles }),
               })
               .pipe(
-                // A provider failure after restore is terminal: replaying the
+                // Known failures after restore are terminal: replaying the
                 // restore could overwrite edits made after this attempt.
                 // Other failures notify waiting clients only after retries end.
                 Effect.tapCause((cause) => {
                   if (Cause.hasInterruptsOnly(cause)) return Effect.void;
                   const failure = Cause.findErrorOption(cause);
-                  const partialRestore =
+                  const postRestoreFailure =
                     Option.isSome(failure) &&
-                    failure.value._tag === "CheckpointRollbackPartialRestoreError";
-                  if (willRetry && !partialRestore) return Effect.void;
+                    CheckpointRollbackService.isCheckpointRollbackPostRestoreError(failure.value);
+                  if (willRetry && !postRestoreFailure) return Effect.void;
                   const message =
                     Option.isSome(failure) &&
-                    failure.value._tag === "CheckpointRollbackPartialRestoreError"
+                    CheckpointRollbackService.isCheckpointRollbackPostRestoreError(failure.value)
                       ? failure.value.message
                       : CheckpointRollbackService.ROLLBACK_FAILED_MESSAGE;
                   return threads
@@ -714,10 +714,10 @@ export const layerWithOptions = (
           const error = Cause.pretty(exit.cause);
           const nonRetryable = isNonRetryableProviderTurnControlFailure(effect.request.type, error);
           const failure = Cause.findErrorOption(exit.cause);
-          const partialRestore =
+          const postRestoreFailure =
             effect.request.type === "provider-thread.rollback" &&
             Option.isSome(failure) &&
-            CheckpointRollbackService.isCheckpointRollbackPartialRestoreError(failure.value.cause);
+            CheckpointRollbackService.isCheckpointRollbackPostRestoreError(failure.value.cause);
           yield* Effect.logWarning("Orchestration effect execution failed", {
             effectId: effect.id,
             effectType: effect.request.type,
@@ -731,7 +731,7 @@ export const layerWithOptions = (
             ? yield* outbox
                 .succeed({ effectId: effect.id, workerId })
                 .pipe(Effect.onError((cause) => terminalizeClaim(effect, cause)))
-            : partialRestore || effect.attemptCount >= maxAttempts
+            : postRestoreFailure || effect.attemptCount >= maxAttempts
               ? yield* outbox
                   .fail({ effectId: effect.id, workerId, error })
                   .pipe(Effect.onError((cause) => terminalizeClaim(effect, cause)))
