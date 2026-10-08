@@ -1114,9 +1114,13 @@ export function makeOpenCodeAdapterV2(
         const updateProviderSession = (
           status: OrchestrationV2ProviderSession["status"],
           lastError: string | null = sessionEntity.lastError,
+          expectedSession?: OrchestrationV2ProviderSession,
         ) =>
           Effect.gen(function* () {
             const updatedAt = yield* DateTime.now;
+            // Check after the clock yield so late routing work cannot overwrite
+            // a newer session update, including a turn that already finished.
+            if (expectedSession !== undefined && sessionEntity !== expectedSession) return;
             sessionEntity = { ...sessionEntity, status, lastError, updatedAt };
             yield* emitProviderEvent({
               type: "provider_session.updated",
@@ -2023,6 +2027,7 @@ export function makeOpenCodeAdapterV2(
             | { readonly type: "question"; readonly value: QuestionRequest },
         ) {
           if (pendingChildRequestRoutes.has(nativeRequestId)) return;
+          const routingSession = sessionEntity;
           let unresolvedState: OpenCodeThreadState | null | undefined;
           let provedForeign = false;
           const attempt = Effect.gen(function* () {
@@ -2081,12 +2086,16 @@ export function makeOpenCodeAdapterV2(
                   rememberSettledRequest(nativeRequestId);
                   return;
                 }
-                yield* updateProviderSession("error", `${detail} Native rejection failed.`);
+                yield* updateProviderSession(
+                  "error",
+                  `${detail} Native rejection failed.`,
+                  routingSession,
+                );
                 return;
               }
               rememberSettledRequest(nativeRequestId);
             }
-            yield* updateProviderSession("error", detail);
+            yield* updateProviderSession("error", detail, routingSession);
           }).pipe(
             Effect.ensuring(Effect.sync(() => pendingChildRequestRoutes.delete(nativeRequestId))),
             Effect.forkIn(scope),

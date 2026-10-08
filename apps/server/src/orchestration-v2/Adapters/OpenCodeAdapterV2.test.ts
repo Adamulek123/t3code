@@ -49,7 +49,7 @@ import {
   OPENCODE_PROVIDER,
   reconcileOpenCodePromptAdmissionStatus,
 } from "./OpenCodeAdapterV2.ts";
-import { ProviderAdapterV2RuntimePolicy } from "../ProviderAdapter.ts";
+import { ProviderAdapterV2RuntimePolicy, type ProviderAdapterV2Event } from "../ProviderAdapter.ts";
 
 const encodeUnknownJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 const OPEN_CODE_TEST_SETTINGS = Schema.decodeSync(OpenCodeSettings)({
@@ -571,6 +571,194 @@ describe("OpenCodeAdapterV2", () => {
         assert.lengthOf(rejections, 1);
       }
     }).pipe(Effect.provide(IdAllocator.layer), Effect.scoped),
+  );
+
+  it.effect.each([
+    ...(["permission", "question"] as const).flatMap((kind) =>
+      (["success", "failure", "timeout", "not-found"] as const).flatMap((outcome) =>
+        (["unchanged", "running", "completed"] as const).map((lifecycle) => ({
+          kind,
+          outcome,
+          lifecycle,
+        })),
+      ),
+    ),
+    ...(["success", "failure"] as const).map((outcome) => ({
+      kind: "question" as const,
+      outcome,
+      lifecycle: "timestamp-yield" as const,
+    })),
+    { kind: "question" as const, outcome: "failure" as const, lifecycle: "other-root" as const },
+  ])(
+    "keeps $lifecycle session state after late $kind rejection $outcome",
+    ({ kind, outcome, lifecycle }) =>
+      Effect.gen(function* () {
+        const nativeEvents = asyncEventStream();
+        const rejectionStarted = promiseGate<void>();
+        const response = promiseGate<void>();
+        const clockRead = yield* Deferred.make<void>();
+        const releaseClockRead = yield* Deferred.make<void>();
+        const baseClock = yield* Clock.Clock;
+        let blockNextClockRead = false;
+        const blockingClock: Clock.Clock = {
+          ...baseClock,
+          currentTimeMillis: Effect.suspend(() => {
+            if (!blockNextClockRead) return baseClock.currentTimeMillis;
+            blockNextClockRead = false;
+            return Deferred.succeed(clockRead, undefined).pipe(
+              Effect.andThen(Deferred.await(releaseClockRead)),
+              Effect.andThen(baseClock.currentTimeMillis),
+            );
+          }),
+        };
+        let rejectionSignal: AbortSignal | undefined;
+        let rejectionCalls = 0;
+        let createdSessions = 0;
+        const reject = async (_input: unknown, options: { signal: AbortSignal }) => {
+          rejectionCalls += 1;
+          rejectionSignal = options.signal;
+          rejectionStarted.resolve();
+          await response.promise;
+          if (outcome === "failure") return { error: { message: "rejection failed" } };
+          if (outcome === "not-found") throw { name: "NotFoundError" };
+          return { data: true };
+        };
+        const harness = yield* makeOpenCodeRuntimeHarness(
+          `late-${kind}-${outcome}-${lifecycle}`,
+          "root",
+          {
+            event: { subscribe: async () => ({ stream: nativeEvents.stream }) },
+            session: {
+              create: async () => ({
+                data: {
+                  id: createdSessions++ === 0 ? "root" : "other-root",
+                  time: { created: 1, updated: 1 },
+                },
+              }),
+              get: async ({ sessionID }: { sessionID: string }) => ({
+                data: { id: sessionID, ...(sessionID === "child" ? { parentID: "root" } : {}) },
+              }),
+              messages: async () => ({ data: [] }),
+              promptAsync: async () => ({ data: true }),
+              summarize: async () => ({ data: true }),
+              abort: async () => ({ data: true }),
+              children: async () => ({ data: [] }),
+            },
+            permission: { reply: reject },
+            question: { reject },
+          },
+        ).pipe(Effect.provideService(Clock.Clock, blockingClock));
+        const received: ProviderAdapterV2Event[] = [];
+        yield* harness.runtime.events.pipe(
+          Stream.runForEach((event) => Effect.sync(() => received.push(event))),
+          Effect.forkScoped,
+        );
+        const asked = {
+          type: `${kind}.asked`,
+          properties:
+            kind === "permission"
+              ? {
+                  id: "old-request",
+                  sessionID: "child",
+                  permission: "bash",
+                  patterns: ["*"],
+                  always: [],
+                  metadata: {},
+                }
+              : {
+                  id: "old-request",
+                  sessionID: "child",
+                  questions: [
+                    {
+                      header: "Choice",
+                      question: "Which?",
+                      options: [{ label: "Yes", description: "Proceed" }],
+                    },
+                  ],
+                },
+        };
+        yield* Effect.promise(() => nativeEvents.push(asked));
+        yield* TestClock.adjust("5 seconds");
+        yield* Effect.promise(() => rejectionStarted.promise);
+
+        if (lifecycle === "running" || lifecycle === "completed") {
+          yield* harness.startTurn(lifecycle === "completed" ? "/compact" : "new turn");
+        } else if (lifecycle === "other-root") {
+          const otherThread = yield* harness.runtime.ensureThread({
+            threadId: ThreadId.make("thread-other-root"),
+            modelSelection: {
+              instanceId: harness.providerThread.providerInstanceId,
+              model: "anthropic/claude-sonnet",
+              options: [],
+            },
+            runtimePolicy: harness.policy,
+          });
+          yield* harness.startTurn("another root's turn", otherThread);
+        }
+        // Hold the timestamp read itself to exercise the final mutation boundary.
+        if (lifecycle === "timestamp-yield") blockNextClockRead = true;
+        if (outcome === "timeout") {
+          yield* TestClock.adjust("10 seconds");
+          assert.isTrue(rejectionSignal?.aborted);
+        } else {
+          response.resolve();
+        }
+        if (lifecycle === "timestamp-yield") {
+          yield* Deferred.await(clockRead);
+          yield* harness.startTurn("new turn during old status timestamp read");
+          yield* Deferred.succeed(releaseClockRead, undefined);
+        }
+        // Drain runnable test fibers after the SDK response or deadline. No wall-clock wait.
+        yield* TestClock.adjust("0 millis");
+        const sessionUpdates = received.filter(
+          (event) => event.type === "provider_session.updated",
+        );
+        const lastSession =
+          sessionUpdates.at(-1)?.providerSession ?? harness.runtime.providerSession;
+        if (lifecycle === "unchanged" && outcome !== "not-found") {
+          assert.equal(lastSession.status, "error");
+          assert.include(lastSession.lastError, "old-request");
+          assert.equal(
+            lastSession.lastError?.endsWith("Native rejection failed."),
+            outcome !== "success",
+          );
+        } else {
+          assert.equal(
+            lastSession.status,
+            lifecycle === "unchanged" || lifecycle === "completed" ? "ready" : "running",
+          );
+          assert.isNull(lastSession.lastError);
+          assert.isFalse(sessionUpdates.some((event) => event.providerSession.status === "error"));
+        }
+        if (
+          lifecycle === "running" ||
+          lifecycle === "timestamp-yield" ||
+          lifecycle === "completed"
+        ) {
+          const snapshot = yield* harness.runtime.readThreadSnapshot({
+            providerThread: harness.providerThread,
+          });
+          assert.equal(
+            snapshot.providerTurns.at(-1)?.status,
+            lifecycle === "completed" ? "completed" : "running",
+          );
+        }
+        assert.equal(rejectionCalls, 1);
+
+        // Successful/NotFound delivery stays settled; failures can route on replay.
+        if (lifecycle === "unchanged" || lifecycle === "completed" || lifecycle === "other-root") {
+          yield* harness.startTurn();
+        }
+        yield* Effect.promise(() => nativeEvents.push(asked));
+        const replay = yield* harness.runtime.readThreadSnapshot({
+          providerThread: harness.providerThread,
+        });
+        assert.lengthOf(
+          replay.runtimeRequests,
+          outcome === "failure" || outcome === "timeout" ? 1 : 0,
+        );
+        assert.equal(rejectionCalls, 1);
+      }).pipe(Effect.provide(IdAllocator.layer), Effect.scoped),
   );
 
   it.effect.each(["late-relation", "already-settled", "foreign-owner"] as const)(
