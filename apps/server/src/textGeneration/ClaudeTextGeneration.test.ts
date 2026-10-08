@@ -19,7 +19,7 @@ import {
   SYNTHETIC_CLAUDE_THINKING_MODEL,
 } from "../provider/ClaudeModelCatalog.testFixtures.ts";
 import * as TextGeneration from "./TextGeneration.ts";
-import { sanitizeThreadTitle } from "./TextGenerationUtils.ts";
+import { sanitizeThreadTitle } from "@t3tools/provider-core/server/textGenerationUtils";
 import { makeClaudeTextGeneration } from "./ClaudeTextGeneration.ts";
 import { writeFakeCli } from "../testUtils/fakeCli.ts";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
@@ -367,7 +367,6 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
       const claudeConfigDir = path.join(process.cwd(), ".claude-work-test");
       return yield* withFakeClaudeEnv(
         {
-          // @effect-diagnostics-next-line preferSchemaOverJson:off
           output: JSON.stringify({
             structured_output: {
               title: "Use Claude home",

@@ -56,28 +56,28 @@ import * as Stream from "effect/Stream";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import * as ServerConfig from "../../config.ts";
-import { mcpToolPresentation } from "../../provider/McpToolPresentation.ts";
-import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
+import { mcpToolPresentation } from "@t3tools/provider-core/server/mcpToolPresentation";
+import * as McpProviderSession from "@t3tools/provider-core/server/mcpSession";
 import type { EventNdjsonLogger } from "../../provider/EventNdjsonLogger.ts";
 import * as ProviderEventLoggers from "../../provider/ProviderEventLoggers.ts";
 import {
   structuralProtocolMethod,
   summarizeNativeProtocolPayload,
 } from "../../provider/NativeProtocolLogging.ts";
-import { mergeProviderInstanceEnvironment } from "../../provider/ProviderInstanceEnvironment.ts";
-import { t3OrchestrationSystemPrompt } from "../../provider/T3OrchestrationInstructions.ts";
+import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
+import { t3OrchestrationSystemPrompt } from "@t3tools/provider-core/server/orchestrationInstructions";
 import { buildRuntimeInstructions } from "../../provider/RuntimeInstructions.ts";
 import * as OpenCodeRuntime from "../../provider/opencodeRuntime.ts";
-import * as IdAllocator from "../IdAllocator.ts";
-import { makeProviderFailure } from "../ProviderFailure.ts";
-import { turnScopedSelectionTransition } from "../ProviderSelectionTransition.ts";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
+import { turnScopedSelectionTransition } from "@t3tools/provider-core/server/selectionTransition";
 import { providerMessageTextWithAttachmentPaths } from "../AttachmentPrompt.ts";
-import * as ProviderAdapter from "../ProviderAdapter.ts";
+import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import {
   ProviderAdapterDriverCreateError,
   type ProviderAdapterDriver,
   type ProviderAdapterDriverCreateInput,
-} from "../ProviderAdapterDriver.ts";
+} from "@t3tools/provider-core/server/adapterDriver";
 import { makeSubagentChildThread, subagentThreadTitle } from "../SubagentProjection.ts";
 import { openCodeToolTurnItem } from "./OpenCodeToolItems.ts";
 
@@ -279,6 +279,8 @@ interface ActiveOpenCodeTurn {
   readonly modelSelection: ModelSelection;
   readonly runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
   readonly providerTurnId: OrchestrationV2ProviderTurn["id"];
+  /** The provider thread the turn started on, which its terminal names. */
+  readonly providerThreadId: OrchestrationV2ProviderTurn["providerThreadId"];
   readonly providerTurnOrdinal: number;
   readonly runOrdinal: number;
   readonly runAttemptId: OrchestrationV2ProviderTurn["runAttemptId"];
@@ -2118,7 +2120,7 @@ export function makeOpenCodeAdapterV2(
               ? {
                   type: "turn.terminal",
                   driver: OPENCODE_PROVIDER,
-                  providerThreadId: state.providerThread.id,
+                  providerThreadId: turn.providerThreadId,
                   providerTurnId: turn.providerTurnId,
                   runOrdinal: turn.runOrdinal,
                   failureItemOrdinal: itemOrdinal(turn, `terminal-failure:${turn.providerTurnId}`),
@@ -2134,7 +2136,7 @@ export function makeOpenCodeAdapterV2(
               : {
                   type: "turn.terminal",
                   driver: OPENCODE_PROVIDER,
-                  providerThreadId: state.providerThread.id,
+                  providerThreadId: turn.providerThreadId,
                   providerTurnId: turn.providerTurnId,
                   runOrdinal: turn.runOrdinal,
                   status,
@@ -2256,6 +2258,7 @@ export function makeOpenCodeAdapterV2(
             modelSelection: state.appThread.modelSelection,
             runtimePolicy: state.parentSubagent.parentTurn.runtimePolicy,
             providerTurnId,
+            providerThreadId: providerTurn.providerThreadId,
             providerTurnOrdinal: providerTurn.ordinal,
             runOrdinal: state.parentSubagent.parentTurn.runOrdinal,
             runAttemptId: null,
@@ -3192,6 +3195,7 @@ export function makeOpenCodeAdapterV2(
                 modelSelection: turnInput.modelSelection,
                 runtimePolicy: turnInput.runtimePolicy,
                 providerTurnId,
+                providerThreadId: turnInput.providerThread.id,
                 providerTurnOrdinal: turnInput.providerTurnOrdinal,
                 runOrdinal: turnInput.runOrdinal,
                 runAttemptId: turnInput.attemptId,

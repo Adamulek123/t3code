@@ -23,9 +23,9 @@ import * as UrlParams from "effect/http/UrlParams";
 import * as ServerConfig from "../../config.ts";
 import * as OpenCode2Client from "../../provider/opencode2/OpenCode2Client.ts";
 import * as OpenCode2Server from "../../provider/opencode2/OpenCode2Server.ts";
-import * as IdAllocator from "../IdAllocator.ts";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapterRegistry from "../ProviderAdapterRegistry.ts";
-import type { ProviderReplayGate } from "../testkit/ProviderReplayGate.testkit.ts";
+import type { ProviderReplayGate } from "@t3tools/provider-testing/replayGate";
 import {
   makeReplayServerConfig,
   type OrchestratorV2ProviderReplayHarness,
@@ -284,7 +284,13 @@ function layerRegistry(
       Effect.map((adapter) => ProviderAdapterRegistry.layerFromAdapters([adapter])),
     ),
   ).pipe(
-    Layer.provide(Layer.mergeAll(layerReplayServerConfig(transcript.scenario), IdAllocator.layer)),
+    Layer.provide(
+      Layer.mergeAll(
+        layerReplayServerConfig(transcript.scenario),
+        IdAllocator.layer,
+        NodeServices.layer,
+      ),
+    ),
   );
 }
 
@@ -322,7 +328,13 @@ export const openCode2ReplayRuntime = (
       },
     });
   }).pipe(
-    Effect.provide(Layer.mergeAll(layerReplayServerConfig("opencode2_adapter"), IdAllocator.layer)),
+    Effect.provide(
+      Layer.mergeAll(
+        layerReplayServerConfig("opencode2_adapter"),
+        IdAllocator.layer,
+        NodeServices.layer,
+      ),
+    ),
   );
 
 export const OpenCode2OrchestratorReplayHarness: OrchestratorV2ProviderReplayHarness<
