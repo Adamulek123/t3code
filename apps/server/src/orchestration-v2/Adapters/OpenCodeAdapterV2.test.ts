@@ -188,6 +188,7 @@ const makeOpenCodeRuntimeHarness = Effect.fn("makeOpenCodeRuntimeHarness")(funct
   const startTurn = (
     text = "hello",
     startProviderThread: OrchestrationV2ProviderThread = providerThread,
+    ordinal = 1,
   ) =>
     runtime.startTurn({
       appThread: {
@@ -214,16 +215,20 @@ const makeOpenCodeRuntimeHarness = Effect.fn("makeOpenCodeRuntimeHarness")(funct
         deletedAt: null,
       },
       threadId,
-      runId: RunId.make(`run-opencode-${suffix}`),
-      runOrdinal: 1,
-      providerTurnOrdinal: 1,
-      attemptId: RunAttemptId.make(`attempt-opencode-${suffix}`),
-      rootNodeId: NodeId.make(`node-opencode-${suffix}`),
+      runId: RunId.make(`run-opencode-${suffix}${ordinal === 1 ? "" : `-${ordinal}`}`),
+      runOrdinal: ordinal,
+      providerTurnOrdinal: ordinal,
+      attemptId: RunAttemptId.make(
+        `attempt-opencode-${suffix}${ordinal === 1 ? "" : `-${ordinal}`}`,
+      ),
+      rootNodeId: NodeId.make(`node-opencode-${suffix}${ordinal === 1 ? "" : `-${ordinal}`}`),
       providerThread: startProviderThread,
       message: {
         createdBy: "user",
         creationSource: "web",
-        messageId: MessageId.make(`message-opencode-${suffix}`),
+        messageId: MessageId.make(
+          `message-opencode-${suffix}${ordinal === 1 ? "" : `-${ordinal}`}`,
+        ),
         text,
         attachments: [],
       },
@@ -464,9 +469,10 @@ describe("OpenCodeAdapterV2", () => {
 
   it.effect.each(
     (["permission", "question"] as const).flatMap((kind) =>
-      (["unknown-owner", "inactive-owner", "rejection-error", "rejection-timeout"] as const).map(
-        (outcome) => ({ kind, outcome }),
-      ),
+      (kind === "permission"
+        ? (["unknown-owner", "inactive-owner"] as const)
+        : (["unknown-owner", "inactive-owner", "rejection-error", "rejection-timeout"] as const)
+      ).map((outcome) => ({ kind, outcome })),
     ),
   )("reports an unroutable $kind request with $outcome", ({ kind, outcome }) =>
     Effect.gen(function* () {
@@ -545,13 +551,16 @@ describe("OpenCodeAdapterV2", () => {
         yield* TestClock.adjust("10 seconds");
         assert.isTrue(rejectionSignal?.aborted);
       }
-      if (outcome !== "unknown-owner") assert.lengthOf(rejections, 1);
+      if (kind === "question" && outcome !== "unknown-owner") assert.lengthOf(rejections, 1);
       yield* Deferred.await(failed);
       const received = yield* Fiber.join(collected);
       const failure = received.at(-1)!;
       assert.equal(failure.type, "provider_session.updated");
       if (failure.type !== "provider_session.updated") return;
       assert.include(failure.providerSession.lastError, `${kind} request unroutable`);
+      if (kind === "permission") {
+        assert.include(failure.providerSession.lastError, "Native permission remains pending");
+      }
       assert.equal(
         failure.providerSession.lastError?.endsWith("Native rejection failed."),
         outcome === "rejection-error" || outcome === "rejection-timeout",
@@ -559,9 +568,7 @@ describe("OpenCodeAdapterV2", () => {
       assert.isFalse(received.some((event) => event.type === "runtime_request.updated"));
       assert.deepEqual(
         rejections,
-        outcome === "unknown-owner"
-          ? []
-          : [{ requestID: "unroutable", ...(kind === "permission" ? { reply: "reject" } : {}) }],
+        outcome === "unknown-owner" || kind === "permission" ? [] : [{ requestID: "unroutable" }],
       );
       // A failed rejection leaves the request available if its owner becomes active.
       if (outcome === "inactive-owner" || outcome === "rejection-error") {
@@ -570,14 +577,17 @@ describe("OpenCodeAdapterV2", () => {
         const snapshot = yield* harness.runtime.readThreadSnapshot({
           providerThread: harness.providerThread,
         });
-        assert.lengthOf(snapshot.runtimeRequests, outcome === "inactive-owner" ? 0 : 1);
-        assert.lengthOf(rejections, 1);
+        assert.lengthOf(
+          snapshot.runtimeRequests,
+          kind === "question" && outcome === "inactive-owner" ? 0 : 1,
+        );
+        assert.lengthOf(rejections, kind === "permission" ? 0 : 1);
       }
     }).pipe(Effect.provide(IdAllocator.layer), Effect.scoped),
   );
 
   it.effect.each([
-    ...(["permission", "question"] as const).flatMap((kind) =>
+    ...(["question"] as const).flatMap((kind) =>
       (["success", "failure", "timeout", "not-found"] as const).flatMap((outcome) =>
         (["unchanged", "running", "completed"] as const).map((lifecycle) => ({
           kind,
@@ -658,27 +668,17 @@ describe("OpenCodeAdapterV2", () => {
         );
         const asked = {
           type: `${kind}.asked`,
-          properties:
-            kind === "permission"
-              ? {
-                  id: "old-request",
-                  sessionID: "child",
-                  permission: "bash",
-                  patterns: ["*"],
-                  always: [],
-                  metadata: {},
-                }
-              : {
-                  id: "old-request",
-                  sessionID: "child",
-                  questions: [
-                    {
-                      header: "Choice",
-                      question: "Which?",
-                      options: [{ label: "Yes", description: "Proceed" }],
-                    },
-                  ],
-                },
+          properties: {
+            id: "old-request",
+            sessionID: "child",
+            questions: [
+              {
+                header: "Choice",
+                question: "Which?",
+                options: [{ label: "Yes", description: "Proceed" }],
+              },
+            ],
+          },
         };
         yield* Effect.promise(() => nativeEvents.push(asked));
         yield* TestClock.adjust("5 seconds");
@@ -761,6 +761,136 @@ describe("OpenCodeAdapterV2", () => {
           outcome === "failure" || outcome === "timeout" ? 1 : 0,
         );
         assert.equal(rejectionCalls, 1);
+      }).pipe(Effect.provide(IdAllocator.layer), Effect.scoped),
+  );
+
+  it.effect.each([{ askingSessionId: "root" }, { askingSessionId: "child" }])(
+    "keeps orphan and newer $askingSessionId permissions pending after reporting routing failure",
+    ({ askingSessionId }) =>
+      Effect.gen(function* () {
+        const nativeEvents = asyncEventStream();
+        const pending = new Set(["old-permission"]);
+        const cancelled: string[] = [];
+        const failureReported = yield* Deferred.make<void>();
+        let firstTurnId: ProviderTurnId | undefined;
+        let promptId = "";
+        const harness = yield* makeOpenCodeRuntimeHarness("native-permission-overlap", "root", {
+          event: { subscribe: async () => ({ stream: nativeEvents.stream }) },
+          session: {
+            create: async () => ({ data: { id: "root", time: { created: 1, updated: 1 } } }),
+            get: async ({ sessionID }: { sessionID: string }) => ({
+              data: { id: sessionID, ...(sessionID === "child" ? { parentID: "root" } : {}) },
+            }),
+            messages: async () => ({ data: [] }),
+            promptAsync: async (input: { messageID: string }) => {
+              promptId = input.messageID;
+              return { data: true };
+            },
+            abort: async () => ({ data: true }),
+            children: async () => ({ data: [] }),
+          },
+          permission: {
+            reply: async () => {
+              // OpenCode 1.15.13 rejects all pending permissions in the asking session.
+              for (const requestID of pending) {
+                pending.delete(requestID);
+                cancelled.push(requestID);
+                await nativeEvents.push({
+                  type: "permission.replied",
+                  properties: { sessionID: askingSessionId, requestID, reply: "reject" },
+                });
+              }
+              return { data: true };
+            },
+          },
+        });
+        yield* harness.runtime.events.pipe(
+          Stream.runForEach((event) =>
+            event.type === "provider_session.updated" && event.providerSession.status === "error"
+              ? Deferred.succeed(failureReported, undefined)
+              : Effect.void,
+          ),
+          Effect.forkScoped,
+        );
+        const asked = (id: string) => ({
+          type: "permission.asked",
+          properties: {
+            id,
+            sessionID: askingSessionId,
+            permission: "bash",
+            patterns: ["*"],
+            always: [],
+            metadata: {},
+          },
+        });
+        if (askingSessionId === "child") {
+          // A native background child stays busy after its parent root settles.
+          yield* harness.startTurn("first root turn");
+          yield* Effect.promise(() =>
+            nativeEvents.push({
+              type: "message.updated",
+              properties: {
+                sessionID: "root",
+                info: { id: promptId, sessionID: "root", role: "user", time: { created: 1 } },
+              },
+            }),
+          );
+          yield* Effect.promise(() =>
+            nativeEvents.push({
+              type: "session.created",
+              properties: {
+                info: { id: "child", parentID: "root", time: { created: 2, updated: 2 } },
+              },
+            }),
+          );
+          yield* Effect.promise(() =>
+            nativeEvents.push({
+              type: "session.status",
+              properties: { sessionID: "child", status: { type: "busy" } },
+            }),
+          );
+          yield* Effect.promise(() =>
+            nativeEvents.push({
+              type: "session.status",
+              properties: { sessionID: "root", status: { type: "idle" } },
+            }),
+          );
+          const settled = yield* harness.runtime.readThreadSnapshot({
+            providerThread: harness.providerThread,
+          });
+          assert.equal(settled.providerTurns.at(-1)?.status, "completed");
+          firstTurnId = settled.providerTurns.at(-1)?.id;
+          assert.isTrue(yield* harness.runtime.hasPendingBackgroundWork!);
+        }
+        yield* Effect.promise(() => nativeEvents.push(asked("old-permission")));
+        yield* TestClock.adjust("5 seconds");
+        yield* Deferred.await(failureReported);
+        assert.deepEqual([...pending], ["old-permission"]);
+        yield* harness.startTurn("new turn", harness.providerThread, 2);
+        pending.add("new-permission");
+        yield* Effect.promise(() => nativeEvents.push(asked("new-permission")));
+        const beforeReply = yield* harness.runtime.readThreadSnapshot({
+          providerThread: harness.providerThread,
+        });
+        assert.equal(beforeReply.providerTurns.at(-1)?.status, "running");
+        assert.notEqual(beforeReply.providerTurns.at(-1)?.id, firstTurnId);
+        const newerRequest = beforeReply.runtimeRequests.find(
+          (request) => request.nativeRequestRef?.nativeId === "new-permission",
+        );
+        assert.equal(newerRequest?.status, "pending");
+        assert.equal(newerRequest?.providerTurnId, beforeReply.providerTurns.at(-1)?.id);
+        yield* TestClock.adjust("0 millis");
+        const snapshot = yield* harness.runtime.readThreadSnapshot({
+          providerThread: harness.providerThread,
+        });
+        assert.isEmpty(cancelled);
+        assert.deepEqual([...pending], ["old-permission", "new-permission"]);
+        assert.equal(
+          snapshot.runtimeRequests.find(
+            (request) => request.nativeRequestRef?.nativeId === "new-permission",
+          )?.status,
+          "pending",
+        );
       }).pipe(Effect.provide(IdAllocator.layer), Effect.scoped),
   );
 
@@ -854,12 +984,13 @@ describe("OpenCodeAdapterV2", () => {
 
   it.effect.each(
     (["permission", "question"] as const).flatMap((kind) =>
-      (["foreign-then-unavailable", "already-answered", "sdk-already-answered"] as const).map(
-        (outcome) => ({
-          kind,
-          outcome,
-        }),
-      ),
+      (kind === "permission"
+        ? (["foreign-then-unavailable"] as const)
+        : (["foreign-then-unavailable", "already-answered", "sdk-already-answered"] as const)
+      ).map((outcome) => ({
+        kind,
+        outcome,
+      })),
     ),
   )("preserves an unroutable $kind request with $outcome", ({ kind, outcome }) =>
     Effect.gen(function* () {

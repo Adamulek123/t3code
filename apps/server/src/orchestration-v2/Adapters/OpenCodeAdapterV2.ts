@@ -2018,7 +2018,8 @@ export function makeOpenCodeAdapterV2(
          *  its relation to a thread. The first resolution attempt runs inline
          *  (the replayable path); if the relation or the owning turn is not
          *  established yet, a short forked backoff keeps trying. Exhaustion
-         *  reports a session error and rejects requests known to belong here. */
+         *  reports a session error. Known local questions can be rejected by ID;
+         *  permissions stay pending because native rejection cancels siblings. */
         const routeRuntimeRequest = Effect.fnUntraced(function* (
           nativeRequestId: string,
           sessionId: string,
@@ -2054,33 +2055,29 @@ export function makeOpenCodeAdapterV2(
             }
             // A later lookup failure must not erase an observed unknown root.
             if (provedForeign) return;
-            const detail = `OpenCode ${request.type} request ${nativeRequestId} could not be routed to an active thread.`;
+            const detail =
+              `OpenCode ${request.type} request ${nativeRequestId} could not be routed to an active thread.` +
+              (request.type === "permission"
+                ? " Native permission remains pending because rejection can cancel other permissions in the same native session."
+                : "");
             yield* Effect.logWarning(detail, {
               nativeSessionId: sessionId,
               providerSessionId: input.providerSessionId,
             });
             // External servers broadcast other sessions' requests too. Reject
-            // only when the parent chain resolves to a registered thread here.
-            if (unresolvedState !== undefined) {
-              // OpenCode permission rejection cancels every pending permission
-              // in the asking native session, including concurrent requests.
-              // The SDK has no single-request denial; question.reject cancels
-              // only the named question.
-              const rejected = yield* (
-                request.type === "permission"
-                  ? sdkCall(
-                      "permission.reply",
-                      { requestID: nativeRequestId, reply: "reject" },
-                      (signal) =>
-                        client.permission.reply(
-                          { requestID: nativeRequestId, reply: "reject" },
-                          { signal },
-                        ),
-                    ).pipe(Effect.map((response) => unwrapData("permission.reply", response)))
-                  : sdkCall("question.reject", { requestID: nativeRequestId }, (signal) =>
-                      client.question.reject({ requestID: nativeRequestId }, { signal }),
-                    ).pipe(Effect.map((response) => unwrapData("question.reject", response)))
-              ).pipe(Effect.timeout("10 seconds"), Effect.exit);
+            // only named questions whose parent chain belongs to this runtime.
+            // Permission rejection cancels every pending permission in the
+            // asking session, including requests from a newer owning turn.
+            if (unresolvedState !== undefined && request.type === "question") {
+              const rejected = yield* sdkCall(
+                "question.reject",
+                { requestID: nativeRequestId },
+                (signal) => client.question.reject({ requestID: nativeRequestId }, { signal }),
+              ).pipe(
+                Effect.map((response) => unwrapData("question.reject", response)),
+                Effect.timeout("10 seconds"),
+                Effect.exit,
+              );
               if (Exit.isFailure(rejected)) {
                 if (isOpenCodeNotFound(Cause.squash(rejected.cause))) {
                   rememberSettledRequest(nativeRequestId);
