@@ -2039,7 +2039,8 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
             }
             const state = yield* resolveSessionOwner(sessionId);
             unresolvedState = state;
-            if (state === null) provedForeign = true;
+            // Failed lookups preserve an observed unknown root; local ownership replaces it.
+            if (state !== undefined) provedForeign = state === null;
             const owner = state == null ? undefined : topLevelRequestOwner(state);
             if (owner === undefined) return false;
             yield* emitRuntimeRequest(owner, nativeRequestId, request);

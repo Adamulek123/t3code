@@ -891,6 +891,104 @@ describe("OpenCodeAdapterV2", () => {
       }).pipe(Effect.provide(IdAllocator.layer), Effect.scoped),
   );
 
+  it.effect.each(["permission", "question"] as const)(
+    "handles an initially unknown root registered during %s routing backoff",
+    (kind) =>
+      Effect.gen(function* () {
+        const nativeEvents = asyncEventStream();
+        const rejections: unknown[] = [];
+        const lookups: string[] = [];
+        const reject = async (input: unknown) => {
+          rejections.push(input);
+          return { data: true };
+        };
+        const harness = yield* makeOpenCodeRuntimeHarness(`registered-root-${kind}`, "root", {
+          event: { subscribe: async () => ({ stream: nativeEvents.stream }) },
+          session: {
+            create: async () => ({ data: { id: "root", time: { created: 1, updated: 1 } } }),
+            get: async ({ sessionID }: { sessionID: string }) => {
+              lookups.push(sessionID);
+              return {
+                data: {
+                  id: sessionID,
+                  ...(sessionID === "child" ? { parentID: "late-root" } : {}),
+                  time: { created: 1, updated: 1 },
+                },
+              };
+            },
+            messages: async () => ({ data: [] }),
+            abort: async () => ({ data: true }),
+            children: async () => ({ data: [] }),
+          },
+          permission: { reply: reject },
+          question: { reject },
+        });
+        const received: ProviderAdapter.ProviderAdapterV2Event[] = [];
+        yield* harness.runtime.events.pipe(
+          Stream.runForEach((event) => Effect.sync(() => received.push(event))),
+          Effect.forkScoped,
+        );
+        yield* Effect.promise(() =>
+          nativeEvents.push({
+            type: `${kind}.asked`,
+            properties:
+              kind === "permission"
+                ? {
+                    id: "late-owner-request",
+                    sessionID: "child",
+                    permission: "bash",
+                    patterns: ["*"],
+                    always: [],
+                    metadata: {},
+                  }
+                : {
+                    id: "late-owner-request",
+                    sessionID: "child",
+                    questions: [
+                      {
+                        header: "Choice",
+                        question: "Which?",
+                        options: [{ label: "Yes", description: "Proceed" }],
+                      },
+                    ],
+                  },
+          }),
+        );
+        assert.deepEqual(lookups, ["child", "late-root"]);
+        assert.isEmpty(rejections);
+        // Attach the previously unknown native root without starting a turn.
+        const resumed = yield* harness.runtime.resumeThread({
+          providerThread: {
+            ...harness.providerThread,
+            nativeThreadRef: {
+              driver: OPENCODE_PROVIDER,
+              nativeId: "late-root",
+              strength: "weak",
+            },
+          },
+        });
+        yield* TestClock.adjust("5 seconds");
+        yield* TestClock.adjust("0 millis");
+        assert.deepEqual(
+          rejections,
+          kind === "question" ? [{ requestID: "late-owner-request" }] : [],
+        );
+        const failure = received.find(
+          (event) =>
+            event.type === "provider_session.updated" && event.providerSession.status === "error",
+        );
+        assert.isDefined(failure);
+        if (failure?.type !== "provider_session.updated") return;
+        assert.include(failure.providerSession.lastError, `${kind} request late-owner-request`);
+        if (kind === "permission") {
+          assert.include(failure.providerSession.lastError, "Native permission remains pending");
+        }
+        const snapshot = yield* harness.runtime.readThreadSnapshot({ providerThread: resumed });
+        assert.isEmpty(snapshot.providerTurns);
+        assert.isEmpty(snapshot.runtimeRequests);
+      }).pipe(Effect.provide(IdAllocator.layer), Effect.scoped),
+  );
+
   it.effect.each(["late-relation", "already-settled", "foreign-owner"] as const)(
     "preserves a child request with %s during routing backoff",
     (outcome) =>
