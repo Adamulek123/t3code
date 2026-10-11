@@ -1403,7 +1403,6 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
 
       const ghScenario = {
         prListByHeadSelector: {
-          // @effect-diagnostics-next-line preferSchemaOverJson:off
           "feature/no-upstream-fork": JSON.stringify([
             {
               number: 40,
@@ -1524,7 +1523,6 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
 
       const ghScenario = {
         prListByHeadSelector: {
-          // @effect-diagnostics-next-line preferSchemaOverJson:off
           "feature/ambiguous-fork": JSON.stringify([
             {
               number: 41,
@@ -1614,7 +1612,6 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
 
       const ghScenario = {
         prListByHeadSelector: {
-          // @effect-diagnostics-next-line preferSchemaOverJson:off
           "feature/failed-probe": JSON.stringify([
             {
               number: 43,
@@ -1666,7 +1663,6 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       const { manager } = yield* makeManager({
         ghScenario: {
           prListByHeadSelector: {
-            // @effect-diagnostics-next-line preferSchemaOverJson:off
             "feature/slash-remote": JSON.stringify([
               {
                 number: 42,
