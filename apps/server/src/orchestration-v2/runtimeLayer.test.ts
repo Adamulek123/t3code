@@ -66,6 +66,7 @@ import * as ProviderRuntimeRecoveryService from "./ProviderRuntimeRecoveryServic
 import * as ProjectionMaintenance from "./ProjectionMaintenance.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as PullRequestWatchReactor from "./PullRequestWatchReactor.ts";
+import { makeGitHubReadAdmissionFixture } from "./testkit/pullRequestFixtures.ts";
 import { PullRequestProviderError } from "@t3tools/source-control-core/server/PullRequestProvider";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as ProjectStore from "./ProjectStore.ts";
@@ -2819,62 +2820,81 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
       let comments: Array<PullRequestComment> = [];
       let detailReads = 0;
       let activityReads = 0;
+      const admission = yield* makeGitHubReadAdmissionFixture;
+      let admissionTarget: "fingerprint" | "detail" | "activity" | null = "fingerprint";
+      const proveAdmission = <A, E, R>(
+        name: "fingerprint" | "detail" | "activity",
+        answer: Effect.Effect<A, E, R>,
+      ) => {
+        if (admissionTarget !== name) return answer;
+        admissionTarget = null;
+        return admission.proveBackgroundRead(name, answer);
+      };
       const reactor = yield* PullRequestWatchReactor.make.pipe(
         Effect.provide(
           Layer.mergeAll(
             NodeServices.layer,
             Layer.mock(PullRequestService.PullRequestService)({
               watchFingerprint: () =>
-                Effect.suspend(() =>
-                  fingerprint === "rate-limited"
-                    ? Effect.fail(
-                        new PullRequestOperationError({
-                          operation: "watchFingerprint",
-                          detail: "paused",
-                          cause: new PullRequestProviderError({
-                            provider: SourceControlProviderKind.make("github"),
-                            operation: "getChangeRequestWatchFingerprint",
-                            reason: "rate-limited",
+                proveAdmission(
+                  "fingerprint",
+                  Effect.suspend(() =>
+                    fingerprint === "rate-limited"
+                      ? Effect.fail(
+                          new PullRequestOperationError({
+                            operation: "watchFingerprint",
                             detail: "paused",
+                            cause: new PullRequestProviderError({
+                              provider: SourceControlProviderKind.make("github"),
+                              operation: "getChangeRequestWatchFingerprint",
+                              reason: "rate-limited",
+                              detail: "paused",
+                            }),
                           }),
-                        }),
-                      )
-                    : Effect.succeed(fingerprint),
+                        )
+                      : Effect.succeed(fingerprint),
+                  ),
                 ),
               invalidate: () =>
                 Effect.sync(() => {
                   cachedChecks = null;
                 }),
               detail: () =>
-                Effect.sync(() => {
-                  detailReads += 1;
-                  const answer = cachedChecks ?? checks;
-                  cachedChecks = null;
-                  return {
-                    ...watchedPullRequestDetail({
-                      projectId,
-                      number: 11,
-                      at: "2026-10-02T12:00:00.000Z",
-                    }),
-                    checks: Object.entries(answer).map(([name, status]) => ({
-                      name,
-                      status,
-                      description: null,
-                      url: null,
-                    })),
-                  };
-                }),
+                proveAdmission(
+                  "detail",
+                  Effect.sync(() => {
+                    detailReads += 1;
+                    const answer = cachedChecks ?? checks;
+                    cachedChecks = null;
+                    return {
+                      ...watchedPullRequestDetail({
+                        projectId,
+                        number: 11,
+                        at: "2026-10-02T12:00:00.000Z",
+                      }),
+                      checks: Object.entries(answer).map(([name, status]) => ({
+                        name,
+                        status,
+                        description: null,
+                        url: null,
+                      })),
+                    };
+                  }),
+                ),
               activity: () =>
-                Effect.sync(() => {
-                  activityReads += 1;
-                  return {
-                    comments,
-                    commentCount: comments.length,
-                    commentsTruncated: false,
-                    reviewThreads: [],
-                    commits: [],
-                  };
-                }),
+                proveAdmission(
+                  "activity",
+                  Effect.sync(() => {
+                    activityReads += 1;
+                    return {
+                      comments,
+                      commentCount: comments.length,
+                      commentsTruncated: false,
+                      reviewThreads: [],
+                      commits: [],
+                    };
+                  }),
+                ),
             }),
           ),
         ),
@@ -2891,6 +2911,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
 
       // While checks run, the cheap detail is read every pass: check counts by state cannot
       // tell which check finished, so a failure can arrive with the fingerprint unchanged.
+      admissionTarget = "detail";
       checks = { lint: "failure", test: "pending" };
       yield* reactor.sweep;
       assert.deepEqual(reads(), { detail: 2, activity: 1 });
@@ -2909,6 +2930,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
       assert.deepEqual(reads(), { detail: 3, activity: 1 });
 
       // A new comment moves the remarks, which take the activity read too.
+      admissionTarget = "activity";
       yield* TestClock.adjust("1 millis");
       comments = [
         {
@@ -3028,6 +3050,8 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
       const incomplete = mode !== "single page" && mode !== "paginated";
       let recovering = false;
       let pagesRead = 0;
+      const commentAdmission = mode === "paginated" ? yield* makeGitHubReadAdmissionFixture : null;
+      let commentAdmissionUsed = false;
       const reactor = yield* PullRequestWatchReactor.make.pipe(
         Effect.provide(
           Layer.mergeAll(
@@ -3065,7 +3089,10 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
                 pagesRead += 1;
                 assert.equal(input.threadId, "review-thread");
                 if (input.cursor === "after-10") {
-                  return Effect.succeed({ comments: [eleventh], nextCursor: "after-11" });
+                  const page = Effect.succeed({ comments: [eleventh], nextCursor: "after-11" });
+                  if (commentAdmission === null || commentAdmissionUsed) return page;
+                  commentAdmissionUsed = true;
+                  return commentAdmission.proveBackgroundRead("thread-comments", page);
                 }
                 assert.equal(input.cursor, "after-11");
                 if (!recovering && mode === "page failure") {

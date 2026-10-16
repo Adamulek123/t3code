@@ -46,6 +46,7 @@ import * as GitHubApi from "./GitHubApi.ts";
 import { readGraphQlPages } from "./githubGraphQl.ts";
 import * as SourceControlHost from "@t3tools/source-control-core/server/SourceControlHost";
 import * as SourceControlRateLimit from "@t3tools/source-control-core/server/SourceControlRateLimit";
+import * as SourceControlReadContext from "@t3tools/source-control-core/server/SourceControlReadContext";
 import {
   ACTOR_AVATARS_GRAPHQL_QUERY,
   ADD_REACTION_GRAPHQL_MUTATION,
@@ -1383,6 +1384,7 @@ export const make = Effect.gen(function* () {
     readonly allowReserve?: boolean | undefined;
     readonly variables?: Readonly<Record<string, unknown>>;
     readonly query: string;
+    readonly partialNotFoundAliases?: ReadonlyArray<string>;
     readonly decode: (raw: string) => Result.Result<A, unknown>;
   }): Effect.Effect<A, GitHubPullRequestApiError> =>
     api
@@ -1392,6 +1394,9 @@ export const make = Effect.gen(function* () {
         query: input.query,
         ...(input.variables === undefined ? {} : { variables: input.variables }),
         ...(input.allowReserve === true ? { allowReserve: true } : {}),
+        ...(input.partialNotFoundAliases === undefined
+          ? {}
+          : { partialNotFoundAliases: input.partialNotFoundAliases }),
       })
       .pipe(Effect.flatMap((raw) => decodeWith(input.cwd, input.operation, input.decode, raw)));
 
@@ -1860,12 +1865,20 @@ export const make = Effect.gen(function* () {
               host: first.request.host,
               operation: "getPullRequestSummary",
               ...document,
+              partialNotFoundAliases: batchable.map((_, index) => `s${index}`),
               decode: decodePullRequestSummariesJson,
-            });
+            }).pipe(
+              Effect.provideService(
+                SourceControlReadContext.Background,
+                entries.every(({ context }) =>
+                  Context.getOrElse(context, SourceControlReadContext.Background, () => false),
+                ),
+              ),
+            );
       return batched.pipe(
-        // A GraphQL error anywhere fails the whole document — one repository gone or out of
-        // reach — so a batch that could not be read leaves every entry to its own read. A paused
-        // budget is the exception: reading one at a time would only spend what is being saved.
+        // Only explicitly attributed NOT_FOUND errors retain unaffected aliases. Other failed
+        // documents leave every entry to its own read. A paused budget is the exception:
+        // reading one at a time would only spend what is being saved.
         Effect.catchCauseIf(
           (cause) =>
             !Cause.hasInterruptsOnly(cause) &&
@@ -1888,6 +1901,14 @@ export const make = Effect.gen(function* () {
             unanswered,
             (entry) =>
               viewPullRequestSummary(entry.request).pipe(
+                Effect.provideService(
+                  SourceControlReadContext.Background,
+                  Context.getOrElse(
+                    entry.context,
+                    SourceControlReadContext.Background,
+                    () => false,
+                  ),
+                ),
                 Effect.exit,
                 Effect.map((exit) => entry.completeUnsafe(exit)),
               ),
@@ -1938,7 +1959,14 @@ export const make = Effect.gen(function* () {
               operation: "getPullRequestWatchFingerprint",
               ...document,
               decode: decodePullRequestWatchFingerprintsJson,
-            });
+            }).pipe(
+              Effect.provideService(
+                SourceControlReadContext.Background,
+                entries.every(({ context }) =>
+                  Context.getOrElse(context, SourceControlReadContext.Background, () => false),
+                ),
+              ),
+            );
       return read.pipe(
         Effect.map((fingerprints) => {
           for (const entry of entries) {

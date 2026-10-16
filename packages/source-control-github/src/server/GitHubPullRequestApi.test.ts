@@ -16,12 +16,17 @@ import * as GitHubApi from "./GitHubApi.ts";
 import * as GitHubCredentials from "./GitHubCredentials.ts";
 import * as GitHubQuota from "./GitHubQuota.ts";
 import * as SourceControlRateLimit from "@t3tools/source-control-core/server/SourceControlRateLimit";
+import * as SourceControlReadContext from "@t3tools/source-control-core/server/SourceControlReadContext";
 import * as TestSourceControlHost from "@t3tools/source-control-testing/TestSourceControlHost";
 import * as GitHubPullRequestApi from "./GitHubPullRequestApi.ts";
 import * as GitHubPullRequestProvider from "./GitHubPullRequestProvider.ts";
 import { KnownWorkflowRuns } from "./gitHubConditionalChecks.ts";
 
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const decodeAdmissionDocument = Schema.decodeEffect(
+  Schema.fromJsonString(Schema.Struct({ variables: Schema.Record(Schema.String, Schema.Unknown) })),
+);
+const decodeJsonValue = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown));
 
 const coreResponse = (pullRequest: Readonly<Record<string, unknown>> = {}) => ({
   data: {
@@ -552,6 +557,265 @@ it.effect(
     }),
 );
 
+it.live("resolver consumers preserve batching, mixed admission and each fallback priority", () =>
+  Effect.gen(function* () {
+    for (const [family, backgroundFirst, missingBatch, allBackground] of [
+      ["summary", true, false, false],
+      ["summary", false, false, false],
+      ["fingerprint", true, false, false],
+      ["fingerprint", false, false, false],
+      ["summary", true, true, false],
+      ["summary", false, true, false],
+      ["summary", true, "not-found", false],
+      ["summary", false, "not-found", false],
+      ["summary", true, false, true],
+      ["fingerprint", true, false, true],
+    ] as const) {
+      // GLOBAL_SLOTS mirrors GitHubApi's gate width and QUEUED_TAILS is this scenario's
+      // scaffolding. Every scaffolded request resolves its credential before it reaches the gate,
+      // so the read past the scaffolding belongs to the batch document: it means the document is
+      // about to be queued. Change the scaffolding and these derivations follow.
+      const GLOBAL_SLOTS = 8;
+      const QUEUED_TAILS = 24;
+      const SCAFFOLDING_READS = GLOBAL_SLOTS + QUEUED_TAILS;
+      const LAST_TAIL = `/tail-${QUEUED_TAILS - 1}`;
+      const releases = yield* Effect.forEach(
+        Array.from({ length: GLOBAL_SLOTS }, (_, index) => index),
+        () => Deferred.make<void>(),
+      );
+      const started = yield* Effect.forEach(
+        Array.from({ length: GLOBAL_SLOTS }, (_, index) => index),
+        () => Deferred.make<void>(),
+      );
+      const requests: string[] = [];
+      const documentCredentialReady = yield* Deferred.make<void>();
+      let credentialReads = 0;
+      const documents: Array<{ readonly number: number | null; readonly background: boolean }> = [];
+      const node = (number: number) =>
+        family === "summary"
+          ? {
+              number,
+              title: `Pull request ${number}`,
+              url: `https://github.com/acme/web/pull/${number}`,
+              author: null,
+              headRefName: `feat/${number}`,
+              baseRefName: "main",
+              state: "OPEN",
+              isDraft: false,
+              mergeable: "MERGEABLE",
+              reviewDecision: null,
+              additions: 1,
+              deletions: 0,
+              changedFiles: 1,
+              updatedAt: "2026-08-24T12:34:56.000Z",
+              mergedAt: null,
+              closedAt: null,
+              commits: { nodes: [] },
+            }
+          : {
+              state: "OPEN",
+              mergeable: "MERGEABLE",
+              headRefOid: "abc123",
+              comments: { totalCount: number, nodes: [] },
+              reviews: { totalCount: 0, nodes: [] },
+              reviewThreads: { totalCount: 0 },
+              commits: { nodes: [] },
+            };
+      const credentials = Layer.succeed(
+        GitHubCredentials.GitHubCredentials,
+        GitHubCredentials.GitHubCredentials.of({
+          get: (host) =>
+            Effect.gen(function* () {
+              credentialReads++;
+              if (credentialReads === SCAFFOLDING_READS + 1)
+                yield* Deferred.succeed(documentCredentialReady, undefined);
+              return {
+                host,
+                source: "env" as const,
+                token: Redacted.make("batch-admission"),
+                fingerprint: `${host}:batch-admission`,
+              };
+            }),
+          invalidate: () => Effect.void,
+        }),
+      );
+      const http = Layer.succeed(
+        HttpClient.HttpClient,
+        HttpClient.make((request) =>
+          Effect.gen(function* () {
+            const path = new URL(request.url).pathname;
+            if (path.startsWith("/block-")) {
+              const index = Number(path.slice(7));
+              requests.push(path);
+              yield* Deferred.succeed(started[index]!, undefined);
+              yield* Deferred.await(releases[index]!);
+              return HttpClientResponse.fromWeb(request, new Response('{"ok":true}'));
+            }
+            if (path !== "/graphql") {
+              requests.push(path);
+              return HttpClientResponse.fromWeb(request, new Response('{"ok":true}'));
+            }
+            assert.strictEqual(request.body._tag, "Uint8Array");
+            if (request.body._tag !== "Uint8Array")
+              return yield* Effect.die("Unexpected request body");
+            const variables = (yield* decodeAdmissionDocument(
+              new TextDecoder().decode(request.body.body),
+            ).pipe(Effect.orDie)).variables;
+            const single = typeof variables.number === "number" ? variables.number : null;
+            documents.push({
+              number: single,
+              background: yield* SourceControlReadContext.Background,
+            });
+            requests.push(single === null ? "document" : `fallback-${single}`);
+            const prefix = family === "summary" ? "s" : "w";
+            const numbers =
+              single === null
+                ? [Number(variables[`${prefix}0_number`]), Number(variables[`${prefix}1_number`])]
+                : [single];
+            assert.isTrue(numbers.every(Number.isSafeInteger));
+            const body = {
+              data: Object.fromEntries(
+                numbers.map((number, index) => [
+                  `${prefix}${index}`,
+                  {
+                    pullRequest:
+                      missingBatch === true && single === null
+                        ? null
+                        : missingBatch === "not-found" && single === null && index === 0
+                          ? { ...node(number), title: null }
+                          : node(number),
+                  },
+                ]),
+              ),
+              ...(missingBatch === "not-found" && single === null
+                ? { errors: [{ type: "NOT_FOUND", path: ["s0", "pullRequest", "title"] }] }
+                : {}),
+            };
+            return HttpClientResponse.fromWeb(request, new Response(encodeJson(body)));
+          }),
+        ),
+      );
+      const dependencies = Layer.mergeAll(
+        NodeServices.layer,
+        NodeCrypto.layer,
+        TestSourceControlHost.layer(),
+        GitHubQuota.layer,
+        SourceControlRateLimit.layer,
+        credentials,
+        http,
+      );
+      const realLayer = GitHubPullRequestApi.layer.pipe(
+        Layer.provideMerge(GitHubApi.layer),
+        Layer.provide(dependencies),
+      );
+      yield* Effect.gen(function* () {
+        const api = yield* GitHubApi.GitHubApi;
+        const cli = yield* GitHubPullRequestApi.GitHubPullRequestApi;
+        const blockers = yield* Effect.forEach(
+          Array.from({ length: GLOBAL_SLOTS }, (_, index) => index),
+          (index) =>
+            api
+              .rest({ host: "github.com", operation: "batch-blocker", path: `block-${index}` })
+              .pipe(
+                Effect.provideService(SourceControlReadContext.Background, true),
+                Effect.forkChild({ startImmediately: true }),
+              ),
+        );
+        yield* Effect.forEach(started, Deferred.await);
+        const tails = yield* Effect.forEach(
+          Array.from({ length: QUEUED_TAILS }, (_, index) => `tail-${index}`),
+          (path) =>
+            api
+              .rest({ host: "github.com", operation: "batch-tail", path })
+              .pipe(
+                Effect.provideService(SourceControlReadContext.Background, true),
+                Effect.forkChild({ startImmediately: true }),
+              ),
+        );
+        const reads = yield* Effect.forEach(
+          [backgroundFirst, allBackground || !backgroundFirst],
+          (background, index) => {
+            const input = {
+              cwd: "/w",
+              repository: "acme/web",
+              host: "github.com",
+              number: 7 + index,
+            };
+            return family === "summary"
+              ? cli
+                  .getPullRequestSummary(input)
+                  .pipe(
+                    Effect.provideService(SourceControlReadContext.Background, background),
+                    Effect.map(encodeJson),
+                  )
+              : cli
+                  .getPullRequestWatchFingerprint(input)
+                  .pipe(
+                    Effect.provideService(SourceControlReadContext.Background, background),
+                    Effect.map(encodeJson),
+                  );
+          },
+          { concurrency: "unbounded" },
+        ).pipe(Effect.forkChild);
+        yield* Deferred.await(documentCredentialReady);
+        yield* Effect.yieldNow;
+        yield* Deferred.succeed(releases[0]!, undefined);
+        const values = yield* Effect.forEach(yield* Fiber.join(reads), (value) =>
+          decodeJsonValue(value),
+        );
+        expect(documents[0]).toEqual({ number: null, background: allBackground });
+        if (allBackground) assert.strictEqual(requests.indexOf("document"), SCAFFOLDING_READS);
+        else
+          assert.isAtMost(
+            requests.indexOf("document") + 1,
+            2 * GLOBAL_SLOTS,
+            encodeJson({ family, backgroundFirst, missingBatch, requests, documents }),
+          );
+        expect(documents.filter((entry) => entry.number === null)).toHaveLength(1);
+        if (missingBatch) {
+          expect(
+            documents
+              .filter((entry) => entry.number !== null)
+              .toSorted((a, b) => a.number! - b.number!),
+          ).toEqual(
+            missingBatch === "not-found"
+              ? [{ number: 7, background: backgroundFirst }]
+              : [
+                  { number: 7, background: backgroundFirst },
+                  { number: 8, background: !backgroundFirst },
+                ],
+          );
+        }
+        if (family === "summary") {
+          values.forEach((value, index) =>
+            expect(value).toMatchObject({
+              number: 7 + index,
+              title: `Pull request ${7 + index}`,
+            }),
+          );
+        } else {
+          values.forEach((value, index) =>
+            expect(value).toMatchObject({
+              remarks: expect.stringMatching(new RegExp(`^${7 + index} `)),
+            }),
+          );
+        }
+        yield* Effect.forEach(releases.slice(1), (release) => Deferred.succeed(release, undefined));
+        yield* Effect.forEach(blockers, Fiber.join);
+        yield* Effect.forEach(tails, Fiber.join);
+        if (missingBatch === "not-found") {
+          if (backgroundFirst)
+            assert.isAbove(requests.indexOf("fallback-7"), requests.indexOf(LAST_TAIL));
+          else assert.isAtMost(requests.indexOf("fallback-7") + 1, 2 * GLOBAL_SLOTS);
+        }
+        // The scaffolding plus the batch document, plus one fallback per alias it could not answer.
+        const fallbacks = missingBatch === "not-found" ? 1 : missingBatch ? 2 : 0;
+        expect(requests).toHaveLength(SCAFFOLDING_READS + 1 + fallbacks);
+      }).pipe(Effect.provide(realLayer));
+    }
+  }),
+);
+
 layer("GitHubPullRequestApi.layer", (it) => {
   it.effect("holds background previews once an answer reports the reserve, until it resets", () =>
     Effect.gen(function* () {
@@ -829,6 +1093,57 @@ layer("GitHubPullRequestApi.layer", (it) => {
         "w1: repository(owner: $w1_owner, name: $w1_name) { pullRequest(number: $w1_number)",
       );
       expect(varsAt(0)).toMatchObject({ w1_owner: "acme", w1_name: "web", w1_number: 8 });
+    }),
+  );
+
+  it.effect("keeps returned summary aliases and reads only the masked alias on its own", () =>
+    Effect.gen(function* () {
+      const [seven, eight, nine] = rows(3, 7, () => ({ state: "OPEN" }));
+      mockedExecute
+        .mockReturnValueOnce(
+          Effect.succeed(
+            output(
+              encodeJson({
+                data: { s0: { pullRequest: seven }, s1: null, s2: { pullRequest: nine } },
+              }),
+            ),
+          ),
+        )
+        .mockReturnValueOnce(
+          Effect.succeed(
+            output(
+              encodeJson({
+                data: { s0: { pullRequest: { ...eight, title: "Retried only eight" } } },
+              }),
+            ),
+          ),
+        );
+      const cli = yield* GitHubPullRequestApi.GitHubPullRequestApi;
+      const pending = yield* Effect.forEach(
+        [7, 8, 9],
+        (number) =>
+          cli.getPullRequestSummary({
+            cwd: "/w",
+            repository: "acme/web",
+            host: "github.com",
+            number,
+          }),
+        { concurrency: "unbounded" },
+      ).pipe(Effect.forkChild);
+      yield* TestClock.adjust("10 millis");
+      const summaries = yield* Fiber.join(pending);
+      expect(summaries.map((summary) => [summary.number, summary.title])).toEqual([
+        [7, "Pull request 7"],
+        [8, "Retried only eight"],
+        [9, "Pull request 9"],
+      ]);
+      expect(mockedExecute).toHaveBeenCalledTimes(2);
+      expect(mockedExecute.mock.calls[0]![0]).toMatchObject({
+        kind: "graphql",
+        partialNotFoundAliases: ["s0", "s1", "s2"],
+      });
+      expect(varsAt(1)).toEqual({ owner: "acme", name: "web", number: 8 });
+      expect(mockedExecute.mock.calls[1]![0]).not.toHaveProperty("partialNotFoundAliases");
     }),
   );
 

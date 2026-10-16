@@ -242,13 +242,21 @@ export const make = Effect.gen(function* () {
   return GitHubCredentials.of({
     get: Effect.fn("GitHubCredentials.get")(function* (rawHost) {
       const host = normalizeHost(rawHost);
-      const choice = yield* hostChoice(host);
+      const snapshot = yield* sourceControlHost.settings.get.pipe(
+        Effect.map((settings) => {
+          const github = readSettings(settings);
+          return { choice: github.hosts[host], saved: github.tokens[host]?.trim() || null };
+        }),
+        Effect.option,
+      );
+      const choice = Option.isSome(snapshot) ? snapshot.value.choice : undefined;
       if (choice?.enabled === false) {
         return yield* new GitHubHostDisabledError({ host });
       }
       // A token saved in Settings is the most deliberate choice, so it comes before the
       // environment and gh. It is read from the secret store each time, so it needs no cache.
-      const saved = yield* savedToken(host);
+      // Reuse a successful selection only here; a failed first read still retries the token.
+      const saved = Option.isSome(snapshot) ? snapshot.value.saved : yield* savedToken(host);
       if (saved !== null) {
         return {
           host,

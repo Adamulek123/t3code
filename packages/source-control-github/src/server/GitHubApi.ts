@@ -15,6 +15,7 @@ import { collectUint8StreamText } from "@t3tools/provider-core/server/collectStr
 import * as GitHubCredentials from "./GitHubCredentials.ts";
 import * as GitHubQuota from "./GitHubQuota.ts";
 import * as SourceControlRateLimit from "@t3tools/source-control-core/server/SourceControlRateLimit";
+import * as SourceControlReadContext from "@t3tools/source-control-core/server/SourceControlReadContext";
 
 const DEFAULT_TIMEOUT = Duration.seconds(30);
 const DEFAULT_MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
@@ -139,12 +140,14 @@ export interface GitHubGraphQlInput {
   readonly variables?: Readonly<Record<string, unknown>>;
   readonly allowReserve?: boolean;
   readonly maxResponseBytes?: number;
+  /** Exact summary aliases whose unrelated data may survive alias-local NOT_FOUND errors. */
+  readonly partialNotFoundAliases?: ReadonlyArray<string>;
 }
 
 export class GitHubApi extends Context.Service<
   GitHubApi,
   {
-    /** The raw JSON body of a successful GraphQL answer, with `rateLimit` recorded. */
+    /** Raw GraphQL JSON; opted-in summaries mask failed aliases in a partial answer. */
     readonly graphql: (input: GitHubGraphQlInput) => Effect.Effect<string, GitHubApiError>;
     readonly rest: (input: GitHubRestInput) => Effect.Effect<GitHubRestResponse, GitHubApiError>;
     /** The credential a request to `host` would carry right now. */
@@ -225,10 +228,13 @@ function retryAtFrom(
 const decodeGraphQlErrors = Schema.decodeUnknownOption(
   Schema.fromJsonString(
     Schema.Struct({
+      data: Schema.optional(Schema.Unknown),
       errors: Schema.NonEmptyArray(
         Schema.Struct({
           type: Schema.optional(Schema.String),
           message: Schema.optional(Schema.String),
+          // Keep path permissive so malformed metadata cannot hide a rate-limit error.
+          path: Schema.optional(Schema.Unknown),
         }),
       ),
     }),
@@ -278,6 +284,7 @@ function restErrorMessages(body: string): ReadonlyArray<string> | undefined {
 /** What one GitHub answer means, decided once from its status, headers and body. */
 type Answer = Data.TaggedEnum<{
   Ok: {};
+  Partial: { readonly body: string };
   RateLimited: {};
   Unauthorized: {};
   NotFound: {};
@@ -296,11 +303,11 @@ function classify(input: {
   readonly body: string;
   readonly graphql: boolean;
   readonly acceptNotModified: boolean;
+  readonly partialNotFoundAliases?: ReadonlyArray<string> | undefined;
 }): Answer {
   const { status, headers, body } = input;
-  const errors = input.graphql
-    ? Option.getOrUndefined(decodeGraphQlErrors(body))?.errors
-    : undefined;
+  const decoded = input.graphql ? Option.getOrUndefined(decodeGraphQlErrors(body)) : undefined;
+  const errors = decoded?.errors;
   const types = errors?.flatMap((error) => (error.type === undefined ? [] : [error.type])) ?? [];
   const messages = errors?.flatMap((error) => (error.message === undefined ? [] : [error.message]));
   if (
@@ -321,6 +328,44 @@ function classify(input: {
   }
   if (status === 401) return Answer.Unauthorized();
   if (
+    status === 200 &&
+    input.partialNotFoundAliases !== undefined &&
+    decoded !== undefined &&
+    typeof decoded.data === "object" &&
+    decoded.data !== null &&
+    !Array.isArray(decoded.data)
+  ) {
+    const allowed = new Set(input.partialNotFoundAliases);
+    const affected = new Set<string>();
+    const localNotFound = decoded.errors.every((error) => {
+      const path = error.path;
+      if (
+        error.type !== "NOT_FOUND" ||
+        !Array.isArray(path) ||
+        path.length === 0 ||
+        typeof path[0] !== "string" ||
+        !allowed.has(path[0]) ||
+        !path.every(
+          (segment) =>
+            typeof segment === "string" ||
+            (typeof segment === "number" && Number.isInteger(segment) && segment >= 0),
+        )
+      ) {
+        return false;
+      }
+      affected.add(path[0]);
+      return true;
+    });
+    if (localNotFound) {
+      // A nullable descendant can leave a decodable but incomplete row. Mask its whole alias.
+      const data = { ...decoded.data };
+      for (const alias of affected) {
+        Object.defineProperty(data, alias, { value: null, enumerable: true });
+      }
+      return Answer.Partial({ body: JSON.stringify({ data }) });
+    }
+  }
+  if (
     status === 404 ||
     (errors !== undefined && errors.every((error) => error.type === "NOT_FOUND"))
   ) {
@@ -340,6 +385,10 @@ export const make = Effect.gen(function* () {
   const quota = yield* GitHubQuota.GitHubQuota;
   const limits = yield* SourceControlRateLimit.SourceControlRateLimit;
   const gate = yield* Semaphore.make(CONCURRENCY);
+  const backgroundAdmission = yield* Semaphore.make(1);
+  const tryBackgroundAdmission = backgroundAdmission.takeIfAvailable(1);
+  const waitForBackgroundAdmission = backgroundAdmission.withPermit(Effect.void);
+  let backgroundPending = 0;
 
   const credential: GitHubApi["Service"]["credential"] = Effect.fn("GitHubApi.credential")(
     function* (host) {
@@ -374,6 +423,7 @@ export const make = Effect.gen(function* () {
     readonly acceptNotModified: boolean;
     /** Reads the body for GraphQL `errors`, which GitHub sends with HTTP 200. */
     readonly graphql?: boolean;
+    readonly partialNotFoundAliases?: ReadonlyArray<string> | undefined;
   }) {
     const host = normalizeHost(input.host);
     // Only the path: a query string can carry a SHA or a branch, and never needs to be in a trace.
@@ -423,6 +473,8 @@ export const make = Effect.gen(function* () {
             // and `url.query`, which can carry SHAs and branch names, so it is off for GitHub.
             Effect.provideService(HttpClient.TracerDisabledWhen, () => true),
           );
+        // Record the headers once, so a slow or interrupted body cannot hide an exhausted quota.
+        yield* quota.observe(host, response.headers);
         const collected = yield* collectUint8StreamText({
           stream: response.stream,
           maxBytes: input.maxResponseBytes,
@@ -442,7 +494,6 @@ export const make = Effect.gen(function* () {
       );
       const headers = response.headers;
       const status = response.status;
-      yield* quota.observe(host, headers);
       yield* Effect.annotateCurrentSpan({
         "http.response.status_code": status,
         ...rateLimitAttributes(headers),
@@ -455,6 +506,7 @@ export const make = Effect.gen(function* () {
           body: collected.text,
           graphql: input.graphql === true,
           acceptNotModified: input.acceptNotModified,
+          partialNotFoundAliases: input.partialNotFoundAliases,
         }),
         {
           Ok: () =>
@@ -467,6 +519,15 @@ export const make = Effect.gen(function* () {
                 invalidUtf8: collected.invalidUtf8,
               }),
             ),
+          // Partial documents retain quota observations but must not clear a rate-limit pause.
+          Partial: ({ body }) =>
+            Effect.succeed({
+              status,
+              headers,
+              body,
+              truncated: collected.truncated,
+              invalidUtf8: collected.invalidUtf8,
+            }),
           RateLimited: () =>
             Effect.gen(function* () {
               const retryAt = retryAtFrom(headers, yield* Clock.currentTimeMillis);
@@ -498,9 +559,57 @@ export const make = Effect.gen(function* () {
       );
     });
     // The rate-limit scope follows the credential, so a pause on one account never blocks another.
-    return yield* gate
-      .withPermit(run)
-      .pipe(Effect.provideService(SourceControlRateLimit.CredentialScope, scope || fingerprint));
+    const background = yield* SourceControlReadContext.Background;
+    const gated = background
+      ? Effect.uninterruptibleMask((restore) =>
+          Effect.suspend(() => {
+            backgroundPending++;
+            let pending = true;
+            let admissionHeld = false;
+            const releaseAdmission = Effect.suspend(() => {
+              if (pending) {
+                pending = false;
+                backgroundPending--;
+              }
+              if (!admissionHeld) return Effect.void;
+              admissionHeld = false;
+              return backgroundAdmission.release(1).pipe(Effect.asVoid);
+            });
+            // Acquire and record ownership while masked. A restored manual take can be
+            // interrupted after taking the permit but before recording it for cleanup.
+            const acquireAdmission: Effect.Effect<void> = tryBackgroundAdmission.pipe(
+              Effect.flatMap((available) => {
+                if (!available) {
+                  return restore(waitForBackgroundAdmission).pipe(Effect.andThen(acquireAdmission));
+                }
+                admissionHeld = true;
+                return Effect.void;
+              }),
+            );
+            return acquireAdmission.pipe(
+              // Only one background caller waits at the global gate. Its admission ticket is
+              // returned before HTTP starts, and also if waiting for the global gate is canceled.
+              Effect.flatMap(() =>
+                restore(
+                  gate.withPermit(
+                    Effect.uninterruptible(releaseAdmission).pipe(Effect.andThen(run)),
+                  ),
+                ),
+              ),
+              Effect.ensuring(releaseAdmission),
+            );
+          }),
+        )
+      : Effect.suspend(() =>
+          // Native permit release wakes waiters on the scheduler. Yield so a fresh ordinary
+          // acquisition cannot repeatedly take freed slots during background admission handoff.
+          backgroundPending > 0
+            ? Effect.yieldNow.pipe(Effect.andThen(gate.withPermit(run)))
+            : gate.withPermit(run),
+        );
+    return yield* gated.pipe(
+      Effect.provideService(SourceControlRateLimit.CredentialScope, scope || fingerprint),
+    );
   });
 
   const rest: GitHubApi["Service"]["rest"] = (input) => {
@@ -558,6 +667,7 @@ export const make = Effect.gen(function* () {
         allowReserve,
         acceptNotModified: false,
         graphql: true,
+        partialNotFoundAliases: input.partialNotFoundAliases,
       });
       // A body cut at the byte cap hides any `errors` past the cut and cannot be decoded.
       if (response.truncated) {
