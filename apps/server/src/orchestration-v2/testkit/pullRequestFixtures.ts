@@ -15,7 +15,7 @@ import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import * as NodeAssert from "node:assert";
-import * as GitHubApi from "@t3tools/source-control-github/server/GitHubApi";
+import * as GitHubRest from "@t3tools/source-control-github/server/GitHubRest";
 import * as GitHubCredentials from "@t3tools/source-control-github/server/GitHubCredentials";
 import * as GitHubQuota from "@t3tools/source-control-github/server/GitHubQuota";
 import * as SourceControlRateLimit from "@t3tools/source-control-core/server/SourceControlRateLimit";
@@ -54,11 +54,14 @@ export const makeGitHubReadAdmissionFixture = Effect.gen(function* () {
       }),
     ),
   );
-  const api = yield* GitHubApi.make.pipe(
-    Effect.provide(
-      Layer.mergeAll(credentials, http, GitHubQuota.layer, SourceControlRateLimit.layer),
+  const context = yield* Layer.build(
+    GitHubRest.layer.pipe(
+      Layer.provide(Layer.mergeAll(credentials, http)),
+      Layer.provideMerge(GitHubQuota.layer),
+      Layer.provideMerge(SourceControlRateLimit.layer),
     ),
   );
+  const api = yield* GitHubRest.GitHubRest.pipe(Effect.provideContext(context));
   const prepare = Effect.fnUntraced(function* (path: string, hold = false) {
     const started = yield* Deferred.make<void>();
     const response = yield* Deferred.make<void>();
@@ -120,7 +123,6 @@ export const makeGitHubReadAdmissionFixture = Effect.gen(function* () {
   return { proveBackgroundRead };
 });
 
-/** The thread fields pull request tests set; timestamps are ISO strings. */
 export interface PullRequestTestThread {
   readonly id: ThreadId;
   readonly projectId: ProjectId;
