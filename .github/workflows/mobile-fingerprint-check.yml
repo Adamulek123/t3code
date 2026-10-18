@@ -89,9 +89,9 @@ jobs:
         env:
           BASE_SHA: ${{ steps.changes.outputs.base_sha }}
         run: |
-          # Keep installed graphs separate: switching build approvals on an
-          # existing node_modules can rebuild head-only dependencies even
-          # during a filtered install, then fail under the base's policy.
+          # Keep installed graphs separate: pnpm records approvals in node_modules
+          # and flags revoked approvals across the full lockfile, even during
+          # a filtered install.
           base_checkout="$RUNNER_TEMP/fp/base-checkout"
           git worktree add --detach "$base_checkout" "$BASE_SHA"
           pnpm --dir "$base_checkout" install --filter=@t3tools/mobile...
