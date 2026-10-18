@@ -14,6 +14,7 @@ import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
+import * as Scheduler from "effect/Scheduler";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -1287,9 +1288,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     ).pipe(Effect.asVoid);
   };
 
-  const resolveRepositoryPathsUncached = Effect.fn("resolveRepositoryPathsUncached")(function* (
-    cwd: string,
-  ) {
+  const readGitCommonDir = Effect.fn("readGitCommonDir")(function* (cwd: string) {
     const commonDirResult = yield* executeGitWithStableDiagnostics(
       "GitVcsDriver.resolveRepositoryPaths.commonDir",
       cwd,
@@ -1321,9 +1320,16 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     const resolvedGitCommonDir = path.isAbsolute(commonDirOutput)
       ? path.normalize(commonDirOutput)
       : path.resolve(cwd, commonDirOutput);
-    const gitCommonDir = yield* fileSystem
+    return yield* fileSystem
       .realPath(resolvedGitCommonDir)
       .pipe(Effect.orElseSucceed(() => resolvedGitCommonDir));
+  });
+
+  const resolveRepositoryPathsUncached = Effect.fn("resolveRepositoryPathsUncached")(function* (
+    cwd: string,
+  ) {
+    const gitCommonDir = yield* readGitCommonDir(cwd);
+    if (gitCommonDir === null) return null;
     const [worktreeRootResult, currentBranchResult] = yield* Effect.all(
       [
         executeGit(
@@ -1366,6 +1372,49 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       gitCommonDir,
       worktreeRoot,
       currentBranch,
+    } satisfies GitRepositoryPaths;
+  });
+
+  const resolveWorktreeCreationPaths = Effect.fn("resolveWorktreeCreationPaths")(function* (
+    cwd: string,
+  ) {
+    const result = yield* executeGitWithStableDiagnostics(
+      "GitVcsDriver.resolveRepositoryPaths.batch",
+      cwd,
+      ["rev-parse", "--git-common-dir", "--show-toplevel", "--symbolic-full-name", "HEAD"],
+      { timeoutMs: 5_000, allowNonZeroExit: true },
+    ).pipe(Effect.orElseSucceed(() => null));
+    // Line-delimited paths cannot distinguish embedded newlines from field separators.
+    const lines = result?.stdout.replace(/\r?\n$/, "").split(/\r?\n/);
+    const [commonDirOutput, worktreeRootOutput, headRef] = lines ?? [];
+    if (
+      result?.exitCode !== 0 ||
+      /[\r\n]/.test(cwd) ||
+      lines?.length !== 3 ||
+      !commonDirOutput ||
+      !worktreeRootOutput ||
+      !headRef ||
+      commonDirOutput.startsWith('"') ||
+      worktreeRootOutput.startsWith('"') ||
+      /[\r\n]/.test(commonDirOutput + worktreeRootOutput) ||
+      (headRef !== "HEAD" && !/^refs\/heads\/[^\r\n]+$/.test(headRef))
+    ) {
+      return yield* resolveRepositoryPathsUncached(cwd);
+    }
+    const resolvedGitCommonDir = path.isAbsolute(commonDirOutput)
+      ? path.normalize(commonDirOutput)
+      : path.resolve(cwd, commonDirOutput);
+    const gitCommonDir = yield* fileSystem
+      .realPath(resolvedGitCommonDir)
+      .pipe(Effect.orElseSucceed(() => resolvedGitCommonDir));
+    return {
+      gitCommonDir,
+      worktreeRoot: path.normalize(
+        path.isAbsolute(worktreeRootOutput)
+          ? worktreeRootOutput
+          : path.resolve(cwd, worktreeRootOutput),
+      ),
+      currentBranch: headRef === "HEAD" ? null : headRef.slice("refs/heads/".length),
     } satisfies GitRepositoryPaths;
   });
 
@@ -1449,12 +1498,15 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       }),
     },
   );
-  const invalidateStatusStaticCaches = (cwd: string) =>
+  const invalidateStatusStaticCaches = (cwd: string, gitCommonDir?: string | null) =>
     Effect.gen(function* () {
-      const repositoryPaths = yield* resolveRepositoryPaths(cwd).pipe(
-        Effect.catchTags({ GitCommandError: () => Effect.succeed(null) }),
-      );
-      const cacheKey = repositoryPaths?.gitCommonDir ?? normalizeRepositoryPathsCacheKey(cwd);
+      const commonDir =
+        gitCommonDir === undefined
+          ? (yield* resolveRepositoryPaths(cwd).pipe(
+              Effect.catchTags({ GitCommandError: () => Effect.succeed(null) }),
+            ))?.gitCommonDir
+          : gitCommonDir;
+      const cacheKey = commonDir ?? normalizeRepositoryPathsCacheKey(cwd);
       yield* Cache.invalidate(defaultBranchCache, cacheKey);
       yield* Cache.invalidate(originExistsCache, cacheKey);
     });
@@ -3388,17 +3440,21 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
   });
   const invalidateListRefsSnapshot = Effect.fn("invalidateListRefsSnapshot")(function* (
     cwd: string,
+    gitCommonDir?: string | null,
   ) {
     const repositoryPathsCacheKey = normalizeRepositoryPathsCacheKey(cwd);
-    const repositoryPaths = yield* Cache.get(repositoryPathsCache, repositoryPathsCacheKey);
-    if (repositoryPaths === null) return;
-    const previousGeneration = currentListRefsGeneration(repositoryPaths.gitCommonDir);
-    bumpListRefsGeneration(repositoryPaths.gitCommonDir);
-    bumpListRefsEpoch(repositoryPaths.gitCommonDir);
+    const commonDir =
+      gitCommonDir === undefined
+        ? (yield* Cache.get(repositoryPathsCache, repositoryPathsCacheKey))?.gitCommonDir
+        : gitCommonDir;
+    if (commonDir == null) return;
+    const previousGeneration = currentListRefsGeneration(commonDir);
+    bumpListRefsGeneration(commonDir);
+    bumpListRefsEpoch(commonDir);
     yield* Cache.invalidate(
       listRefsRefreshSnapshotCache,
       new GitRefsRefreshCacheKey({
-        gitCommonDir: repositoryPaths.gitCommonDir,
+        gitCommonDir: commonDir,
         generation: previousGeneration,
       }),
     );
@@ -4108,6 +4164,33 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         ]),
       ),
     );
+  const invalidateWorktreeCreationCaches = (cwd: string) =>
+    Effect.gen(function* () {
+      const epochBeforeDiscovery = listRefsEpochSequence;
+      const repositoryPaths = yield* resolveWorktreeCreationPaths(cwd).pipe(
+        Effect.catchTags({ GitCommandError: () => Effect.succeed(null) }),
+      );
+      let gitCommonDir = repositoryPaths?.gitCommonDir ?? null;
+      if (gitCommonDir === null) {
+        gitCommonDir = yield* Cache.getOption(
+          repositoryPathsCache,
+          normalizeRepositoryPathsCacheKey(cwd),
+        ).pipe(
+          Effect.map((cached) => Option.getOrNull(cached)?.gitCommonDir ?? null),
+          Effect.orElseSucceed(() => null),
+        );
+      }
+      yield* Effect.all([
+        invalidateListRefsSnapshot(cwd, gitCommonDir).pipe(Effect.ignore),
+        invalidateStatusStaticCaches(cwd, gitCommonDir).pipe(Effect.ignore),
+      ]);
+      // Cache.set is synchronous; keep its publication in the same scheduler step as the check.
+      yield* Effect.suspend(() =>
+        repositoryPaths !== null && listRefsEpochSequence === epochBeforeDiscovery + 1
+          ? Cache.set(repositoryPathsCache, normalizeRepositoryPathsCacheKey(cwd), repositoryPaths)
+          : Effect.void,
+      ).pipe(Effect.provideService(Scheduler.PreventSchedulerYield, true));
+    });
   const initRepoWithListRefsInvalidation: GitVcsDriver.GitVcsDriver["Service"]["initRepo"] = (
     input,
   ) =>
@@ -4141,7 +4224,9 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     resolveBranchName,
     listRefs,
     createWorktree: (input, options) =>
-      withListRefsInvalidation(input.cwd, createWorktree(input, options)),
+      createWorktree(input, options).pipe(
+        Effect.ensuring(invalidateWorktreeCreationCaches(input.cwd)),
+      ),
     fetchPullRequestBranch: (input) =>
       withListRefsInvalidation(input.cwd, fetchPullRequestBranch(input)),
     fetchPullRequestHeadCommit,
