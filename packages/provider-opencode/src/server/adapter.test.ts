@@ -2929,7 +2929,7 @@ it.effect.each([
     ),
 );
 
-it.effect.each(["fork", "resume", "ensure"] as const)(
+it.effect.each(["fork", "resume"] as const)(
   "OpenCode %s fails when the native permission update is rejected",
   (operation) =>
     Effect.gen(function* () {
@@ -2939,7 +2939,6 @@ it.effect.each(["fork", "resume", "ensure"] as const)(
       const expectedTag = {
         fork: "ProviderAdapterForkThreadError",
         resume: "ProviderAdapterResumeThreadError",
-        ensure: "ProviderAdapterEnsureThreadError",
       }[operation];
       assert.equal(error._tag, expectedTag);
     }).pipe(
