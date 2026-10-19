@@ -220,19 +220,11 @@ export const make = Effect.gen(function* () {
   return GitHubCredentials.of({
     get: Effect.fn("GitHubCredentials.get")(function* (rawHost) {
       const host = normalizeHost(rawHost);
-      const snapshot = yield* sourceControlHost.settings.get.pipe(
-        Effect.map((settings) => {
-          const github = readSettings(settings);
-          return { choice: github.hosts[host], saved: github.tokens[host]?.trim() || null };
-        }),
-        Effect.option,
-      );
-      const choice = Option.isSome(snapshot) ? snapshot.value.choice : undefined;
+      const choice = yield* hostChoice(host);
       if (choice?.enabled === false) {
         return yield* new GitHubHostDisabledError({ host });
       }
-      // An unsuccessful settings read still gets the existing saved-token retry.
-      const saved = Option.isSome(snapshot) ? snapshot.value.saved : yield* savedToken(host);
+      const saved = yield* savedToken(host);
       if (saved !== null) {
         return {
           host,

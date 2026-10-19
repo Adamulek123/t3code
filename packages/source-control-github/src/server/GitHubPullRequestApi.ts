@@ -874,7 +874,7 @@ const PullRequestGraphQLGroup = GraphQLGroup.merge(
   PullRequestMutationsGraphQLGroup,
 ).middleware(GitHubGraphQlClient.GitHubGraphQlAuth);
 
-/** The generated resolver uses each host/credential group's first context; mixed groups are ordinary. */
+/** Generated batches inherit their first context; classify mixed host/credential/scope groups as ordinary. */
 const withReadPriority = <A extends Request.Any>(resolver: RequestResolver.RequestResolver<A>) =>
   RequestResolver.makeWith<A>({
     ...resolver,
@@ -884,7 +884,9 @@ const withReadPriority = <A extends Request.Any>(resolver: RequestResolver.Reque
         const target = Context.getUnsafe(entry.context, GitHubGraphQlClient.GitHubGraphQlTarget);
         const group = JSON.stringify([
           GitHubRequestPolicy.gitHubApiUrls(target.host).graphql,
-          GitHubGraphQlClient.batchKey(entry.context),
+          GitHubGraphQlClient.batchKey(
+            Context.add(entry.context, GitHubGraphQlClient.GitHubGraphQlTarget, target),
+          ),
         ]);
         backgroundGroups.set(
           group,
@@ -934,7 +936,6 @@ export const make = Effect.gen(function* () {
       }),
     ),
   );
-
   const captureVerifiedCredential = Effect.fn("GitHubPullRequestApi.captureVerifiedCredential")(
     function* (input: { readonly cwd: string; readonly host: string }) {
       const unavailable = () => new GitHubViewerLoginUnavailableError({ cwd: input.cwd });

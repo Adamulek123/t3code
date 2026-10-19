@@ -153,14 +153,10 @@ const refused = (
  */
 const capResponse = (
   effect: Effect.Effect<HttpClientResponse.HttpClientResponse, HttpClientError.HttpClientError>,
-  policy: GitHubRequestPolicy.GitHubRequestPolicy["Service"],
 ) =>
   Effect.gen(function* () {
     const response = yield* effect;
     const target = yield* Effect.serviceOption(GitHubGraphQlTarget);
-    if (Option.isSome(target)) {
-      yield* policy.observeResponse(target.value.host, response.headers);
-    }
     const maxBytes = Option.match(target, {
       onNone: () => DEFAULT_MAX_RESPONSE_BYTES,
       onSome: (target) => target.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES,
@@ -204,9 +200,8 @@ const layerProtocol = GraphQLProtocol.layerHttp({
       HttpClient.HttpClient,
       Effect.gen(function* () {
         const client = yield* HttpClient.HttpClient;
-        const policy = yield* GitHubRequestPolicy.GitHubRequestPolicy;
         return HttpClient.transformResponse(client, (effect) =>
-          capResponse(effect, policy).pipe(
+          capResponse(effect).pipe(
             Effect.provideService(HttpClient.TracerDisabledWhen, () => true),
           ),
         );
@@ -226,7 +221,7 @@ export const layer = Layer.merge(GitHubGraphQlAuth.layer, layerProtocol);
  * rate-limit scope it will be sent under. Read from the context the lookup was made in. Resolvers
  * already keep hosts apart, since they batch by the transport's URL too.
  */
-export const batchKey = <R>(context: Context.Context<R>) =>
+export const batchKey = (context: Context.Context<GitHubGraphQlTarget>) =>
   JSON.stringify([
     Context.getOrElse(context, GitHubRequestPolicy.PinnedGitHubCredential, () => null)
       ?.credentialFingerprint ?? null,

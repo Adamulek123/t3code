@@ -219,18 +219,12 @@ export class GitHubRequestPolicy extends Context.Service<
   {
     /**
      * Sends one request. `send` receives the headers it must carry (the token and GitHub's API
-     * version), records response headers with `observeResponse` before reading its body, and
-     * reports the answer; a failure of its own passes through untouched.
+     * version) and reports the answer; a failure of its own passes through untouched.
      */
     readonly request: <A, E, R>(
       input: GitHubRequest,
       send: (headers: Readonly<Record<string, string>>) => Effect.Effect<GitHubAnswer<A>, E, R>,
     ) => Effect.Effect<A, E | GitHubApiError, R>;
-    /** Records response headers before reading a body that can fail or be interrupted. */
-    readonly observeResponse: (
-      host: string,
-      headers: Readonly<Record<string, string | undefined>>,
-    ) => Effect.Effect<void>;
     /** The credential a request to `host` would carry right now. */
     readonly credential: (
       host: string,
@@ -251,11 +245,6 @@ export const make = Effect.gen(function* () {
   const tryBackgroundAdmission = backgroundAdmission.takeIfAvailable(1);
   const waitForBackgroundAdmission = backgroundAdmission.withPermit(Effect.void);
   let backgroundPending = 0;
-
-  const observeResponse: GitHubRequestPolicy["Service"]["observeResponse"] = (host, headers) =>
-    quota
-      .observe(host, headers)
-      .pipe(Effect.andThen(Effect.annotateCurrentSpan(rateLimitAttributes(headers))));
 
   const credential: GitHubRequestPolicy["Service"]["credential"] = Effect.fn(
     "GitHubRest.credential",
@@ -295,9 +284,11 @@ export const make = Effect.gen(function* () {
 
       const settle = (lease: number, answer: GitHubAnswer<A>) =>
         Effect.gen(function* () {
-          if (answer.status !== undefined) {
-            yield* Effect.annotateCurrentSpan({ "http.response.status_code": answer.status });
-          }
+          yield* quota.observe(host, answer.headers);
+          yield* Effect.annotateCurrentSpan({
+            ...(answer.status === undefined ? {} : { "http.response.status_code": answer.status }),
+            ...rateLimitAttributes(answer.headers),
+          });
           switch (answer._tag) {
             case "Ok":
               yield* limits.recordSuccess({ ...key, lease });
@@ -359,7 +350,6 @@ export const make = Effect.gen(function* () {
         );
         return yield* settle(lease, answer);
       });
-      // The rate-limit scope follows the credential, so a pause on one account never blocks another.
       const background = yield* SourceControlReadContext.Background;
       const gated = background
         ? Effect.uninterruptibleMask((restore) =>
@@ -409,12 +399,13 @@ export const make = Effect.gen(function* () {
               ? Effect.yieldNow.pipe(Effect.andThen(slots.withPermit(run)))
               : slots.withPermit(run),
           );
+      // The rate-limit scope follows the credential, so a pause on one account never blocks another.
       return yield* gated.pipe(
         Effect.provideService(SourceControlRateLimit.CredentialScope, scope || fingerprint),
       );
     });
 
-  return GitHubRequestPolicy.of({ request, credential, observeResponse });
+  return GitHubRequestPolicy.of({ request, credential });
 });
 
 export const layer = Layer.effect(GitHubRequestPolicy, make);

@@ -160,7 +160,6 @@ export const make = Effect.gen(function* () {
               // `url.full` and `url.query`, which can carry SHAs and branch names, so it is off.
               Effect.provideService(HttpClient.TracerDisabledWhen, () => true),
             );
-          yield* policy.observeResponse(host, response.headers);
           const collected = yield* collectUint8StreamText({
             stream: response.stream,
             maxBytes: input.maxResponseBytes,
