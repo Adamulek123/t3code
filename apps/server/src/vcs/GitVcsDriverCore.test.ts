@@ -783,9 +783,11 @@ it.effect("invalidates cached metadata after interrupted worktree creation", () 
       assert.isTrue(Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause));
       const refs = yield* driver.listRefs({ cwd });
       assert.isTrue(refs.refs.find((ref) => ref.name === "creator-current")?.current);
+      const interruptedRef = refs.refs.find((ref) => ref.name === "feature/interrupted");
+      assert.isDefined(interruptedRef?.worktreePath);
       assert.equal(
-        refs.refs.find((ref) => ref.name === "feature/interrupted")?.worktreePath,
-        worktreePath,
+        NodeFS.realpathSync.native(interruptedRef!.worktreePath!),
+        NodeFS.realpathSync.native(worktreePath),
       );
       assert.equal((yield* driver.statusDetailsLocal(cwd)).branch, "creator-current");
       const nextPath = path.join(yield* makeTmpDir("git-worktrees-"), "after-interruption");
@@ -805,7 +807,7 @@ it.effect("invalidates cached metadata after interrupted worktree creation", () 
 it.effect("does not expose stale metadata at the cache publication scheduler handoff", () =>
   Effect.scoped(
     Effect.gen(function* () {
-      const cwd = yield* makeTmpDir();
+      const cwd = NodeFS.realpathSync.native(yield* makeTmpDir());
       yield* initRepoWithCommit(cwd);
       const commit = yield* git(cwd, ["rev-parse", "HEAD"]);
       const path = yield* Path.Path;
