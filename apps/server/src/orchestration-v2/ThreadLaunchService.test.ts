@@ -17,6 +17,7 @@ import {
   type ChatAttachment,
   CommandId,
   EnvironmentId,
+  EventId,
   DEFAULT_SERVER_SETTINGS,
   GitCommandError,
   MessageId,
@@ -57,6 +58,7 @@ import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
+import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ThreadLaunch from "./ThreadLaunchService.ts";
@@ -256,6 +258,9 @@ function makeHarness(options: HarnessOptions = {}) {
       layerThreadManagement,
       layerTitleRegeneration,
       layerOutbox,
+      Layer.effect(EventSink.EventSinkV2, EventSink.EventSinkV2).pipe(
+        Layer.provide(layerOrchestrator),
+      ),
       layerReceipts,
       IdAllocator.layer,
       layerDatabase,
@@ -549,7 +554,7 @@ it.effect("provisions independent launches concurrently instead of behind a glob
   }),
 );
 
-it.effect("enqueues provider work only after setup has been initiated", () =>
+it.effect("releases after setup and advances the queue after a workspace edit", () =>
   Effect.gen(function* () {
     const setupEntered = yield* Deferred.make<void>();
     const allowSetup = yield* Deferred.make<void>();
@@ -578,23 +583,78 @@ it.effect("enqueues provider work only after setup has been initiated", () =>
         message: "Start after setup",
         workspace: { type: "worktree", baseRef: "main" },
       });
-      const launched = yield* launches.launch(input);
+      yield* launches.launch(input);
       yield* Deferred.await(setupEntered);
       assert.isEmpty(
         yield* outbox.listByCommandId(CommandId.make("command:launch:release:release")),
       );
       yield* Deferred.succeed(allowSetup, undefined);
-      yield* waitUntil(() =>
-        outbox
-          .listByCommandId(CommandId.make("command:launch:release:release"))
-          .pipe(Effect.map((effects) => effects.length === 1)),
-      );
-      const projection = yield* threads.getThreadProjection(launched.threadId);
+      const projection = yield* awaitPreparation(input.threadId, input.commandId);
       assert.equal(projection.runs[0]?.status, "starting");
       assert.equal(projection.checkpointScopes[0]?.cwd, "/repo-worktrees/feature");
       assert.equal(
         projection.turnItems.find((item) => item.type === "command_execution")?.status,
         "completed",
+      );
+
+      const followUp = yield* threads.sendToThread({
+        projectId,
+        commandId: CommandId.make("command:launch:release:follow-up"),
+        threadId: input.threadId,
+        messageId: MessageId.make("message:launch:release:follow-up"),
+        text: "Continue after the successful run",
+        attachments: [],
+        mode: "queue",
+        createdBy: "user",
+        creationSource: "web",
+      });
+      assert.equal(followUp.delivery, "queued");
+      yield* threads.dispatch({
+        type: "thread.metadata.update",
+        commandId: CommandId.make("command:launch:release:branch-edit"),
+        threadId: input.threadId,
+        branch: "user-branch",
+        worktreePath: projection.thread.worktreePath,
+      });
+      const sink = yield* EventSink.EventSinkV2;
+      const now = yield* DateTime.now;
+      const run = projection.runs[0]!;
+      yield* sink.write({
+        events: [
+          {
+            id: EventId.make("event:launch:release:completed"),
+            type: "run.updated",
+            threadId: input.threadId,
+            runId: run.id,
+            occurredAt: now,
+            payload: { ...run, status: "completed", startedAt: now, completedAt: now },
+          },
+        ],
+      });
+      yield* threads
+        .streamStoredEventsFrom({ threadId: input.threadId, eventType: "run.updated" })
+        .pipe(
+          Stream.filter(
+            (stored) =>
+              stored.event.type === "run.updated" &&
+              stored.event.payload.id === followUp.run.id &&
+              (stored.event.payload.status === "starting" ||
+                stored.event.payload.queueHeld === true),
+          ),
+          Stream.runHead,
+        );
+      const completed = yield* threads.getThreadProjection(input.threadId);
+      assert.equal(
+        completed.runs.find((candidate) => candidate.id === run.id)?.status,
+        "completed",
+      );
+      const next = completed.runs.find((candidate) => candidate.id === followUp.run.id);
+      assert.equal(next?.status, "starting");
+      assert.notEqual(next?.queueHeld, true);
+      const node = completed.nodes.find((candidate) => candidate.id === next?.rootNodeId);
+      assert.equal(
+        completed.checkpointScopes.find((scope) => scope.id === node?.checkpointScopeId)?.cwd,
+        "/repo-worktrees/feature",
       );
     }).pipe(Effect.provide(harness.layer));
   }),
@@ -1779,9 +1839,10 @@ it.effect.each(["failed", "interrupted"] as const)(
   },
 );
 
-it.effect("a retry after service restart reuses a completed checkout after setup failure", () => {
+it.effect("reuses a completed checkout after service restart and a branch edit", () => {
   let setupFailures = 1;
   const harness = makeHarness({
+    pathExists: () => Effect.succeed(true),
     runSetup: () =>
       setupFailures-- > 0
         ? Effect.fail(new Error("setup failed") as never)
@@ -1811,6 +1872,13 @@ it.effect("a retry after service restart reuses a completed checkout after setup
     assert.equal(failed.thread.worktreePath, "/repo-worktrees/feature");
     assert.equal(failed.thread.branch, "generated-branch");
 
+    yield* threads.dispatch({
+      type: "thread.metadata.update",
+      commandId: CommandId.make("command:launch:reuse:branch-edit"),
+      threadId: input.threadId,
+      branch: "user-branch",
+    });
+
     const retry = {
       commandId: CommandId.make("command:launch:reuse:retry"),
       threadId: input.threadId,
@@ -1825,7 +1893,7 @@ it.effect("a retry after service restart reuses a completed checkout after setup
     );
     assert.equal(retried.runs[0]?.status, "starting");
     assert.equal(retried.runs[0]?.id, failed.runs[0]?.id);
-    assert.equal(retried.thread.branch, "generated-branch");
+    assert.equal(retried.thread.branch, "user-branch");
     assert.equal(retried.thread.worktreePath, "/repo-worktrees/feature");
     assert.equal(retried.checkpointScopes[0]?.cwd, "/repo-worktrees/feature");
     assert.equal(harness.createWorktree.mock.calls.length, 1);
@@ -1871,10 +1939,7 @@ it.effect("preserves an incomplete checkout and blocks Retry until its explicit 
     const released = yield* outbox.listByCommandId(CommandId.make(`${retry.commandId}:release`));
     assert.deepEqual(
       {
-        survivor: failed.thread.worktreePath,
-        branch: failed.thread.branch,
         retryStatus: blocked.runs[0]?.status,
-        retryPath: blocked.thread.worktreePath,
         provisions: harness.createWorktree.mock.calls.length,
         removals: harness.removeWorktree.mock.calls.length,
         setups: harness.runSetup.mock.calls.length,
@@ -1882,10 +1947,7 @@ it.effect("preserves an incomplete checkout and blocks Retry until its explicit 
         checkpoints: blocked.checkpointScopes.length,
       },
       {
-        survivor: "/repo-worktrees/partial",
-        branch: "feature",
         retryStatus: "failed",
-        retryPath: "/repo-worktrees/partial",
         provisions: 1,
         removals: 1,
         setups: 0,
@@ -1910,6 +1972,43 @@ it.effect("preserves an incomplete checkout and blocks Retry until its explicit 
     assert.equal(queued.run.queueHeld, true);
     assert.isEmpty((yield* threads.getThreadProjection(input.threadId)).checkpointScopes);
 
+    const normal = yield* threads.sendToThread({
+      projectId,
+      commandId: CommandId.make("command:launch:survivor:normal"),
+      threadId: input.threadId,
+      messageId: MessageId.make("message:launch:survivor:normal"),
+      text: "Try a normal send",
+      attachments: [],
+      mode: "auto",
+      createdBy: "user",
+      creationSource: "web",
+    });
+    const afterNormal = yield* threads.getThreadProjection(input.threadId);
+    const recoveryMessage =
+      blocked.turnItems.find((item) => item.type === "error")?.failure.message ?? "";
+    assert.deepEqual(
+      {
+        unsafeCheckpoints: afterNormal.checkpointScopes.filter(
+          (scope) => scope.cwd === "/repo-worktrees/partial",
+        ).length,
+        recoveryNamesSurvivor: recoveryMessage.includes("/repo-worktrees/partial"),
+        recoveryExplainsCleanup: /remov|clean|delet/iu.test(recoveryMessage),
+      },
+      {
+        unsafeCheckpoints: 0,
+        recoveryNamesSurvivor: true,
+        recoveryExplainsCleanup: true,
+      },
+    );
+    if (normal.delivery === "started") {
+      yield* threads.dispatch({
+        type: "run.interrupt",
+        commandId: CommandId.make("command:launch:survivor:stop-normal"),
+        threadId: input.threadId,
+        runId: normal.run.id,
+      });
+    }
+
     survivorExists = false;
     const recover = { ...retry, commandId: CommandId.make("command:launch:survivor:recover") };
     yield* launches.retryPreparation(recover);
@@ -1917,7 +2016,10 @@ it.effect("preserves an incomplete checkout and blocks Retry until its explicit 
     assert.equal(recovered.runs[0]?.status, "starting");
     assert.equal(recovered.runs[0]?.id, retry.runId);
     assert.equal(recovered.thread.worktreePath, "/repo-worktrees/fresh");
-    assert.equal(recovered.checkpointScopes[0]?.cwd, "/repo-worktrees/fresh");
+    assert.equal(
+      recovered.checkpointScopes.find((scope) => scope.runId === retry.runId)?.cwd,
+      "/repo-worktrees/fresh",
+    );
     assert.equal(harness.createWorktree.mock.calls.length, 2);
     assert.equal(harness.runSetup.mock.calls.length, 1);
   }).pipe(Effect.provide(harness.layer));
@@ -1931,6 +2033,7 @@ it.effect.each([
     const cleanupEntered = yield* Deferred.make<void>();
     const cleanupResume = yield* Deferred.make<void>();
     const harness = makeHarness({
+      pathExists: (path) => Effect.succeed(path === "/repo-worktrees/partial"),
       createWorktree: (_input, options) =>
         (options?.progress?.onWorktreeClaimed?.("/repo-worktrees/partial") ?? Effect.void).pipe(
           Effect.andThen(Effect.fail(new Error("checkout failed") as never)),
@@ -1968,6 +2071,47 @@ it.effect.each([
       assert.equal(failed.thread.branch, binding.branch);
       assert.equal(harness.removeWorktree.mock.calls[0]?.[0].path, "/repo-worktrees/partial");
       assert.isEmpty(harness.runSetup.mock.calls);
+      if (!binding.removed) {
+        const freshLaunch = ThreadLaunch.layer.pipe(Layer.provide(WorktreeSetupTracker.layer));
+        const retry = {
+          commandId: CommandId.make("command:launch:cleanup-binding:retry"),
+          threadId: input.threadId,
+          runId: failed.runs[0]!.id,
+        };
+        const blocked = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const restarted = yield* ThreadLaunch.ThreadLaunchService;
+            yield* restarted.retryPreparation(retry);
+            return yield* awaitPreparation(input.threadId, retry.commandId);
+          }).pipe(Effect.provide(freshLaunch)),
+        );
+        const recoveryMessage =
+          blocked.turnItems.find((item) => item.type === "error")?.failure.message ?? "";
+        assert.deepEqual(
+          {
+            worktreePath: blocked.thread.worktreePath,
+            branch: blocked.thread.branch,
+            retryStatus: blocked.runs[0]?.status,
+            provisions: harness.createWorktree.mock.calls.length,
+            removals: harness.removeWorktree.mock.calls.length,
+            setups: harness.runSetup.mock.calls.length,
+            checkpoints: blocked.checkpointScopes.length,
+            recoveryNamesSurvivor: recoveryMessage.includes("/repo-worktrees/partial"),
+            recoveryExplainsCleanup: /remov|clean|delet/iu.test(recoveryMessage),
+          },
+          {
+            worktreePath: null,
+            branch: null,
+            retryStatus: "failed",
+            provisions: 1,
+            removals: 1,
+            setups: 0,
+            checkpoints: 0,
+            recoveryNamesSurvivor: true,
+            recoveryExplainsCleanup: true,
+          },
+        );
+      }
     }).pipe(Effect.provide(harness.layer));
   }),
 );
@@ -2809,7 +2953,7 @@ it.effect("shared intake preserves durable attachment bytes after a lost launch 
   }).pipe(Effect.provide(Layer.mergeAll(harness.layer, layerFiles)));
 });
 
-it.effect("cancels tracked setup before provider work is released", () =>
+it.effect.each([false, true])("cancels tracked setup, adopted=%s", (adopted) =>
   Effect.gen(function* () {
     const entered = yield* Deferred.make<void>();
     const harness = makeHarness({
@@ -2824,16 +2968,32 @@ it.effect("cancels tracked setup before provider work is released", () =>
         command: "launch:cancel-tracked",
         thread: "thread:cancel-tracked",
         message: "Start",
-        workspace: { type: "worktree", baseRef: "main" },
+        workspace: { type: "worktree", baseRef: "main", branch: "feature" },
       });
       const launched = yield* launches.launch(input);
       yield* Deferred.await(entered);
       assert.equal((yield* tracker.get(launched.threadId))?.phase, "running");
+      const beforeCancel = yield* threads.getThreadProjection(launched.threadId);
+      assert.equal(beforeCancel.thread.worktreePath, "/repo-worktrees/feature");
+      if (adopted) {
+        yield* threads.dispatch({
+          type: "thread.metadata.update",
+          commandId: CommandId.make("launch:cancel-tracked:adopt"),
+          threadId: input.threadId,
+          worktreePath: beforeCancel.thread.worktreePath,
+          branch: beforeCancel.thread.branch,
+        });
+      }
       assert.isTrue(yield* tracker.cancel(launched.threadId));
       assert.equal((yield* tracker.get(launched.threadId))?.phase, "cancelled");
       const projection = yield* threads.getThreadProjection(launched.threadId);
       assert.equal(projection.runs[0]?.status, "failed");
-      assert.isNull(projection.thread.worktreePath);
+      assert.equal(
+        projection.thread.worktreePath,
+        adopted ? beforeCancel.thread.worktreePath : null,
+      );
+      assert.equal(projection.thread.branch, adopted ? beforeCancel.thread.branch : null);
+      assert.equal(harness.removeWorktree.mock.calls.length, adopted ? 0 : 1);
       assert.isEmpty(yield* outbox.listByCommandId(CommandId.make(`${input.commandId}:release`)));
     }).pipe(Effect.provide(harness.layer));
   }),
