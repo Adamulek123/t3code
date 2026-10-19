@@ -2788,172 +2788,6 @@ describe("OpenCodeAdapterV2", () => {
   });
 });
 
-describe("OpenCode fork and resume permissions", () => {
-  const policies = [
-    {
-      name: "session policy",
-      policy: undefined,
-      bash: "allow",
-      edit: "allow",
-      external: "allow",
-    },
-    {
-      name: "supervised override",
-      policy: runtimePolicy("approval-required"),
-      bash: "ask",
-      edit: "ask",
-      external: "ask",
-    },
-    {
-      name: "auto-accept edits override",
-      policy: runtimePolicy("auto-accept-edits"),
-      bash: "ask",
-      edit: "allow",
-      external: "ask",
-    },
-    {
-      name: "read-only override",
-      policy: runtimePolicy("full-access", {
-        approvalPolicy: "never",
-        sandboxPolicy: { type: "readOnly", access: { type: "fullAccess" } },
-      }),
-      bash: "deny",
-      edit: "deny",
-      external: "allow",
-    },
-  ] as const;
-
-  const operations = ["fork", "resume", "ensure"] as const;
-  it.effect.each(
-    operations.flatMap((operation) => policies.map((test) => ({ operation, ...test }))),
-  )("applies $name before returning from $operation", (test) =>
-    Effect.gen(function* () {
-      const { operation } = test;
-      const nativeEvents = asyncEventStream();
-      const permissions = new Map<string, ReturnType<typeof openCodePermissionRules>>();
-      const nativeSession = (id: string) => ({ id, time: { created: 1, updated: 2 } });
-      const harness = yield* makeOpenCodeRuntimeHarness(`permissions-${operation}`, "source", {
-        event: { subscribe: async () => ({ stream: nativeEvents.stream }) },
-        session: {
-          create: async ({
-            permission,
-          }: {
-            permission: ReturnType<typeof openCodePermissionRules>;
-          }) => {
-            permissions.set("source", permission);
-            return { data: nativeSession("source") };
-          },
-          get: async ({ sessionID }: { sessionID: string }) => ({
-            data: nativeSession(sessionID),
-          }),
-          // Native forks copy messages but leave their permission policy unset.
-          fork: async () => ({ data: nativeSession("target") }),
-          update: async (input: {
-            sessionID: string;
-            permission: ReturnType<typeof openCodePermissionRules>;
-          }) => {
-            permissions.set(input.sessionID, input.permission);
-            return { data: nativeSession(input.sessionID) };
-          },
-        },
-      });
-      const restored = {
-        ...harness.providerThread,
-        nativeThreadRef: { ...harness.providerThread.nativeThreadRef!, nativeId: "target" },
-      };
-      const policy = test.policy;
-      const result =
-        operation === "fork"
-          ? yield* harness.runtime.forkThread({
-              sourceProviderThread: harness.providerThread,
-              targetThreadId: ThreadId.make("permission-target"),
-              ...(policy === undefined ? {} : { runtimePolicy: policy }),
-            })
-          : operation === "resume"
-            ? yield* harness.runtime.resumeThread({
-                providerThread: restored,
-                ...(policy === undefined ? {} : { runtimePolicy: policy }),
-              })
-            : yield* harness.runtime.ensureThread({
-                threadId: harness.threadId,
-                modelSelection: {
-                  instanceId: harness.runtime.instanceId,
-                  model: "anthropic/claude-sonnet",
-                  options: [],
-                },
-                existingProviderThread: restored,
-                runtimePolicy: policy ?? harness.policy,
-              });
-      assert.equal(result.nativeThreadRef?.nativeId, "target");
-      const installed = permissions.get("target");
-      assert.isDefined(installed);
-      assert.equal(permissionAction(installed!, "bash"), test.bash);
-      assert.equal(permissionAction(installed!, "edit"), test.edit);
-      assert.equal(permissionAction(installed!, "external_directory"), test.external);
-      assert.equal(permissionAction(permissions.get("source")!, "bash"), "allow");
-    }).pipe(
-      Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
-      Effect.scoped,
-    ),
-  );
-
-  it.effect.each(operations)("fails %s if the native permission update is rejected", (operation) =>
-    Effect.gen(function* () {
-      const nativeEvents = asyncEventStream();
-      const nativeSession = (id: string) => ({ id, time: { created: 1, updated: 2 } });
-      const harness = yield* makeOpenCodeRuntimeHarness(
-        `permissions-error-${operation}`,
-        "source",
-        {
-          event: { subscribe: async () => ({ stream: nativeEvents.stream }) },
-          session: {
-            create: async () => ({ data: nativeSession("source") }),
-            get: async () => ({ data: nativeSession("target") }),
-            fork: async () => ({ data: nativeSession("target") }),
-            update: async () => {
-              throw new Error("Permission update rejected");
-            },
-          },
-        },
-      );
-      const restored = {
-        ...harness.providerThread,
-        nativeThreadRef: { ...harness.providerThread.nativeThreadRef!, nativeId: "target" },
-      };
-      const effect =
-        operation === "fork"
-          ? harness.runtime.forkThread({
-              sourceProviderThread: harness.providerThread,
-              targetThreadId: ThreadId.make("permission-target"),
-            })
-          : operation === "resume"
-            ? harness.runtime.resumeThread({ providerThread: restored })
-            : harness.runtime.ensureThread({
-                threadId: harness.threadId,
-                modelSelection: {
-                  instanceId: harness.runtime.instanceId,
-                  model: "anthropic/claude-sonnet",
-                  options: [],
-                },
-                existingProviderThread: restored,
-                runtimePolicy: harness.policy,
-              });
-      const error = yield* effect.pipe(Effect.flip);
-      assert.equal(
-        error._tag,
-        operation === "fork"
-          ? "ProviderAdapterForkThreadError"
-          : operation === "resume"
-            ? "ProviderAdapterResumeThreadError"
-            : "ProviderAdapterEnsureThreadError",
-      );
-    }).pipe(
-      Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
-      Effect.scoped,
-    ),
-  );
-});
-
 it.effect.each([false, true])(
   "OpenCode rewind forks history and validates the retained boundary, invalid=%s",
   (invalid) =>
@@ -3015,6 +2849,99 @@ it.effect.each([false, true])(
         assert.equal(result.messages.length, 0);
         assert.deepEqual(calls, ["fork", "permissions"]);
       }
+    }).pipe(
+      Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
+      Effect.scoped,
+    ),
+);
+
+const runOpenCodePermissionOperation = Effect.fn("runOpenCodePermissionOperation")(function* (
+  operation: "fork" | "resume" | "ensure",
+  explicitPolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy | undefined,
+  update: (input: {
+    sessionID: string;
+    permission: ReturnType<typeof openCodePermissionRules>;
+  }) => Promise<unknown>,
+) {
+  const nativeSession = (id: string) => ({ id, time: { created: 1, updated: 2 } });
+  const harness = yield* makeOpenCodeRuntimeHarness(`permissions-${operation}`, "source", {
+    event: { subscribe: async () => ({ stream: asyncEventStream().stream }) },
+    session: {
+      create: async () => ({ data: nativeSession("source") }),
+      get: async ({ sessionID }: { sessionID: string }) => ({ data: nativeSession(sessionID) }),
+      fork: async () => ({ data: nativeSession("target") }),
+      update,
+    },
+  });
+  const restored = {
+    ...harness.providerThread,
+    nativeThreadRef: { ...harness.providerThread.nativeThreadRef!, nativeId: "target" },
+  };
+  const policy = explicitPolicy === undefined ? {} : { runtimePolicy: explicitPolicy };
+  if (operation === "fork")
+    return yield* harness.runtime.forkThread({
+      sourceProviderThread: harness.providerThread,
+      targetThreadId: ThreadId.make("permission-target"),
+      ...policy,
+    });
+  if (operation === "resume")
+    return yield* harness.runtime.resumeThread({ providerThread: restored, ...policy });
+  return yield* harness.runtime.ensureThread({
+    threadId: harness.threadId,
+    modelSelection: {
+      instanceId: harness.runtime.instanceId,
+      model: "anthropic/claude-sonnet",
+      options: [],
+    },
+    existingProviderThread: restored,
+    runtimePolicy: explicitPolicy ?? harness.policy,
+  });
+});
+
+it.effect.each([
+  { operation: "fork", explicit: true },
+  { operation: "resume", explicit: true },
+  { operation: "ensure", explicit: true },
+  { operation: "fork", explicit: false },
+  { operation: "resume", explicit: false },
+] as const)(
+  "OpenCode $operation installs the selected permission policy, explicit=$explicit",
+  ({ operation, explicit }) =>
+    Effect.gen(function* () {
+      // The harness session runs full-access, so a supervised override is distinguishable.
+      const expected = explicit
+        ? runtimePolicy("approval-required")
+        : runtimePolicy("full-access", { cwd: "/workspace" });
+      const installed = new Map<string, ReturnType<typeof openCodePermissionRules>>();
+      const result = yield* runOpenCodePermissionOperation(
+        operation,
+        explicit ? expected : undefined,
+        async ({ sessionID, permission }) => {
+          installed.set(sessionID, permission);
+          return { data: {} };
+        },
+      );
+      assert.equal(result.nativeThreadRef?.nativeId, "target");
+      assert.deepEqual(installed.get("target"), openCodePermissionRules(expected));
+    }).pipe(
+      Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
+      Effect.scoped,
+    ),
+);
+
+it.effect.each(["fork", "resume", "ensure"] as const)(
+  "OpenCode %s fails when the native permission update is rejected",
+  (operation) =>
+    Effect.gen(function* () {
+      const error = yield* runOpenCodePermissionOperation(operation, undefined, async () => {
+        throw new Error("Permission update rejected");
+      }).pipe(Effect.flip);
+      const expectedTag = {
+        fork: "ProviderAdapterForkThreadError",
+        resume: "ProviderAdapterResumeThreadError",
+        ensure: "ProviderAdapterEnsureThreadError",
+      }[operation];
+      assert.equal(error._tag, expectedTag);
     }).pipe(
       Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
       Effect.scoped,
