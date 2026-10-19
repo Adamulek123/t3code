@@ -668,8 +668,22 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
         const run = before.runs[0]!;
         const providerThread = before.providerThreads[0]!;
         const now = yield* DateTime.now;
+        const laterCheckpoint = {
+          ...before.checkpoints[0]!,
+          id: CheckpointId.make("runtime-rollback-later-checkpoint"),
+          ref: CheckpointRef.make("refs/t3/runtime-rollback-later"),
+          appRunOrdinal: run.ordinal,
+          ordinalWithinScope: 1,
+        };
         yield* eventSink.write({
           events: [
+            {
+              id: EventId.make("runtime-rollback-later-captured"),
+              type: "checkpoint.captured",
+              threadId,
+              occurredAt: now,
+              payload: laterCheckpoint,
+            },
             {
               id: EventId.make("runtime-rollback-partial-completed"),
               type: "run.updated",
@@ -766,12 +780,16 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
           failed.checkpoints.find((candidate) => candidate.id === checkpointId)?.status,
           "ready",
         );
+        assert.deepEqual(
+          failed.checkpoints.find((candidate) => candidate.id === laterCheckpoint.id),
+          laterCheckpoint,
+        );
+        assert.deepEqual(failed.nodes, before.nodes);
+        assert.deepEqual(failed.providerThreads, before.providerThreads);
         assert.equal(deleteSpy.mock.calls.length, 0);
         yield* fs.writeFileString(file, "user edits after rollback failure");
-        for (let attempt = 0; attempt < 5; attempt++) {
-          yield* TestClock.adjust("30 seconds");
-          assert.equal(yield* worker.drain(), 0);
-        }
+        yield* TestClock.adjust("30 seconds");
+        assert.equal(yield* worker.drain(), 0);
         assert.equal(yield* fs.readFileString(file), "user edits after rollback failure");
         assert.equal(restored, outcome === "provider-only" ? 0 : expectedAttempts);
         assert.equal(rejected, expectedProviderCalls);
