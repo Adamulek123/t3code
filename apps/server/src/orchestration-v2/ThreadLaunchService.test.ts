@@ -3,6 +3,7 @@ import * as WorktreeSetupTracker from "../project/WorktreeSetupTracker.ts";
 import * as ProjectCloneTracker from "../project/ProjectCloneTracker.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
 import * as FileSystem from "effect/FileSystem";
 import * as ServerConfig from "../config.ts";
 import { createPendingAttachmentId, resolveAttachmentPath } from "../attachmentStore.ts";
@@ -161,7 +162,9 @@ function makeHarness(options: HarnessOptions = {}) {
     options.generateTitle ?? (() => Effect.succeed({ title: "Generated title" })),
   );
   const layerExternalServices = Layer.mergeAll(
-    options.pathExists ? FileSystem.layerNoop({ exists: options.pathExists }) : Layer.empty,
+    options.pathExists
+      ? FileSystem.layerNoop({ exists: options.pathExists })
+      : NodeFileSystem.layer,
     WorktreeSetupTracker.layer,
     Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({ get: () => Effect.succeed(null) }),
     Layer.mock(TerminalManager.TerminalManager)({ close: closeTerminal }),
@@ -1890,6 +1893,22 @@ it.effect("preserves an incomplete checkout and blocks Retry until its explicit 
         checkpoints: 0,
       },
     );
+
+    const threads = yield* ThreadManagement.ThreadManagementService;
+    const queued = yield* threads.sendToThread({
+      projectId,
+      commandId: CommandId.make("command:launch:survivor:follow-up"),
+      threadId: input.threadId,
+      messageId: MessageId.make("message:launch:survivor:follow-up"),
+      text: "Wait for a complete checkout",
+      attachments: [],
+      mode: "queue",
+      createdBy: "user",
+      creationSource: "web",
+    });
+    assert.equal(queued.delivery, "queued");
+    assert.equal(queued.run.queueHeld, true);
+    assert.isEmpty((yield* threads.getThreadProjection(input.threadId)).checkpointScopes);
 
     survivorExists = false;
     const recover = { ...retry, commandId: CommandId.make("command:launch:survivor:recover") };

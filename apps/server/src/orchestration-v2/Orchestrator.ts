@@ -451,6 +451,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "thread.active.reorder":
     case "thread.visit":
     case "thread.mark-unread":
+    case "thread.worktree-branch.renamed":
     case "thread.metadata.update":
     case "thread.pull-request.link":
     case "thread.pull-request.unlink":
@@ -1311,8 +1312,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (queuedRun === undefined) {
         return;
       }
-      // A message queued behind a worktree that was cancelled or never created
-      // would run in the project checkout instead, so it waits for the user.
+      // Queued messages wait for the user when checkout was cancelled or incomplete.
       const failedRun = latestExecutedRun(projection.runs);
       const failureClass =
         failedRun?.id === options?.failedRunId
@@ -1321,7 +1321,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const worktreeMissing =
         failedRun?.id === options?.endedRunId &&
         failedRun?.workspacePreparation?.type === "worktree" &&
-        projection.thread.worktreePath === null;
+        (projection.thread.worktreePath === null ||
+          (failedRun.completedWorkspace !== undefined &&
+            (failedRun.completedWorkspace === null ||
+              failedRun.completedWorkspace.worktreePath !== projection.thread.worktreePath ||
+              failedRun.completedWorkspace.bindingId !== projection.thread.workspaceBindingId)));
       const settings = yield* serverSettings.getSettings.pipe(Effect.orDie);
       const projectOverride =
         settings.projectSettingsOverrides[projection.thread.projectId]?.providerInstances?.[
@@ -2271,6 +2275,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       interactionMode: command.interactionMode,
       branch: command.branch,
       worktreePath: command.worktreePath,
+      workspaceBindingId: command.commandId,
       activeProviderThreadId: null,
       pullRequests: [],
       lineage: {
@@ -2448,6 +2453,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           | "thread.active.reorder"
           | "thread.mark-unread"
           | "thread.metadata.update"
+          | "thread.worktree-branch.renamed"
           | "thread.pull-request.link"
           | "thread.pull-request.unlink"
           | "thread.pull-request-link.sync"
@@ -2536,7 +2542,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
     }
     if (
-      command.type === "thread.metadata.update" &&
+      (command.type === "thread.metadata.update" ||
+        command.type === "thread.worktree-branch.renamed") &&
       command.expectedWorktreePath !== undefined &&
       command.expectedWorktreePath !== thread.worktreePath
     ) {
@@ -2547,7 +2554,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
     }
     if (
-      command.type === "thread.metadata.update" &&
+      (command.type === "thread.metadata.update" ||
+        command.type === "thread.worktree-branch.renamed") &&
       command.expectedBranch !== undefined &&
       command.expectedBranch !== thread.branch
     ) {
@@ -2555,6 +2563,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         commandId: command.commandId,
         commandType: command.type,
         cause: `Thread ${command.threadId} branch changed before the metadata update could be applied.`,
+      });
+    }
+    if (
+      (command.type === "thread.metadata.update" ||
+        command.type === "thread.worktree-branch.renamed") &&
+      command.expectedWorkspaceBindingId !== undefined &&
+      command.expectedWorkspaceBindingId !== (thread.workspaceBindingId ?? null)
+    ) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: `Thread ${command.threadId} workspace binding changed before the update could be applied.`,
       });
     }
     if (command.type === "thread.metadata.update" && command.expectedEmpty === true) {
@@ -2976,6 +2996,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         }
         case "thread.mark-unread":
           return { ...thread, lastVisitedAt: markUnreadVisitedAt };
+        case "thread.worktree-branch.renamed":
+          return { ...thread, branch: command.branch, updatedAt: now };
         case "thread.metadata.update": {
           const previousRecovery =
             thread.limitRecovery?.runId === command.limitRecovery?.runId &&
@@ -3016,6 +3038,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 : {}),
             ...(command.branch === undefined ? {} : { branch: command.branch }),
             ...(command.worktreePath === undefined ? {} : { worktreePath: command.worktreePath }),
+            ...(command.branch === undefined && command.worktreePath === undefined
+              ? {}
+              : { workspaceBindingId: command.commandId }),
             ...(command.linkedPullRequest === undefined
               ? {}
               : {
@@ -3316,6 +3341,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           return "thread.active-reordered" as const;
         case "thread.mark-unread":
           return "thread.marked-unread" as const;
+        case "thread.worktree-branch.renamed":
         case "thread.metadata.update":
         case "thread.title.regeneration.complete":
           return "thread.metadata-updated" as const;
@@ -4985,16 +5011,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         (candidate) => candidate.id === projection.thread.activeProviderThreadId,
       );
       const activeRun = projection.runs.find(isBlockingRun);
-      // A message queued during worktree setup can arrive after that setup failed
-      // without a worktree. It waits, held, like the messages queued before the
-      // failure, instead of starting in the project checkout.
+      // Late queued messages also wait when preparation left no usable checkout.
       const latestRun = latestExecutedRun(projection.runs);
       const worktreeMissingRun =
         activeRun === undefined &&
         dispatchMode.type === "queue_after_active" &&
         (latestRun?.status === "failed" || latestRun?.status === "interrupted") &&
         latestRun.workspacePreparation?.type === "worktree" &&
-        projection.thread.worktreePath === null
+        (projection.thread.worktreePath === null ||
+          (latestRun.completedWorkspace !== undefined &&
+            (latestRun.completedWorkspace === null ||
+              latestRun.completedWorkspace.worktreePath !== projection.thread.worktreePath ||
+              latestRun.completedWorkspace.bindingId !== projection.thread.workspaceBindingId)))
           ? latestRun
           : undefined;
       const queueBehindRun = activeRun ?? worktreeMissingRun;
@@ -5475,7 +5503,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             ? {}
             : { restartContinuationOfRunId: command.restartContinuationOfRunId }),
           ...(dispatchMode.type === "defer_start" && dispatchMode.workspaceStrategy !== undefined
-            ? { workspacePreparation: dispatchMode.workspaceStrategy }
+            ? {
+                workspacePreparation: dispatchMode.workspaceStrategy,
+                ...(dispatchMode.workspaceStrategy.type === "worktree"
+                  ? { completedWorkspace: null }
+                  : {}),
+              }
             : {}),
           ...(continuedTaskId === undefined ? {} : { delegatedTaskId: continuedTaskId }),
           ...wakeWorkStartedAt(projection.runs, command),
@@ -8050,7 +8083,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     });
 
   const loadProjectionForCommand = <K extends ProjectionRecordField>(
-    command: OrchestrationV2Command,
+    command: OrchestrationV2ServerCommand,
     fields: ReadonlyArray<K>,
     filter?: ProjectionRecordFilter,
   ) =>
@@ -8064,7 +8097,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
   const preparedRunState = (
     command: Extract<
-      OrchestrationV2Command,
+      OrchestrationV2ServerCommand,
       {
         readonly type:
           | "prepared-run.release"
@@ -8105,7 +8138,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   };
 
   const dispatchPreparedRunProgress = (
-    command: Extract<OrchestrationV2Command, { readonly type: "prepared-run.progress" }>,
+    command: Extract<OrchestrationV2ServerCommand, { readonly type: "prepared-run.progress" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
   ) =>
     Effect.gen(function* () {
@@ -8122,7 +8155,55 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           cause: `Run ${command.runId} is not awaiting workspace preparation.`,
         });
       }
+      const workspace = command.completedWorkspace;
+      if (
+        workspace !== undefined &&
+        (command.phase !== "setup" ||
+          (state.run.workspacePreparation !== undefined &&
+            state.run.workspacePreparation.type !== "worktree") ||
+          workspace.expectedWorkspaceBindingId !== (projection.thread.workspaceBindingId ?? null))
+      ) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: "The prepared run no longer owns the workspace binding.",
+        });
+      }
       const now = yield* DateTime.now;
+      if (workspace !== undefined) {
+        yield* emit(
+          events,
+          command,
+        )({
+          type: "thread.metadata-updated",
+          threadId: command.threadId,
+          occurredAt: now,
+          payload: {
+            ...projection.thread,
+            worktreePath: workspace.worktreePath,
+            branch: workspace.branch,
+            workspaceBindingId: command.commandId,
+            updatedAt: now,
+          },
+        });
+        yield* emit(
+          events,
+          command,
+        )({
+          type: "run.updated",
+          threadId: command.threadId,
+          runId: state.run.id,
+          providerInstanceId: state.run.providerInstanceId,
+          occurredAt: now,
+          payload: {
+            ...state.run,
+            completedWorkspace: {
+              worktreePath: workspace.worktreePath,
+              bindingId: command.commandId,
+            },
+          },
+        });
+      }
       yield* emit(
         events,
         command,
@@ -8158,6 +8239,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           commandId: command.commandId,
           commandType: command.type,
           cause: `Run ${command.runId} is not awaiting workspace preparation.`,
+        });
+      }
+      if (
+        (state.run.workspacePreparation?.type === "worktree" ||
+          state.run.completedWorkspace !== undefined) &&
+        (state.run.completedWorkspace == null ||
+          state.run.completedWorkspace.worktreePath !== projection.thread.worktreePath ||
+          state.run.completedWorkspace.bindingId !== projection.thread.workspaceBindingId)
+      ) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: "The prepared run has no completed checkout at its current workspace binding.",
         });
       }
       const now = yield* DateTime.now;
@@ -10941,6 +11035,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "thread.pin.reorder":
       case "thread.active.reorder":
       case "thread.mark-unread":
+      case "thread.worktree-branch.renamed":
       case "thread.metadata.update":
       case "thread.pull-request.link":
       case "thread.pull-request.unlink":
