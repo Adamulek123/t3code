@@ -3087,79 +3087,69 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
       let activityReads = 0;
       const admission = yield* makeGitHubReadAdmissionFixture;
       let admissionTarget: "fingerprint" | "detail" | "activity" | null = "fingerprint";
-      const proveAdmission = <A, E, R>(
-        name: "fingerprint" | "detail" | "activity",
-        answer: Effect.Effect<A, E, R>,
-      ) => {
-        if (admissionTarget !== name) return answer;
-        admissionTarget = null;
-        return admission.proveBackgroundRead(name, answer);
-      };
+      const proveAdmission =
+        (name: "fingerprint" | "detail" | "activity") =>
+        <A, E, R>(answer: Effect.Effect<A, E, R>) => {
+          if (admissionTarget !== name) return answer;
+          admissionTarget = null;
+          return admission.proveBackgroundRead(name, answer);
+        };
       const reactor = yield* PullRequestWatchReactor.make.pipe(
         Effect.provide(
           Layer.mergeAll(
             NodeServices.layer,
             Layer.mock(PullRequestService.PullRequestService)({
               watchFingerprint: () =>
-                proveAdmission(
-                  "fingerprint",
-                  Effect.suspend(() =>
-                    fingerprint === "rate-limited"
-                      ? Effect.fail(
-                          new PullRequestOperationError({
-                            operation: "watchFingerprint",
+                Effect.suspend(() =>
+                  fingerprint === "rate-limited"
+                    ? Effect.fail(
+                        new PullRequestOperationError({
+                          operation: "watchFingerprint",
+                          detail: "paused",
+                          cause: new PullRequestProviderError({
+                            provider: SourceControlProviderKind.make("github"),
+                            operation: "getChangeRequestWatchFingerprint",
+                            reason: "rate-limited",
                             detail: "paused",
-                            cause: new PullRequestProviderError({
-                              provider: SourceControlProviderKind.make("github"),
-                              operation: "getChangeRequestWatchFingerprint",
-                              reason: "rate-limited",
-                              detail: "paused",
-                            }),
                           }),
-                        )
-                      : Effect.succeed(fingerprint),
-                  ),
-                ),
+                        }),
+                      )
+                    : Effect.succeed(fingerprint),
+                ).pipe(proveAdmission("fingerprint")),
               invalidate: () =>
                 Effect.sync(() => {
                   cachedChecks = null;
                 }),
               detail: () =>
-                proveAdmission(
-                  "detail",
-                  Effect.sync(() => {
-                    detailReads += 1;
-                    const answer = cachedChecks ?? checks;
-                    cachedChecks = null;
-                    return {
-                      ...watchedPullRequestDetail({
-                        projectId,
-                        number: 11,
-                        at: "2026-10-02T12:00:00.000Z",
-                      }),
-                      checks: Object.entries(answer).map(([name, status]) => ({
-                        name,
-                        status,
-                        description: null,
-                        url: null,
-                      })),
-                    };
-                  }),
-                ),
+                Effect.sync(() => {
+                  detailReads += 1;
+                  const answer = cachedChecks ?? checks;
+                  cachedChecks = null;
+                  return {
+                    ...watchedPullRequestDetail({
+                      projectId,
+                      number: 11,
+                      at: "2026-10-02T12:00:00.000Z",
+                    }),
+                    checks: Object.entries(answer).map(([name, status]) => ({
+                      name,
+                      status,
+                      description: null,
+                      url: null,
+                    })),
+                  };
+                }).pipe(proveAdmission("detail")),
               activity: () =>
-                proveAdmission(
-                  "activity",
-                  Effect.sync(() => {
-                    activityReads += 1;
-                    return {
-                      comments,
-                      commentCount: comments.length,
-                      commentsTruncated: false,
-                      reviewThreads: [],
-                      commits: [],
-                    };
-                  }),
-                ),
+                Effect.sync(() => {
+                  activityReads += 1;
+                  return {
+                    comments,
+                    commentCount: comments.length,
+                    commentsTruncated: false,
+                    reviewThreads: [],
+                    commits: [],
+                  };
+                }).pipe(proveAdmission("activity")),
             }),
           ),
         ),
@@ -3189,8 +3179,8 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
       for (let pass = 0; pass < 5; pass += 1) yield* reactor.sweep;
       assert.deepEqual(reads(), { detail: 3, activity: 1 });
 
-      admissionTarget = "activity";
       yield* TestClock.adjust("1 millis");
+      admissionTarget = "activity";
       comments = [
         {
           id: "comment-1",

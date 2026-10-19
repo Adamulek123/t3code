@@ -387,43 +387,11 @@ function applySync(
 }
 
 describe("PullRequestSyncReactor", () => {
-  it.effect(
-    "sync summary and stack reads yield to ordinary HTTP while retaining the synced stack",
-    () =>
-      Effect.scoped(
-        Effect.gen(function* () {
-          yield* TestClock.setTime(Date.parse(NOW));
-          const admission = yield* makeGitHubReadAdmissionFixture;
-          const nativeStack: PullRequestStack = {
-            id: "stack-7",
-            number: 3,
-            url: "https://github.com/owner/repository/stack/3",
-            base: "main",
-            layers: [{ number: 7, headBranch: "feature", state: "open" }],
-          };
-          const fixture = yield* makeHarness({
-            snapshot: makeSnapshot([makeThread("admission", { pullRequests: [makeLink(7)] })]),
-            summary: (input) =>
-              admission.proveBackgroundRead("summary", Effect.succeed(makeSummary(input))),
-            stack: () => admission.proveBackgroundRead("stack", Effect.succeed(nativeStack)),
-          });
-          yield* Effect.gen(function* () {
-            yield* startAndSweep(fixture);
-            assert.strictEqual((yield* Ref.get(fixture.summaryCalls)).length, 1);
-            assert.strictEqual((yield* Ref.get(fixture.stackCalls)).length, 1);
-            assert.deepStrictEqual((yield* Ref.get(fixture.syncCommands)).at(-1)?.stack, {
-              kind: "native",
-              ...nativeStack,
-            });
-          }).pipe(Effect.provide(fixture.layer));
-        }),
-      ),
-  );
-
   it.effect("retries a failed stack read after the summary becomes terminal", () =>
     Effect.scoped(
       Effect.gen(function* () {
         yield* TestClock.setTime(Date.parse(NOW));
+        const admission = yield* makeGitHubReadAdmissionFixture;
         let attempts = 0;
         const nativeStack: PullRequestStack = {
           id: "stack",
@@ -435,7 +403,10 @@ describe("PullRequestSyncReactor", () => {
         const fixture = yield* makeHarness({
           snapshot: makeSnapshot([makeThread("one", { pullRequests: [makeLink(7)] })]),
           summary: (input) =>
-            Effect.succeed(makeSummary(input, { state: "merged", mergedAt: NOW })),
+            admission.proveBackgroundRead(
+              "summary",
+              Effect.succeed(makeSummary(input, { state: "merged", mergedAt: NOW })),
+            ),
           stack: () =>
             ++attempts === 1
               ? Effect.fail(
@@ -444,7 +415,7 @@ describe("PullRequestSyncReactor", () => {
                     detail: "temporary failure",
                   }),
                 )
-              : Effect.succeed(nativeStack),
+              : admission.proveBackgroundRead("stack", Effect.succeed(nativeStack)),
         });
         yield* Effect.gen(function* () {
           const reactor = yield* startAndSweep(fixture);
