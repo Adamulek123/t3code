@@ -148,7 +148,7 @@ Press `Escape` while dragging to cancel.
 
 By default, environments settle inactive threads after three days and settle
 threads whose pull request merged. A closed pull request can also settle an idle
-thread. A thread with no messages or runs uses its creation time as the settlement timestamp.
+thread. An empty thread counts as inactive from the moment it was created.
 Work in progress, pending questions or approvals, and live background work
 prevent automatic settlement. An open pull request does not prevent inactivity
 settlement unless you turn on **Keep threads with a PR** in **Settings → General**,

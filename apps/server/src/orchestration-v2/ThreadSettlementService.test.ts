@@ -297,20 +297,17 @@ describe("resolveAutoSettlementAt", () => {
     expect(
       ThreadSettlementService.resolveAutoSettlementAt({ ...input, autoSettleAfterDays: null }),
     ).toBeNull();
-    expect(ThreadSettlementService.resolveAutoSettlementAt({ ...input, thread: shell() })).toEqual(
-      shell().createdAt,
-    );
   });
 
-  it("uses creation time for empty threads only after the inactivity window", () => {
+  it("anchors an empty thread's inactivity at its creation time", () => {
     const input = {
       thread: shell({ createdAt: at(-3 * DAY_MS) }),
       pullRequest: null,
       nowMs: NOW_MS,
       autoSettleAfterDays: 2,
-      autoSettleOnMerge: true,
+      autoSettleOnMerge: false,
     };
-    expect(ThreadSettlementService.resolveAutoSettlementAt(input)).toEqual(input.thread.createdAt);
+    expect(ThreadSettlementService.resolveAutoSettlementAt(input)).toEqual(at(-3 * DAY_MS));
     expect(
       ThreadSettlementService.resolveAutoSettlementAt({
         ...input,
@@ -320,16 +317,7 @@ describe("resolveAutoSettlementAt", () => {
     expect(
       ThreadSettlementService.resolveAutoSettlementAt({
         ...input,
-        thread: shell({ createdAt: at(-2 * DAY_MS) }),
-      }),
-    ).toBeNull();
-    expect(
-      ThreadSettlementService.resolveAutoSettlementAt({ ...input, autoSettleAfterDays: null }),
-    ).toBeNull();
-    expect(
-      ThreadSettlementService.resolveAutoSettlementAt({
-        ...input,
-        thread: shell({ createdAt: at(-3 * DAY_MS), pinnedAt: at(-DAY_MS) }),
+        thread: { ...input.thread, lastSnoozeWakeAt: at(-DAY_MS) },
       }),
     ).toBeNull();
   });
