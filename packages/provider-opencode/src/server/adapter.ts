@@ -1969,7 +1969,8 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
             ).pipe(Effect.option);
             const info = Option.getOrUndefined(response)?.data;
             if (info === undefined) return undefined;
-            const parentId = info?.parentID;
+            const parentId = info.parentID;
+            // A complete chain to an unregistered root may belong to another runtime.
             if (parentId === undefined) return null;
             hops.push(cursor);
             const owner = threads.get(parentId) ?? relatedSessionOwners.get(parentId);
@@ -1991,8 +1992,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
         ) {
           if (pendingChildRequestRoutes.has(nativeRequestId)) return;
           const routingSession = sessionEntity;
-          let unresolvedState: OpenCodeThreadState | null | undefined;
-          let provedForeign = false;
+          let lastResolvedOwner: OpenCodeThreadState | null | undefined;
           const attempt = Effect.gen(function* () {
             if (
               settledNativeRequestIds.has(nativeRequestId) ||
@@ -2001,9 +2001,8 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
               return true;
             }
             const state = yield* resolveSessionOwner(sessionId);
-            unresolvedState = state;
-            // Failed lookups preserve an observed unknown root; local ownership replaces it.
-            if (state !== undefined) provedForeign = state === null;
+            // Failed lookups cannot erase ownership evidence; later registration can replace it.
+            if (state !== undefined) lastResolvedOwner = state;
             const owner = state == null ? undefined : topLevelRequestOwner(state);
             if (owner === undefined) return false;
             yield* emitRuntimeRequest(owner, nativeRequestId, request);
@@ -2016,8 +2015,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
               yield* Effect.sleep(Duration.millis(Math.min(200 * 2 ** retry, 2_000)));
               if (yield* attempt) return;
             }
-            // A later lookup failure must not erase an observed unknown root.
-            if (provedForeign) return;
+            if (lastResolvedOwner === null) return;
             const detail =
               `OpenCode ${request.type} request ${nativeRequestId} could not be routed to an active thread.` +
               (request.type === "permission"
@@ -2027,11 +2025,8 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
               nativeSessionId: sessionId,
               providerSessionId: input.providerSessionId,
             });
-            // External servers broadcast other sessions' requests too. Reject
-            // only named questions whose parent chain belongs to this runtime.
-            // Permission rejection cancels every pending permission in the
-            // asking session, including requests from a newer owning turn.
-            if (unresolvedState !== undefined && request.type === "question") {
+            // Native permission rejection also cancels sibling requests in the same session.
+            if (lastResolvedOwner !== undefined && request.type === "question") {
               const rejected = yield* sdkCall(
                 "question.reject",
                 { requestID: nativeRequestId },

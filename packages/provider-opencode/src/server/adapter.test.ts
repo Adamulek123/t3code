@@ -650,7 +650,10 @@ describe("OpenCodeAdapterV2", () => {
           assert.isFalse(
             harness.received.some((event) => event.type === "runtime_request.updated"),
           );
-        }).pipe(Effect.provide(IdAllocator.layer), Effect.scoped),
+        }).pipe(
+          Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
+          Effect.scoped,
+        ),
     );
 
     it.effect.each(["success", "404", "failure", "timeout"] as const)(
@@ -717,7 +720,10 @@ describe("OpenCodeAdapterV2", () => {
             outcome === "failure" || outcome === "timeout" ? 1 : 0,
           );
           assert.lengthOf(rejections, 1);
-        }).pipe(Effect.provide(IdAllocator.layer), Effect.scoped),
+        }).pipe(
+          Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
+          Effect.scoped,
+        ),
     );
 
     it.effect("retains orphan permissions and their same-session siblings for a newer turn", () =>
@@ -799,7 +805,10 @@ describe("OpenCodeAdapterV2", () => {
           assert.equal(request.providerTurnId, current.providerTurns.at(-1)?.id);
         }
         assert.isEmpty(cancelled);
-      }).pipe(Effect.provide(IdAllocator.layer), Effect.scoped),
+      }).pipe(
+        Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
+        Effect.scoped,
+      ),
     );
 
     it.effect.each(["permission", "question"] as const)(
@@ -852,7 +861,10 @@ describe("OpenCodeAdapterV2", () => {
           const snapshot = yield* harness.runtime.readThreadSnapshot({ providerThread: resumed });
           assert.isEmpty(snapshot.providerTurns);
           assert.isEmpty(snapshot.runtimeRequests);
-        }).pipe(Effect.provide(IdAllocator.layer), Effect.scoped),
+        }).pipe(
+          Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
+          Effect.scoped,
+        ),
     );
 
     it.effect("captures session state before the initial owner lookup yields", () =>
@@ -886,7 +898,10 @@ describe("OpenCodeAdapterV2", () => {
           providerThread: harness.providerThread,
         });
         assert.equal(snapshot.providerTurns.at(-1)?.status, "completed");
-      }).pipe(Effect.provide(IdAllocator.layer), Effect.scoped),
+      }).pipe(
+        Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
+        Effect.scoped,
+      ),
     );
 
     it.effect.each(["success", "failure"] as const)(
@@ -941,7 +956,10 @@ describe("OpenCodeAdapterV2", () => {
             providerThread: harness.providerThread,
           });
           assert.equal(snapshot.providerTurns.at(-1)?.status, "running");
-        }).pipe(Effect.provide(IdAllocator.layer), Effect.scoped),
+        }).pipe(
+          Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
+          Effect.scoped,
+        ),
     );
   });
 
