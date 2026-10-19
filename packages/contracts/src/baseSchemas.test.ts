@@ -21,7 +21,6 @@ const Shape = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("square"), side: Schema.Number }),
 ]);
 const members = Shape.members;
-/** How clients decode: the JSON wire codec over the runtime schema. */
 const fromWire = <S extends Schema.Top>(schema: S) =>
   Schema.decodeUnknownSync(Schema.toCodecJson(schema) as never) as (value: unknown) => S["Type"];
 
@@ -48,8 +47,9 @@ describe("ForwardCompatibleArray", () => {
     ]);
   });
 
-  it("sends an element it cannot encode as a hole instead of failing the array", () => {
-    const Named = ForwardCompatibleArray(Schema.Struct({ name: TrimmedNonEmptyString }));
+  const Named = ForwardCompatibleArray(Schema.Struct({ name: TrimmedNonEmptyString }));
+
+  it("drops an element it cannot encode instead of failing the array", () => {
     const wire = JSON.parse(
       JSON.stringify(
         Schema.encodeUnknownSync(Schema.toCodecJson(Named))([
@@ -59,8 +59,31 @@ describe("ForwardCompatibleArray", () => {
         ]),
       ),
     );
-    expect(wire).toEqual([{ name: "a" }, null, { name: "b" }]);
+    expect(wire).toEqual([{ name: "a" }, { name: "b" }]);
     expect(fromWire(Named)(wire)).toEqual([{ name: "a" }, { name: "b" }]);
+  });
+
+  it("drops it too when a wrapper reads the encoded array as JSON values", () => {
+    const Wrapped = Schema.Array(Schema.Unknown).pipe(Schema.decodeTo(Named));
+    expect(
+      Schema.encodeUnknownSync(Schema.toCodecJson(Wrapped))([{ name: "a" }, { name: " " }]),
+    ).toEqual([{ name: "a" }]);
+  });
+
+  it("still drops the null holes a server on an earlier build sends", () => {
+    expect(fromWire(Named)([{ name: "a" }, null, { name: "b" }])).toEqual([
+      { name: "a" },
+      { name: "b" },
+    ]);
+  });
+
+  it("does not accept holes as a decoded value", () => {
+    expect(Schema.is(Named)([undefined])).toBe(false);
+    const sparse: Array<{ name: string }> = [{ name: "a" }];
+    sparse.length = 2;
+    expect(Schema.is(Named)(sparse)).toBe(false);
+    expect(() => Named.make(sparse)).toThrow();
+    expect(Schema.is(Named)([{ name: "a" }])).toBe(true);
   });
 });
 
@@ -162,8 +185,6 @@ describe("trimmed non-empty strings", () => {
     ...entityIds.map((name) => [name, BaseSchemas[name]] as const),
   ] as const;
 
-  // Schema-derived strings are rarely padded, so pad them with every kind of
-  // whitespace `trim()` removes, and include whitespace-only values.
   const whitespace = Arbitrary.schema(
     Schema.Literals([" ", "\t", "\n", "\r\n", "\v", "\f", "\u00a0", "\u2028", "\u3000", "\ufeff"]),
   );

@@ -28,10 +28,7 @@ interface PendingRpcAckRequest {
 }
 
 const pendingRpcAckRequests = new Map<string, PendingRpcAckRequest>();
-const untrackedRpcAckMethods = new Set<string>([
-  WS_METHODS.previewAutomationConnect,
-  WS_METHODS.serverGetUsageSummary,
-]);
+const untrackedRpcAckMethods = new Set<string>([WS_METHODS.serverGetUsageSummary]);
 const longRunningRpcAckMethods = new Set<string>([
   WS_METHODS.serverUpdateProvider,
   WS_METHODS.serverRefreshProviders,
@@ -69,11 +66,6 @@ export function getSlowRpcAckRequests(): ReadonlyArray<SlowRpcAckRequest> {
   return getSlowRpcAckRequestsValue();
 }
 
-/**
- * Starts the slow-request timer for one in-flight unary RPC. `method` is the
- * bare WS method (used to decide whether and how long to wait); `tag` is the
- * human-readable label shown in the toast, which defaults to the method.
- */
 export function trackRpcRequestSent(requestId: string, method: string, tag = method): void {
   if (!shouldTrackRpcAck(method)) {
     return;

@@ -1,3 +1,4 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Effect's Crypto has no generateKeyPairSync.
 import * as NodeCrypto from "node:crypto";
 
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
@@ -147,8 +148,6 @@ describe("ApnsClient", () => {
         },
       });
 
-      // Without final content the card would freeze on its previous state;
-      // contentless ends dismiss quickly instead.
       const contentless = apns.makeLiveActivityRequest({
         event: "end",
         token: "token",
@@ -230,9 +229,6 @@ describe("ApnsClient", () => {
       expect(error).toMatchObject({
         teamId: "team-1",
         keyId: "key-1",
-        // The provider-token service quantizes iat to the reuse window, so
-        // the signing context carries the window start rather than the raw
-        // request time.
         issuedAtUnixSeconds: 0,
         cause: expect.any(Error),
         message: "Failed to sign APNs JWT for key key-1.",
