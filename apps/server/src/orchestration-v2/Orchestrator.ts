@@ -468,6 +468,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "notification.delivery.accept":
     case "prepared-run.release":
     case "prepared-run.progress":
+    case "prepared-run.worktree-claimed":
     case "prepared-run.fail":
     case "prepared-run.retry":
     case "subagent.stop":
@@ -1312,7 +1313,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (queuedRun === undefined) {
         return;
       }
-      // Queued messages wait for the user when checkout was cancelled or incomplete.
+      // A message queued behind a worktree that was cancelled or never created
+      // would run in the project checkout instead, so it waits for the user.
       const failedRun = latestExecutedRun(projection.runs);
       const failureClass =
         failedRun?.id === options?.failedRunId
@@ -1321,11 +1323,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const worktreeMissing =
         failedRun?.id === options?.endedRunId &&
         failedRun?.workspacePreparation?.type === "worktree" &&
-        (projection.thread.worktreePath === null ||
-          (failedRun.completedWorkspace !== undefined &&
-            (failedRun.completedWorkspace === null ||
-              failedRun.completedWorkspace.worktreePath !== projection.thread.worktreePath ||
-              failedRun.completedWorkspace.bindingId !== projection.thread.workspaceBindingId)));
+        projection.thread.worktreePath === null;
       const settings = yield* serverSettings.getSettings.pipe(Effect.orDie);
       const projectOverride =
         settings.projectSettingsOverrides[projection.thread.projectId]?.providerInstances?.[
@@ -5018,11 +5016,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         dispatchMode.type === "queue_after_active" &&
         (latestRun?.status === "failed" || latestRun?.status === "interrupted") &&
         latestRun.workspacePreparation?.type === "worktree" &&
-        (projection.thread.worktreePath === null ||
-          (latestRun.completedWorkspace !== undefined &&
-            (latestRun.completedWorkspace === null ||
-              latestRun.completedWorkspace.worktreePath !== projection.thread.worktreePath ||
-              latestRun.completedWorkspace.bindingId !== projection.thread.workspaceBindingId)))
+        projection.thread.worktreePath === null
           ? latestRun
           : undefined;
       const queueBehindRun = activeRun ?? worktreeMissingRun;
@@ -8137,6 +8131,45 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     return { run, attempt, rootNode, providerThread, preparationItem } as const;
   };
 
+  const dispatchPreparedRunWorktreeClaimed = (
+    command: Extract<
+      OrchestrationV2ServerCommand,
+      { readonly type: "prepared-run.worktree-claimed" }
+    >,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+  ) =>
+    Effect.gen(function* () {
+      const projection = yield* loadProjectionForCommand(command, ["runs"]);
+      const run = projection.runs.find((candidate) => candidate.id === command.runId);
+      // Stop may commit before Git reports the path it has already created.
+      if (
+        run === undefined ||
+        (run.workspacePreparation !== undefined && run.workspacePreparation.type !== "worktree") ||
+        run.startedAt !== null
+      ) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: `Run ${command.runId} has no pending worktree preparation.`,
+        });
+      }
+      yield* emit(
+        events,
+        command,
+      )({
+        type: "run.updated",
+        threadId: command.threadId,
+        runId: run.id,
+        providerInstanceId: run.providerInstanceId,
+        occurredAt: yield* DateTime.now,
+        payload: {
+          ...run,
+          completedWorkspace: null,
+          claimedWorkspace: { worktreePath: command.worktreePath, branch: command.branch },
+        },
+      });
+    });
+
   const dispatchPreparedRunProgress = (
     command: Extract<OrchestrationV2ServerCommand, { readonly type: "prepared-run.progress" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
@@ -11084,6 +11117,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         break;
       case "prepared-run.progress":
         yield* dispatchPreparedRunProgress(command, events);
+        break;
+      case "prepared-run.worktree-claimed":
+        yield* dispatchPreparedRunWorktreeClaimed(command, events);
         break;
       case "prepared-run.fail":
         yield* dispatchPreparedRunFail(command, events);

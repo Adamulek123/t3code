@@ -2057,14 +2057,17 @@ it.effect.each([
       });
       yield* launches.launch(input);
       yield* Deferred.await(cleanupEntered);
-      yield* threads.dispatch({
-        type: "thread.metadata.update",
-        commandId: CommandId.make(`${input.commandId}:newer-binding`),
-        threadId: input.threadId,
-        worktreePath: binding.worktreePath,
-        branch: binding.branch,
-      });
+      const newerBinding = yield* threads
+        .dispatch({
+          type: "thread.metadata.update",
+          commandId: CommandId.make(`${input.commandId}:newer-binding`),
+          threadId: input.threadId,
+          worktreePath: binding.worktreePath,
+          branch: binding.branch,
+        })
+        .pipe(Effect.forkChild({ startImmediately: true }));
       yield* Deferred.succeed(cleanupResume, undefined);
+      yield* Fiber.join(newerBinding);
       const failed = yield* awaitPreparation(input.threadId, input.commandId);
       assert.equal(failed.runs[0]?.status, "failed");
       assert.equal(failed.thread.worktreePath, binding.worktreePath);

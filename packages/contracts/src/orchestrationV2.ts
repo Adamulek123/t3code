@@ -551,6 +551,10 @@ export const OrchestrationV2Run = Schema.Struct({
   ),
   delegatedCompletion: Schema.optional(OrchestrationV2DelegatedCompletionCohort),
   workspacePreparation: Schema.optional(OrchestrationV2ThreadLaunchWorkspaceStrategy),
+  /** A claimed checkout can survive failed provisioning without becoming the thread's workspace. */
+  claimedWorkspace: Schema.optional(
+    Schema.Struct({ worktreePath: TrimmedNonEmptyString, branch: TrimmedNonEmptyString }),
+  ),
   /** Null until checkout completes; absent on legacy runs that only published completed checkouts. */
   completedWorkspace: Schema.optional(
     Schema.NullOr(Schema.Struct({ worktreePath: TrimmedNonEmptyString, bindingId: CommandId })),
@@ -2989,6 +2993,14 @@ export type OrchestrationV2Command = typeof OrchestrationV2Command.Type;
  * send them.
  */
 const OrchestrationV2InternalCommand = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("prepared-run.worktree-claimed"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    runId: RunId,
+    worktreePath: TrimmedNonEmptyString,
+    branch: TrimmedNonEmptyString,
+  }),
   Schema.Struct({
     type: Schema.Literal("prepared-run.progress"),
     commandId: CommandId,
