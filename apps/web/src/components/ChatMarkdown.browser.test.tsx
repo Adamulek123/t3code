@@ -83,6 +83,7 @@ vi.mock(import("../hooks/useSettings"), async (original) => {
 import ChatMarkdown from "./ChatMarkdown";
 import { serializeTableElementToCsv, chatMarkdownClipboardPayload } from "../markdown-clipboard";
 import { captureAssistantTextSelection } from "../lib/assistantTextSelection";
+import { rehypePullRequestMentions } from "./pullRequest/pullRequestMentions";
 
 const roots: Root[] = [];
 
@@ -244,6 +245,59 @@ describe("ChatMarkdown table layout", () => {
       expect(cell.getBoundingClientRect().height).toBeCloseTo(expandedHeight, 0);
     },
   );
+});
+
+describe("GitHub mentions through the markdown pipeline", () => {
+  const extraRehypePlugins: NonNullable<Parameters<typeof ChatMarkdown>[0]["extraRehypePlugins"]> =
+    [
+      [
+        rehypePullRequestMentions,
+        { repositoryUrl: "https://github.com/pingdotgg/t3code", viewer: "Adamulek123" },
+      ],
+    ];
+
+  it("keeps lists, formatting, code, images and authored links intact", async () => {
+    const container = await renderText(
+      "- **Thanks @Adamulek123** and *@PixPMusic*.\n\n`@Adamulek123`\n\n```text\n@Adamulek123\n```\n\n[@Adamulek123](https://example.com)\n\n![ignore @Adamulek123](https://example.com/image.png)",
+      { extraRehypePlugins },
+    );
+    const links = [
+      ...container.querySelectorAll<HTMLAnchorElement>("a[data-pull-request-mention]"),
+    ];
+    expect(links.map((link) => [link.textContent, link.href])).toEqual([
+      ["@Adamulek123", "https://github.com/Adamulek123"],
+      ["@PixPMusic", "https://github.com/PixPMusic"],
+    ]);
+    expect(container.querySelector("li strong a")?.textContent).toBe("@Adamulek123");
+    expect(container.querySelector("em a")?.textContent).toBe("@PixPMusic");
+    expect(container.querySelector("code a")).toBeNull();
+    expect(container.querySelector("a[href='https://example.com']")?.textContent).toBe(
+      "@Adamulek123",
+    );
+    expect(links[0]?.querySelector("img")).toBeNull();
+  });
+
+  it("links mentions inside raw HTML details and tables after sanitization", async () => {
+    const container = await renderText(
+      "<details open><summary>Ask @PixPMusic</summary><table><tbody><tr><td>Thanks @Adamulek123</td></tr></tbody></table></details>",
+      { extraRehypePlugins },
+    );
+    expect(container.querySelector("[data-markdown-details-summary] a")?.textContent).toBe(
+      "@PixPMusic",
+    );
+    expect(container.querySelector("td a[data-pull-request-mention=self]")?.textContent).toBe(
+      "@Adamulek123",
+    );
+    expect(container.querySelectorAll("table")).toHaveLength(1);
+  });
+
+  it("preserves escaped and entity-authored text without turning it into a ping", async () => {
+    const container = await renderText("\\@Adamulek123 and &#64;PixPMusic, then @Adamulek123.", {
+      extraRehypePlugins,
+    });
+    expect(container.querySelectorAll("a[data-pull-request-mention]")).toHaveLength(1);
+    expect(container.textContent).toBe("@Adamulek123 and @PixPMusic, then @Adamulek123.");
+  });
 });
 
 describe("ChatMarkdown bare anchor placeholders", () => {

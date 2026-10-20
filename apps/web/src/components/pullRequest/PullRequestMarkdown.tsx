@@ -12,9 +12,11 @@ import { PULL_REQUESTS_PANEL_REF } from "~/rightPanelStore";
 import ChatMarkdown from "../ChatMarkdown";
 import { MediaVideoPlayer } from "../media/MediaVideoPlayer";
 import { remarkPullRequestAutolinks, splitPullRequestBody } from "./pullRequestMarkdown.logic";
+import { rehypePullRequestMentions } from "./pullRequestMentions";
 
 export const PullRequestMarkdownContext = createContext<{
   repositoryUrl: string | null;
+  viewer: string | null;
   threadRef: ScopedThreadRef | null;
 } | null>(null);
 
@@ -63,6 +65,9 @@ export function PullRequestMarkdown({
   const context = useContext(PullRequestMarkdownContext);
   const repositoryUrl = context?.repositoryUrl;
   const resolvedThreadRef = threadRef ?? context?.threadRef ?? undefined;
+  const extraRehypePlugins: NonNullable<ReactMarkdownOptions["rehypePlugins"]> = repositoryUrl
+    ? [[rehypePullRequestMentions, { repositoryUrl, viewer: context?.viewer }]]
+    : [];
   const extraRemarkPlugins: NonNullable<ReactMarkdownOptions["remarkPlugins"]> = repositoryUrl
     ? [[remarkPullRequestAutolinks, { repositoryUrl }]]
     : [];
@@ -70,6 +75,7 @@ export function PullRequestMarkdown({
     <div
       className={cn(
         "space-y-3 [&_[data-markdown-details]]:border-0 [&_[data-markdown-details-summary]]:text-foreground/80 [&_[data-markdown-details-summary]>svg]:text-muted-foreground/60",
+        "[&_[data-pull-request-mention]]:font-semibold [&_[data-pull-request-mention=self]]:rounded-sm [&_[data-pull-request-mention=self]]:bg-warning/20",
         className,
       )}
       data-image-gallery
@@ -85,6 +91,7 @@ export function PullRequestMarkdown({
               pullRequestPanelRef={resolvedThreadRef ?? PULL_REQUESTS_PANEL_REF}
               environmentId={environmentId}
               extraRemarkPlugins={extraRemarkPlugins}
+              extraRehypePlugins={extraRehypePlugins}
               githubMedia
             />
           );

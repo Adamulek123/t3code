@@ -561,11 +561,13 @@ function pullRequestMarkdownContext(
   hostClient: ReturnType<typeof sourceControlClients.get>,
   repositoryUrl: string | null,
   threadRef: ScopedThreadRef | null,
+  viewer: string | null,
 ) {
   return {
     repositoryUrl:
       repositoryUrl === null ? null : hostClient.referenceAutolinkRepositoryUrl(repositoryUrl),
     threadRef,
+    viewer,
   };
 }
 
@@ -797,7 +799,12 @@ export function PullRequestDetailPanel({
   const repositoryUrl = detail === null ? null : changeRequestRepositoryUrl(detail.url);
   const hostClient = sourceControlClients.get(detail?.provider);
   const openOnHostText = openOnHostLabel(hostClient);
-  const markdownContext = pullRequestMarkdownContext(hostClient, repositoryUrl, threadRef);
+  const markdownContext = pullRequestMarkdownContext(
+    hostClient,
+    repositoryUrl,
+    threadRef,
+    detail?.provider === "github" ? (detail.viewer ?? null) : null,
+  );
   const authorProfileUrl =
     detail?.author && repositoryUrl !== null
       ? hostClient.authorProfileUrl(detail.author.login, repositoryUrl)

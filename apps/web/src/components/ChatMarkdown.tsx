@@ -261,6 +261,7 @@ interface ChatMarkdownProps {
   workspaceMutationId?: string | null | undefined;
   onImageExpand?: ((preview: ExpandedImagePreview) => void) | undefined;
   extraRemarkPlugins?: NonNullable<ReactMarkdownOptions["remarkPlugins"]>;
+  extraRehypePlugins?: NonNullable<ReactMarkdownOptions["rehypePlugins"]>;
   renderContextReference?: ((reference: ChatMarkdownContextReference) => ReactNode) | undefined;
   /** Loads GitHub-hosted media through `cwd`'s GitHub credential, which a private repository's
       uploads need; without it those images and videos load unauthenticated and 404. */
@@ -330,6 +331,7 @@ export function shouldUseMarkdownFileBrowserPrimaryAction(input: {
 
 const EMPTY_MARKDOWN_SKILLS: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">> = [];
 const EMPTY_REMARK_PLUGINS: NonNullable<ReactMarkdownOptions["remarkPlugins"]> = [];
+const EMPTY_REHYPE_PLUGINS: NonNullable<ReactMarkdownOptions["rehypePlugins"]> = [];
 
 const ARTIFACT_TEMPLATE_ICON_BY_KIND = {
   document: FileTextIcon,
@@ -3021,7 +3023,8 @@ const CHAT_MARKDOWN_COMPONENTS = {
         resolveMarkdownFileLinkMeta(normalizedHref, cwd, imageBaseDir ?? cwd))
       : null;
     if (!fileLinkMeta) {
-      const faviconHost = resolveExternalWebLinkHost(href);
+      const isPullRequestMention = node?.properties.dataPullRequestMention !== undefined;
+      const faviconHost = isPullRequestMention ? null : resolveExternalWebLinkHost(href);
       const hasText = hastHasText(node);
       const pullRequestAutolink = String(
         (props as Record<string, unknown>)["data-pull-request-autolink"] ?? "",
@@ -3494,6 +3497,7 @@ function ChatMarkdown({
   lineBreaks = false,
   parseRawHtml = true,
   extraRemarkPlugins = EMPTY_REMARK_PLUGINS,
+  extraRehypePlugins = EMPTY_REHYPE_PLUGINS,
   ...props
 }: ChatMarkdownProps) {
   const {
@@ -3536,11 +3540,12 @@ function ChatMarkdown({
         <ChatMarkdownTextContext value={text}>
           <ReactMarkdown
             remarkPlugins={remarkPlugins}
-            rehypePlugins={
-              parseRawHtml
+            rehypePlugins={[
+              ...(parseRawHtml
                 ? CHAT_MARKDOWN_RENDER_REHYPE_PLUGINS
-                : CHAT_MARKDOWN_LITERAL_HTML_REHYPE_PLUGINS
-            }
+                : CHAT_MARKDOWN_LITERAL_HTML_REHYPE_PLUGINS),
+              ...extraRehypePlugins,
+            ]}
             skipHtml={false}
             components={CHAT_MARKDOWN_COMPONENTS}
             urlTransform={markdownUrlTransform}
