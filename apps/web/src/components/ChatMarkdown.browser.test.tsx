@@ -315,6 +315,34 @@ describe("GitHub mentions through the markdown pipeline", () => {
       "noopener,noreferrer",
     );
   });
+
+  it.each(["&#64;", "&#x40;", "&commat;", "\\@"])(
+    "links the literal occurrence after repeated %s mentions of the same person",
+    async (at) => {
+      const container = await renderText(
+        `${at}Adamulek123, ${at}Adamulek123, then @Adamulek123 and @Adamulek123.`,
+        { extraRehypePlugins },
+      );
+      const paragraph = container.querySelector("p")!;
+      expect(paragraph.firstChild?.textContent).toBe("@Adamulek123, @Adamulek123, then ");
+      expect(paragraph.querySelectorAll("a[data-pull-request-mention]")).toHaveLength(2);
+      expect(paragraph.querySelector("a")?.nextSibling?.textContent).toBe(" and ");
+      expect(paragraph.lastChild?.textContent).toBe(".");
+    },
+  );
+
+  it("keeps source alignment through unrelated escapes, entities and invalid at signs", async () => {
+    const container = await renderText(
+      "\\&commat;Adamulek123, &#64;Adamulek123, @@Adamulek123, \\* &amp; @Adamulek123 and @Ada&#109;ulek123.",
+      { extraRehypePlugins },
+    );
+    const paragraph = container.querySelector("p")!;
+    expect(paragraph.querySelectorAll("a[data-pull-request-mention]")).toHaveLength(1);
+    expect(paragraph.querySelector("a")?.previousSibling?.textContent).toBe(
+      "&commat;Adamulek123, @Adamulek123, @@Adamulek123, * & ",
+    );
+    expect(paragraph.querySelector("a")?.nextSibling?.textContent).toBe(" and @Adamulek123.");
+  });
 });
 
 describe("ChatMarkdown bare anchor placeholders", () => {

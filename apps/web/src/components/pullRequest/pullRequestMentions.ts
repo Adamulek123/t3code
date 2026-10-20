@@ -11,6 +11,23 @@ const IGNORED_ELEMENTS = new Set(["a", "code", "pre", "kbd", "samp", "script", "
 const MENTION_PATTERN = /@([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)/gu;
 const BEFORE_MENTION = /[\p{L}\p{N}_@/\\]/u;
 const AFTER_MENTION = /[\p{L}\p{N}_/-]/u;
+const AUTHORED_AT = /\\[!-/:-@[-`{-~]|&#0{0,5}64;|&#[xX]0{0,4}40;|&commat;|@/gu;
+
+function authoredMentionOffsets(value: string, authored: string) {
+  // Align every @, including escapes and entities, before matching usernames.
+  // Searching by username confuses an encoded mention with a later literal one.
+  const authoredAts = [...authored.matchAll(AUTHORED_AT)].filter(
+    (match) => match[0] === "@" || match[0] === "\\@" || match[0].startsWith("&"),
+  );
+  const renderedAts = [...value.matchAll(/@/gu)];
+  if (authoredAts.length !== renderedAts.length) return new Map<number, number>();
+  return new Map(
+    renderedAts.flatMap((match, index) => {
+      const sourceAt = authoredAts[index]!;
+      return sourceAt[0] === "@" ? [[match.index, sourceAt.index] as const] : [];
+    }),
+  );
+}
 
 /** Run after raw HTML and sanitization, so mentions in details work without trusting authored markers. */
 export function rehypePullRequestMentions(options: {
@@ -40,26 +57,20 @@ export function rehypePullRequestMentions(options: {
             : undefined;
         const parts: MentionNode[] = [];
         let cursor = 0;
-        let sourceCursor = 0;
+        const authoredOffsets =
+          authored === undefined ? undefined : authoredMentionOffsets(value, authored);
         for (const match of value.matchAll(MENTION_PATTERN)) {
           const login = match[1]!;
           const before = value[match.index - 1];
           const after = value[match.index + match[0].length];
-          const authoredIndex = authored?.indexOf(match[0], sourceCursor);
-          let backslashes = 0;
-          if (authoredIndex !== undefined && authoredIndex >= 0) {
-            sourceCursor = authoredIndex + match[0].length;
-            for (let index = authoredIndex - 1; index >= 0 && authored?.[index] === "\\"; index--) {
-              backslashes++;
-            }
-          }
+          const authoredIndex = authoredOffsets?.get(match.index);
           if (
             login.length > 39 ||
             login.includes("--") ||
             (before !== undefined && BEFORE_MENTION.test(before)) ||
             (after !== undefined && AFTER_MENTION.test(after)) ||
-            authoredIndex === -1 ||
-            backslashes % 2 === 1
+            (authored !== undefined &&
+              (authoredIndex === undefined || !authored.startsWith(match[0], authoredIndex)))
           ) {
             continue;
           }
