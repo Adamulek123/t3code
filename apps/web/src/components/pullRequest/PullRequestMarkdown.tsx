@@ -13,6 +13,7 @@ import ChatMarkdown from "../ChatMarkdown";
 import { MediaVideoPlayer } from "../media/MediaVideoPlayer";
 import { rehypePullRequestAutolinks, splitPullRequestBody } from "./pullRequestMarkdown.logic";
 import { rehypePullRequestMentions } from "./pullRequestMentions";
+import "./pullRequestMentions.css";
 
 export const PullRequestMarkdownContext = createContext<{
   repositoryUrl: string | null;
@@ -76,10 +77,10 @@ export function PullRequestMarkdown({
     <div
       className={cn(
         "space-y-3 [&_[data-markdown-details]]:border-0 [&_[data-markdown-details-summary]]:text-foreground/80 [&_[data-markdown-details-summary]>svg]:text-muted-foreground/60",
-        "[&_[data-pull-request-mention]]:font-semibold [&_[data-pull-request-mention=self]]:rounded-sm [&_[data-pull-request-mention=self]]:bg-warning/20",
         className,
       )}
       data-image-gallery
+      data-pull-request-markdown
     >
       {segments.map((segment) => {
         if (segment.kind === "markdown" || segment.media === "image") {

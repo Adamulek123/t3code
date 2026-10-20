@@ -1,0 +1,27 @@
+[data-pull-request-markdown] .chat-markdown a[data-pull-request-mention] {
+  border-radius: 0.25em;
+  color: var(--contrast-foreground);
+  font-weight: 600;
+}
+
+[data-pull-request-markdown] .chat-markdown a[data-pull-request-mention="self"] {
+  padding: 0.08em 0.24em;
+  color: var(--warning-foreground);
+  background-color: var(--warning-surface);
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
+[data-pull-request-markdown]
+  .chat-markdown
+  a[data-pull-request-mention]:is(:hover, :focus-visible) {
+  background-image: none;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+[data-pull-request-markdown] .chat-markdown a[data-pull-request-mention]:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
