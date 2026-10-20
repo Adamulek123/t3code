@@ -298,6 +298,23 @@ describe("GitHub mentions through the markdown pipeline", () => {
     expect(container.querySelectorAll("a[data-pull-request-mention]")).toHaveLength(1);
     expect(container.textContent).toBe("@Adamulek123 and @PixPMusic, then @Adamulek123.");
   });
+
+  it("shows the profile URL on hover and opens it through the link context menu", async () => {
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    const container = await renderText("Thanks @Adamulek123.", { extraRehypePlugins });
+    const link = container.querySelector<HTMLAnchorElement>("a[data-pull-request-mention]")!;
+    await act(() => userEvent.hover(link));
+    await expect
+      .poll(() => document.querySelector('[data-slot="tooltip-popup"][data-open]')?.textContent)
+      .toBe("https://github.com/Adamulek123");
+    await act(() => userEvent.click(link, { button: "right" }));
+    await act(() => userEvent.click(page.getByRole("button", { name: "Open in system browser" })));
+    expect(open).toHaveBeenCalledWith(
+      "https://github.com/Adamulek123",
+      "_blank",
+      "noopener,noreferrer",
+    );
+  });
 });
 
 describe("ChatMarkdown bare anchor placeholders", () => {
