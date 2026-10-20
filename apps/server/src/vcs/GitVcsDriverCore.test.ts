@@ -550,6 +550,8 @@ it.effect.each([
   "missing-head",
   "quoted-common-dir",
   "quoted-root",
+  "carriage-return-common-dir",
+  "carriage-return-root",
   "unsupported-ref",
 ])("falls back to full discovery for ambiguous batch output: %s", (shape) =>
   Effect.scoped(
@@ -572,7 +574,11 @@ it.effect.each([
                   ? ['".git"', cwd, validLines[2]]
                   : shape === "quoted-root"
                     ? [".git", `"${cwd}"`, validLines[2]]
-                    : [".git", cwd, "refs/tags/unsupported"];
+                    : shape === "carriage-return-common-dir"
+                      ? [".git\r", cwd, validLines[2]]
+                      : shape === "carriage-return-root"
+                        ? [".git", `${cwd}\r`, validLines[2]]
+                        : [".git", cwd, "refs/tags/unsupported"];
       const spawner = ChildProcessSpawner.make((command) => {
         if (ChildProcess.isStandardCommand(command)) {
           spawnedArgs.push(command.args);
@@ -598,6 +604,7 @@ it.effect.each([
       spawnedArgs.length = 0;
       const status = yield* driver.statusDetailsLocal(cwd);
       assert.equal(status.branch, initialBranch);
+      assert.equal(status.workingTree.rootPath, NodeFS.realpathSync.native(cwd));
       const refs = yield* driver.listRefs({ cwd });
       assert.isTrue(refs.refs.find((ref) => ref.name === initialBranch)?.current);
       assert.isTrue(refs.refs.some((ref) => ref.name === "feature/fallback"));
@@ -683,6 +690,36 @@ it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32")(
         const refs = yield* driver.listRefs({ cwd });
         assert.isTrue(refs.refs.find((ref) => ref.name === initialBranch)?.current);
         assert.isTrue(refs.refs.some((ref) => ref.name === "feature/newline"));
+      }),
+    ).pipe(Effect.provide(layerTest)),
+);
+
+it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32")(
+  "preserves a trailing carriage return in the repository root after creation through an alias",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const fs = yield* FileSystem.FileSystem;
+        const sandbox = yield* makeTmpDir();
+        const repository = path.join(sandbox, "repo\r");
+        const cwd = path.join(sandbox, "alias");
+        yield* fs.makeDirectory(repository);
+        const { initialBranch } = yield* initRepoWithCommit(repository);
+        NodeFS.symlinkSync(repository, cwd, "junction");
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        yield* driver.createWorktree({
+          cwd,
+          path: path.join(yield* makeTmpDir("git-worktrees-"), "created"),
+          refName: initialBranch,
+          newRefName: "feature/carriage-return",
+        });
+        const status = yield* driver.statusDetailsLocal(cwd);
+        assert.equal(status.workingTree.rootPath, NodeFS.realpathSync.native(repository));
+        assert.equal(status.branch, initialBranch);
+        const refs = yield* driver.listRefs({ cwd });
+        assert.isTrue(refs.isAtRepositoryRoot);
+        assert.isTrue(refs.refs.some((ref) => ref.name === "feature/carriage-return"));
       }),
     ).pipe(Effect.provide(layerTest)),
 );

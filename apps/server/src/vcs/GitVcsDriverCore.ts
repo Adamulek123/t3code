@@ -1446,8 +1446,8 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       ["rev-parse", "--git-common-dir", "--show-toplevel", "--symbolic-full-name", "HEAD"],
       { timeoutMs: 5_000, allowNonZeroExit: true },
     ).pipe(Effect.orElseSucceed(() => null));
-    // Line-delimited paths cannot distinguish embedded newlines from field separators.
-    const lines = result?.stdout.replace(/\r?\n$/, "").split(/\r?\n/);
+    // Git emits LF even on Windows. Preserve CR so ambiguous paths use full discovery.
+    const lines = result?.stdout.replace(/\n$/, "").split("\n");
     const [commonDirOutput, worktreeRootOutput, headRef] = lines ?? [];
     if (
       result?.exitCode !== 0 ||
