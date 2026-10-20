@@ -31,6 +31,8 @@ export type MarkdownNode = {
   children?: MarkdownNode[];
   url?: string;
   data?: unknown;
+  tagName?: string;
+  properties?: Record<string, unknown>;
 };
 
 export type TextMatch = {
@@ -50,7 +52,7 @@ export function findAndReplaceText(
     if (node.children === undefined) return;
     for (let childIndex = 0; childIndex < node.children.length; childIndex += 1) {
       const child = node.children[childIndex]!;
-      if (ignoredTypes.has(child.type)) continue;
+      if (ignoredTypes.has(child.tagName ?? child.type)) continue;
       if (child.type !== "text" || child.value === undefined) {
         visit(child);
         continue;

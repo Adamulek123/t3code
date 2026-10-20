@@ -84,6 +84,7 @@ import ChatMarkdown from "./ChatMarkdown";
 import { serializeTableElementToCsv, chatMarkdownClipboardPayload } from "../markdown-clipboard";
 import { captureAssistantTextSelection } from "../lib/assistantTextSelection";
 import { rehypePullRequestMentions } from "./pullRequest/pullRequestMentions";
+import { rehypePullRequestAutolinks } from "./pullRequest/pullRequestMarkdown.logic";
 
 const roots: Root[] = [];
 
@@ -254,6 +255,7 @@ describe("GitHub mentions through the markdown pipeline", () => {
         rehypePullRequestMentions,
         { repositoryUrl: "https://github.com/pingdotgg/t3code", viewer: "Adamulek123" },
       ],
+      [rehypePullRequestAutolinks, { repositoryUrl: "https://github.com/pingdotgg/t3code" }],
     ];
 
   it("keeps lists, formatting, code, images and authored links intact", async () => {
@@ -342,6 +344,41 @@ describe("GitHub mentions through the markdown pipeline", () => {
       "&commat;Adamulek123, @Adamulek123, @@Adamulek123, * & ",
     );
     expect(paragraph.querySelector("a")?.nextSibling?.textContent).toBe(" and @Adamulek123.");
+  });
+
+  it.each(["#123", "a".repeat(40)])(
+    "preserves escapes and repeated mentions on both sides of the reference %s",
+    async (reference) => {
+      const container = await renderText(
+        `\\@Adamulek123, &#64;Adamulek123, @Adamulek123 before ${reference}, then \\@Adamulek123, &commat;Adamulek123, @Adamulek123.`,
+        { extraRehypePlugins },
+      );
+      const paragraph = container.querySelector("p")!;
+      const mentions = [...paragraph.querySelectorAll("a[data-pull-request-mention]")];
+      expect(mentions).toHaveLength(2);
+      expect(mentions[0]?.previousSibling?.textContent).toBe("@Adamulek123, @Adamulek123, ");
+      expect(mentions[1]?.previousSibling?.textContent).toBe(", then @Adamulek123, @Adamulek123, ");
+      const autolink = paragraph.querySelector<HTMLAnchorElement>("a[data-pull-request-autolink]");
+      expect(autolink?.href).toBe(
+        reference === "#123"
+          ? "https://github.com/pingdotgg/t3code/issues/123"
+          : `https://github.com/pingdotgg/t3code/commit/${reference}`,
+      );
+      expect(autolink?.textContent).toBe(reference === "#123" ? reference : reference.slice(0, 7));
+    },
+  );
+
+  it("keeps reference links out of code, authored links and invalid word boundaries", async () => {
+    const sha = "a".repeat(40);
+    const container = await renderText(
+      `#123, ${sha}.\n\n\`#123 ${sha}\`\n\n\`\`\`text\n#123 ${sha}\n\`\`\`\n\n[#123 ${sha}](https://example.com)\n\nword#123 ${sha}x x${sha}`,
+      { extraRehypePlugins },
+    );
+    expect(container.querySelectorAll("a[data-pull-request-autolink]")).toHaveLength(2);
+    expect(container.querySelector("code a")).toBeNull();
+    expect(container.querySelector("a[href='https://example.com']")?.textContent).toBe(
+      `#123 ${sha}`,
+    );
   });
 });
 

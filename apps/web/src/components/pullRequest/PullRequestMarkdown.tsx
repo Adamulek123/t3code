@@ -11,7 +11,7 @@ import { PULL_REQUESTS_PANEL_REF } from "~/rightPanelStore";
 
 import ChatMarkdown from "../ChatMarkdown";
 import { MediaVideoPlayer } from "../media/MediaVideoPlayer";
-import { remarkPullRequestAutolinks, splitPullRequestBody } from "./pullRequestMarkdown.logic";
+import { rehypePullRequestAutolinks, splitPullRequestBody } from "./pullRequestMarkdown.logic";
 import { rehypePullRequestMentions } from "./pullRequestMentions";
 
 export const PullRequestMarkdownContext = createContext<{
@@ -66,10 +66,11 @@ export function PullRequestMarkdown({
   const repositoryUrl = context?.repositoryUrl;
   const resolvedThreadRef = threadRef ?? context?.threadRef ?? undefined;
   const extraRehypePlugins: NonNullable<ReactMarkdownOptions["rehypePlugins"]> = repositoryUrl
-    ? [[rehypePullRequestMentions, { repositoryUrl, viewer: context?.viewer }]]
-    : [];
-  const extraRemarkPlugins: NonNullable<ReactMarkdownOptions["remarkPlugins"]> = repositoryUrl
-    ? [[remarkPullRequestAutolinks, { repositoryUrl }]]
+    ? [
+        // Check authored mentions before reference links split text and discard positions.
+        [rehypePullRequestMentions, { repositoryUrl, viewer: context?.viewer }],
+        [rehypePullRequestAutolinks, { repositoryUrl }],
+      ]
     : [];
   return (
     <div
@@ -90,7 +91,6 @@ export function PullRequestMarkdown({
               threadRef={resolvedThreadRef}
               pullRequestPanelRef={resolvedThreadRef ?? PULL_REQUESTS_PANEL_REF}
               environmentId={environmentId}
-              extraRemarkPlugins={extraRemarkPlugins}
               extraRehypePlugins={extraRehypePlugins}
               githubMedia
             />

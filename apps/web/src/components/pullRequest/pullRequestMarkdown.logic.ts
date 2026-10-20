@@ -12,9 +12,9 @@ export {
 const AUTOLINK_CANDIDATE_PATTERN = /#[1-9]\d*|[0-9a-f]{40}/giu;
 const AUTOLINK_WORD_CHARACTER_PATTERN = /[A-Za-z0-9_]/u;
 const AUTOLINK_COMMIT_PREFIX_PATTERN = /[\s([{]/u;
-const AUTOLINK_IGNORED_TYPES = new Set(["link", "linkReference"]);
+const AUTOLINK_IGNORED_TYPES = new Set(["a", "code", "pre", "kbd", "samp", "script", "style"]);
 
-export function remarkPullRequestAutolinks(options: { readonly repositoryUrl: string }) {
+export function rehypePullRequestAutolinks(options: { readonly repositoryUrl: string }) {
   const repositoryUrl = options.repositoryUrl.replace(/\/+$/u, "");
   return (tree: MarkdownNode) => {
     findAndReplaceText(
@@ -34,14 +34,13 @@ export function remarkPullRequestAutolinks(options: { readonly repositoryUrl: st
           return false;
         }
         return {
-          type: "link",
-          url: reference
-            ? `${repositoryUrl}/issues/${matched.slice(1)}`
-            : `${repositoryUrl}/commit/${matched}`,
-          data: {
-            hProperties: {
-              dataPullRequestAutolink: reference ? "reference" : "commit",
-            },
+          type: "element",
+          tagName: "a",
+          properties: {
+            href: reference
+              ? `${repositoryUrl}/issues/${matched.slice(1)}`
+              : `${repositoryUrl}/commit/${matched}`,
+            dataPullRequestAutolink: reference ? "reference" : "commit",
           },
           children: [{ type: "text", value: reference ? matched : matched.slice(0, 7) }],
         };
