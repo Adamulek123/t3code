@@ -5,11 +5,17 @@
 }
 
 [data-pull-request-markdown] .chat-markdown a[data-pull-request-mention="self"] {
+  --mention-color: var(--color-amber-700);
   padding: 0.08em 0.24em;
-  color: var(--warning-foreground);
-  background-color: var(--warning-surface);
+  color: color-mix(in srgb, var(--mention-color) 30%, var(--color-foreground));
+  background-color: color-mix(in srgb, var(--mention-color) 8%, transparent);
   -webkit-box-decoration-break: clone;
   box-decoration-break: clone;
+}
+
+.dark [data-pull-request-markdown] .chat-markdown a[data-pull-request-mention="self"] {
+  color: color-mix(in srgb, var(--mention-color) 45%, var(--color-foreground));
+  background-color: color-mix(in srgb, var(--mention-color) 12%, transparent);
 }
 
 [data-pull-request-markdown]
