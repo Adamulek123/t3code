@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 import type { BranchNamingMode } from "@t3tools/contracts";
 import type { ReactNode } from "react";
 import { act } from "react";
@@ -17,7 +16,7 @@ const inputs = vi.hoisted(() => new Map<string, InputProps>());
 vi.mock("react-native", () => ({
   View: ({ children }: { children: ReactNode }) => <div>{children}</div>,
 }));
-vi.mock("../../../components/AppText", () => ({
+vi.mock("../../../components/ui/AppText", () => ({
   AppText: ({ children }: { children: ReactNode }) => <span>{children}</span>,
   AppTextInput: (props: InputProps) => {
     inputs.set(props.accessibilityLabel, props);
