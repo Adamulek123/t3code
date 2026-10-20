@@ -5,7 +5,7 @@
 }
 
 [data-pull-request-markdown] .chat-markdown a[data-pull-request-mention="self"] {
-  --mention-color: var(--color-amber-700);
+  --mention-color: var(--color-yellow-500);
   padding: 0.08em 0.24em;
   color: color-mix(in srgb, var(--mention-color) 30%, var(--color-foreground));
   background-color: color-mix(in srgb, var(--mention-color) 8%, transparent);
