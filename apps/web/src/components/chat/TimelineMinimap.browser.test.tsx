@@ -83,7 +83,349 @@ async function withMinimapPalette(run: () => Promise<void>) {
   }
 }
 
+function minimapWidthFrames() {
+  const requestFrame = window.requestAnimationFrame.bind(window);
+  const cancelFrame = window.cancelAnimationFrame.bind(window);
+  const matchMedia = window.matchMedia.bind(window);
+  const pending = new Map<number, FrameRequestCallback>();
+  const canceled: number[] = [];
+  const motionQueries: MediaQueryList[] = [];
+  let reducedMotion = false;
+  let requests = 0;
+  const motionSpy = vi.spyOn(window, "matchMedia").mockImplementation((query) => {
+    const media = matchMedia(query);
+    if (query === "(prefers-reduced-motion: reduce)") {
+      Object.defineProperty(media, "matches", { configurable: true, get: () => reducedMotion });
+      motionQueries.push(media);
+    }
+    return media;
+  });
+  const cancelSpy = vi.spyOn(window, "cancelAnimationFrame").mockImplementation((frame) => {
+    if (pending.delete(frame)) canceled.push(frame);
+    cancelFrame(frame);
+  });
+  const requestSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+    // Like the parent's pending-refresh test, intercept only this callback body.
+    // These local names are fragile across source edits or test transforms.
+    const source = callback.toString();
+    if (
+      !/rail\.frame\s*=\s*null/.test(source) ||
+      !/rail\.widths/.test(source) ||
+      !/rebuildCanvasRail\s*\(/.test(source)
+    ) {
+      return requestFrame(callback);
+    }
+    // Use a native ID to avoid collisions, but prevent native delivery immediately.
+    const frame = requestFrame(callback);
+    cancelFrame(frame);
+    requests += 1;
+    pending.set(frame, callback);
+    return frame;
+  });
+  const at = async (now: number, run: () => void) => {
+    // Only seed the interaction/commit being tested. No fake timers or frozen
+    // browser clock outside this act; RAF receives its timestamp explicitly.
+    using nowSpy = vi.spyOn(performance, "now").mockReturnValue(now);
+    await act(run);
+  };
+  return {
+    pending,
+    canceled,
+    get requests() {
+      return requests;
+    },
+    at,
+    reduceMotion(value: boolean) {
+      reducedMotion = value;
+      for (const media of motionQueries) media.dispatchEvent(new Event("change"));
+    },
+    async tick(now: number) {
+      expect(pending.size, "exactly one width RAF must be queued").toBe(1);
+      const [frame, callback] = pending.entries().next().value!;
+      pending.delete(frame);
+      await at(now, () => callback(now));
+    },
+    [Symbol.dispose]() {
+      for (const frame of pending.keys()) cancelFrame(frame);
+      pending.clear();
+      requestSpy.mockRestore();
+      cancelSpy.mockRestore();
+      motionSpy.mockRestore();
+    },
+  };
+}
+
+function pointMinimapAt(screen: Screen, fraction: number) {
+  const button = rail(screen);
+  const bounds = button.getBoundingClientRect();
+  button.dispatchEvent(
+    new MouseEvent("mousemove", {
+      bubbles: true,
+      clientY: bounds.top + bounds.height * fraction,
+    }),
+  );
+}
+
+function leaveMinimap(screen: Screen) {
+  // React derives onMouseLeave from mouseout, not a native mouseleave event.
+  rail(screen).dispatchEvent(
+    new MouseEvent("mouseout", { bubbles: true, relatedTarget: document.body }),
+  );
+}
+
+function minimapWidthFootprint(container: ParentNode, count: number, index: number) {
+  // Compare painted coverage, allowing the active color to change on retarget.
+  return Array.from(
+    { length: 24 },
+    (_, x) => minimapMarkerPixels(container, count, x)[index]![3]! > 0,
+  );
+}
+
 describe("TimelineMinimap", () => {
+  it("animates width in both 150ms directions and stops through scroll-only updates", async () => {
+    await withMinimapPalette(async () => {
+      using frames = minimapWidthFrames();
+      const ref = createRef<TimelineMinimapHandle>();
+      await using screen = await render(minimap(ref, items(), () => {}));
+      const alpha = (x: number) => minimapMarkerPixels(screen.container, 5, x)[2]![3]!;
+      await visible(ref, 9, 9);
+      expect(alpha(6)).toBeGreaterThan(200);
+      expect(alpha(10)).toBe(0);
+      await visible(ref, 1, 1);
+      await visible(ref, 9, 9);
+      expect(frames.requests).toBe(0);
+
+      await frames.at(1_000, () => pointMinimapAt(screen, 0.5));
+      expect(frames.pending.size, "hover must match and queue the width callback").toBe(1);
+      expect(alpha(6)).toBeGreaterThan(200);
+      expect(alpha(10)).toBe(0); // Still the original 8px tick at the start.
+      await frames.tick(1_075);
+      expect(alpha(18)).toBeGreaterThan(200);
+      expect(alpha(22)).toBe(0); // Between 8 and 24, with the original eased motion.
+      await frames.tick(1_149);
+      expect(frames.pending.size).toBe(1);
+      await frames.tick(1_150);
+      expect(alpha(22)).toBeGreaterThan(200);
+      expect(frames.pending.size).toBe(0);
+
+      const settledRequests = frames.requests;
+      await visible(ref, 13, 13); // Changes currentIndex as well as highlight pixels.
+      expect(paintedMinimapMarkerIndices(screen.container, 5)).toEqual([3]);
+      expect(alpha(22)).toBeGreaterThan(0); // Settled hover width survives scrolling.
+      await visible(ref, 9, 9);
+      expect(frames.requests).toBe(settledRequests);
+      expect(frames.pending.size).toBe(0);
+
+      await frames.at(1_200, () => leaveMinimap(screen));
+      expect(frames.pending.size).toBe(1);
+      expect(alpha(22)).toBeGreaterThan(200);
+      await frames.tick(1_275);
+      expect(alpha(9)).toBeGreaterThan(200);
+      expect(alpha(14)).toBe(0);
+      await frames.tick(1_349);
+      expect(frames.pending.size).toBe(1);
+      await frames.tick(1_350);
+      expect(alpha(6)).toBeGreaterThan(200);
+      expect(alpha(10)).toBe(0);
+      expect(frames.pending.size).toBe(0);
+      const finishedRequests = frames.requests;
+      await visible(ref, 1, 1);
+      await visible(ref, 17, 17);
+      expect(paintedMinimapMarkerIndices(screen.container, 5)).toEqual([4]);
+      expect(frames.requests).toBe(finishedRequests);
+      expect(frames.pending.size).toBe(0);
+    });
+  });
+
+  it("retargets from painted widths without extending unchanged targets and cancels on unmount", async () => {
+    await withMinimapPalette(async () => {
+      using frames = minimapWidthFrames();
+      const ref = createRef<TimelineMinimapHandle>();
+      await using screen = await render(minimap(ref, items(), () => {}));
+      await visible(ref, 9, 9);
+      const footprints = () =>
+        [2, 4].map((index) => minimapWidthFootprint(screen.container, 5, index));
+      await frames.at(2_000, () => pointMinimapAt(screen, 0.5));
+      await frames.tick(2_075);
+      const beforeRetarget = footprints();
+      await frames.at(2_075, () => pointMinimapAt(screen, 1));
+      expect(footprints()).toEqual(beforeRetarget);
+      expect(frames.pending.size).toBe(1);
+      await frames.tick(2_075);
+      expect(footprints()).toEqual(beforeRetarget); // The first retarget frame must not snap either.
+      await frames.tick(2_150);
+      // Index 3 is a neighbor of both active markers. Its 16px destination did
+      // not change, so the original deadline still applies.
+      expect(minimapMarkerPixels(screen.container, 5, 14)[3]![3]).toBeGreaterThan(0);
+      expect(minimapMarkerPixels(screen.container, 5, 18)[3]![3]).toBe(0);
+      const neighborAtOriginalDeadline = Array.from(
+        { length: 24 },
+        (_, x) => minimapMarkerPixels(screen.container, 5, x)[3],
+      );
+      expect(frames.pending.size).toBe(1);
+      await frames.tick(2_225);
+      expect(
+        Array.from({ length: 24 }, (_, x) => minimapMarkerPixels(screen.container, 5, x)[3]),
+      ).toEqual(neighborAtOriginalDeadline);
+      expect(minimapMarkerPixels(screen.container, 5, 12)[2]![3]).toBe(0);
+      expect(minimapMarkerPixels(screen.container, 5, 22)[4]![3]).toBeGreaterThan(0);
+      expect(frames.pending.size).toBe(0);
+
+      await frames.at(2_250, () => pointMinimapAt(screen, 0.5));
+      await frames.tick(2_325);
+      const beforeLeave = footprints();
+      await frames.at(2_325, () => leaveMinimap(screen));
+      expect(footprints()).toEqual(beforeLeave);
+      await frames.tick(2_325);
+      expect(footprints()).toEqual(beforeLeave);
+      const pendingFrame = [...frames.pending.keys()][0]!;
+      expect(frames.pending.size).toBe(1);
+      const canvas = minimapCanvas(screen.container);
+      await screen.unmount();
+      expect(frames.canceled).toContain(pendingFrame);
+      expect(frames.pending.size).toBe(0);
+      expect(canvas.width).toBe(0);
+      expect(canvas.height).toBe(0);
+    });
+  });
+
+  it("keeps both backings cleared until both lost contexts recover, in either order", async () => {
+    await withMinimapPalette(async () => {
+      const ref = createRef<TimelineMinimapHandle>();
+      const canvases: HTMLCanvasElement[] = [];
+      const originalBeginPath = CanvasRenderingContext2D.prototype.beginPath;
+      using contextCapture = vi
+        .spyOn(CanvasRenderingContext2D.prototype, "beginPath")
+        .mockImplementation(function (this: CanvasRenderingContext2D) {
+          if (!canvases.includes(this.canvas)) canvases.push(this.canvas);
+          originalBeginPath.call(this);
+        });
+      await using screen = await render(minimap(ref, items(), () => {}));
+      contextCapture.mockRestore();
+      await visible(ref, 5, 9);
+      const canvas = minimapCanvas(screen.container);
+      const base = canvases.find((candidate) => candidate !== canvas && !candidate.isConnected);
+      expect(base).toBeDefined();
+      const backings = [canvas, base!] as const;
+      const pixels = (target: HTMLCanvasElement) =>
+        Array.from(target.getContext("2d")!.getImageData(0, 0, target.width, target.height).data);
+      const expected = backings.map(pixels);
+      expect(expected.every((backing) => backing.some((value) => value !== 0))).toBe(true);
+      const expectCleared = () => {
+        for (const target of backings)
+          expect(pixels(target).every((value) => value === 0)).toBe(true);
+      };
+
+      for (const [first, last] of [backings, [base!, canvas]] as const) {
+        await act(() => {
+          for (const target of backings) {
+            target.dispatchEvent(new Event("contextlost", { cancelable: true }));
+            // Reset actual pixels AND context state. Events alone do neither.
+            const width = target.width;
+            target.width = width;
+          }
+        });
+        expectCleared();
+        await visible(ref, 13, 13);
+        expectCleared();
+        await act(() => first.dispatchEvent(new Event("contextrestored")));
+        expectCleared(); // A shared boolean resumes here and fails this assertion.
+        await visible(ref, 5, 9);
+        expectCleared(); // Imperative scroll painting must also stay blocked.
+        await act(() => last.dispatchEvent(new Event("contextrestored")));
+        expect(backings.map(pixels)).toEqual(expected);
+        expect(paintedMinimapMarkerIndices(screen.container, 5)).toEqual([1, 2]);
+      }
+    });
+  });
+
+  it("keeps the painted neighbor width across adjacent retargets without an intervening frame", async () => {
+    await withMinimapPalette(async () => {
+      // Exercise the overlapping neighborhoods in both traversal directions.
+      for (const [initialIndex, finalIndex] of [
+        [5, 7],
+        [7, 5],
+      ] as const) {
+        using frames = minimapWidthFrames();
+        const ref = createRef<TimelineMinimapHandle>();
+        const count = 9;
+        await using screen = await render(minimap(ref, items(count), () => {}));
+        const footprint = (index: number) => minimapWidthFootprint(screen.container, count, index);
+        const alpha = (index: number, x: number) =>
+          minimapMarkerPixels(screen.container, count, x)[index]![3]!;
+
+        await frames.at(4_000, () => pointMinimapAt(screen, initialIndex / (count - 1)));
+        await frames.tick(4_150);
+        expect(frames.pending.size).toBe(0);
+        expect(alpha(initialIndex, 22)).toBeGreaterThan(0); // Settled 24px active marker.
+        expect(alpha(6, 14)).toBeGreaterThan(0);
+        expect(alpha(6, 18)).toBe(0); // Its neighbor has painted 16px, never 24px.
+        const painted16 = footprint(6);
+        const painted24 = footprint(initialIndex);
+
+        await frames.at(4_200, () => pointMinimapAt(screen, 6 / (count - 1)));
+        expect(footprint(6)).toEqual(painted16);
+        expect(frames.pending.size).toBe(1);
+        // Separate React commits, but no width frame between the adjacent moves.
+        await frames.at(4_200, () => pointMinimapAt(screen, finalIndex / (count - 1)));
+        expect(footprint(6)).toEqual(painted16);
+        expect(alpha(6, 18)).toBe(0);
+        expect(frames.pending.size).toBe(1);
+        await frames.tick(4_200);
+        expect(footprint(6)).toEqual(painted16); // Same-timestamp frame cannot resurrect 24px.
+        expect(alpha(6, 18)).toBe(0);
+        await frames.tick(4_349);
+        expect(footprint(6)).toEqual(painted16);
+        expect(frames.pending.size).toBe(1);
+        await frames.tick(4_350);
+        expect(footprint(finalIndex)).toEqual(painted24);
+        expect(alpha(finalIndex, 22)).toBeGreaterThan(0);
+        expect(footprint(6)).toEqual(painted16);
+        expect(alpha(6, 14)).toBeGreaterThan(0);
+        expect(alpha(6, 18)).toBe(0);
+        expect(frames.pending.size).toBe(0);
+
+        const settledRequests = frames.requests;
+        await visible(ref, 1, 1);
+        await visible(ref, 1 + finalIndex * 4, 1 + finalIndex * 4);
+        expect(paintedMinimapMarkerIndices(screen.container, count)).toEqual([finalIndex]);
+        expect(footprint(finalIndex)).toEqual(painted24);
+        expect(footprint(6)).toEqual(painted16);
+        expect(frames.requests).toBe(settledRequests);
+        expect(frames.pending.size).toBe(0);
+      }
+    });
+  });
+
+  it("snaps and cancels width motion when reduced motion changes", async () => {
+    await withMinimapPalette(async () => {
+      using frames = minimapWidthFrames();
+      const ref = createRef<TimelineMinimapHandle>();
+      await using screen = await render(minimap(ref, items(), () => {}));
+      const alpha = (x: number) => minimapMarkerPixels(screen.container, 5, x)[2]![3]!;
+      await visible(ref, 9, 9);
+      await frames.at(5_000, () => pointMinimapAt(screen, 0.5));
+      expect(frames.pending.size).toBe(1);
+      expect(alpha(20)).toBe(0);
+      await act(() => frames.reduceMotion(true));
+      expect(frames.pending.size).toBe(0);
+      expect(frames.canceled.length).toBeGreaterThan(0);
+      expect(alpha(20)).toBeGreaterThan(200);
+      const requests = frames.requests;
+      await act(() => leaveMinimap(screen));
+      expect(alpha(20)).toBe(0);
+      await act(() => pointMinimapAt(screen, 0.5));
+      expect(alpha(20)).toBeGreaterThan(200);
+      expect(frames.requests).toBe(requests);
+      await act(() => frames.reduceMotion(false));
+      await frames.at(5_200, () => leaveMinimap(screen));
+      expect(frames.pending.size).toBe(1);
+      await frames.tick(5_350);
+      expect(alpha(20)).toBe(0);
+      expect(frames.pending.size).toBe(0);
+    });
+  });
+
   it("highlights only visible user markers and navigates around the first visible turn", async () => {
     const ref = createRef<TimelineMinimapHandle>();
     const turns = items();
@@ -109,6 +451,7 @@ describe("TimelineMinimap", () => {
   });
 
   it("keeps pointer previews, keyboard navigation, and endpoint geometry", async () => {
+    using frames = minimapWidthFrames();
     const ref = createRef<TimelineMinimapHandle>();
     const turns = items();
     const onSelect = vi.fn();
@@ -116,7 +459,7 @@ describe("TimelineMinimap", () => {
     await visible(ref, 9, 9);
     const button = rail(screen);
     const bounds = button.getBoundingClientRect();
-    await act(() => {
+    await frames.at(1_000, () => {
       button.dispatchEvent(
         new MouseEvent("mousemove", {
           bubbles: true,
@@ -126,6 +469,7 @@ describe("TimelineMinimap", () => {
     });
     await expect.element(screen.getByText("Question turn-2", { exact: true })).toBeVisible();
     await expect.element(screen.getByText("Answer turn-2", { exact: true })).toBeVisible();
+    await frames.tick(1_150);
     expect(paintedMinimapMarkerIndices(screen.container, turns.length)).toEqual([2]);
     expect(minimapMarkerPixels(screen.container, turns.length, 20)[2]![3]).toBeGreaterThan(200);
 

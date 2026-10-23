@@ -24,6 +24,13 @@ import { useStableCallback } from "~/hooks/useStableCallback";
 import { resolveTimelineMinimapMarkers } from "./timelineMinimapRail";
 import { observeResize } from "~/lib/observeResize";
 
+interface CanvasWidthTransition {
+  width: number;
+  from: number;
+  to: number;
+  started: number;
+}
+
 interface CanvasRail {
   canvas: HTMLCanvasElement;
   context: CanvasRenderingContext2D;
@@ -34,11 +41,86 @@ interface CanvasRail {
   dpr: number;
   count: number;
   activeIndex: number | null;
+  widths: Map<number, CanvasWidthTransition>;
+  frame: number | null;
+  reducedMotion: boolean;
+  contextLost: boolean;
   baseColor: string;
   activeColor: string;
   highlightColor: string;
   paintedStart: number | null;
   paintedEnd: number | null;
+}
+
+function canvasMarkerWidth(index: number, activeIndex: number | null) {
+  const distance = activeIndex === null ? null : Math.abs(index - activeIndex);
+  return distance === 0 ? 24 : distance === 1 ? 16 : distance === 2 ? 10 : 8;
+}
+
+// Invert the x coordinate of CSS cubic-bezier(.4, 0, .2, 1).
+function canvasWidthEase(progress: number) {
+  let low = 0;
+  let high = 1;
+  for (let iteration = 0; iteration < 12; iteration += 1) {
+    const t = (low + high) / 2;
+    const x = 1.2 * (1 - t) * (1 - t) * t + 0.6 * (1 - t) * t * t + t * t * t;
+    if (x < progress) low = t;
+    else high = t;
+  }
+  const t = (low + high) / 2;
+  return t * t * (3 - 2 * t);
+}
+
+function stopCanvasWidthAnimation(rail: CanvasRail) {
+  if (rail.frame !== null) cancelAnimationFrame(rail.frame);
+  rail.frame = null;
+  rail.widths.clear();
+}
+
+function retargetCanvasWidths(rail: CanvasRail, activeIndex: number | null) {
+  const started = performance.now();
+  const affectedIndices = new Set<number>();
+  for (const center of [rail.activeIndex, activeIndex]) {
+    if (center === null) continue;
+    for (
+      let index = Math.max(0, center - 2);
+      index <= Math.min(rail.count - 1, center + 2);
+      index += 1
+    ) {
+      affectedIndices.add(index);
+    }
+  }
+  for (const index of affectedIndices) {
+    const transition = rail.widths.get(index);
+    const width = transition?.width ?? canvasMarkerWidth(index, rail.activeIndex);
+    const to = canvasMarkerWidth(index, activeIndex);
+    if (width === to) rail.widths.delete(index);
+    else if (transition?.to !== to) {
+      // Retarget from pixels last painted; unchanged destinations keep their deadline.
+      rail.widths.set(index, { width, from: width, to, started });
+    }
+  }
+}
+
+function animateCanvasWidths(rail: CanvasRail) {
+  if (rail.frame !== null || rail.widths.size === 0 || rail.contextLost) return;
+  rail.frame = requestAnimationFrame((now) => {
+    rail.frame = null;
+    for (const [index, transition] of rail.widths) {
+      const progress = Math.min(1, Math.max(0, (now - transition.started) / 150));
+      if (progress === 1) rail.widths.delete(index);
+      else {
+        transition.width =
+          transition.from + (transition.to - transition.from) * canvasWidthEase(progress);
+      }
+    }
+    const start = rail.paintedStart ?? 0;
+    const end = rail.paintedEnd ?? 0;
+    // Rebuild the compound strokes together so overlapping dense ticks keep their alpha.
+    rebuildCanvasRail(rail);
+    paintCanvasRail(rail, start, end);
+    animateCanvasWidths(rail);
+  });
 }
 
 // One stroke per layer, as with the SVG compound paths. Stroking each tick
@@ -55,8 +137,7 @@ function strokeCanvasRail(
   context.beginPath();
   for (let index = Math.max(0, start); index < Math.min(rail.count, end); index += 1) {
     if (index === excludedIndex) continue;
-    const distance = rail.activeIndex === null ? null : Math.abs(index - rail.activeIndex);
-    const width = distance === 0 ? 24 : distance === 1 ? 16 : distance === 2 ? 10 : 8;
+    const width = rail.widths.get(index)?.width ?? canvasMarkerWidth(index, rail.activeIndex);
     const y = 1 + (resolveTimelineMinimapTopPercent(index, rail.count) / 100) * height;
     context.moveTo(1 + scaleX, y);
     context.lineTo(1 + (width - 1) * scaleX, y);
@@ -81,7 +162,7 @@ function rebuildCanvasRail(rail: CanvasRail) {
 }
 
 function paintCanvasRail(rail: CanvasRail, start: number, end: number) {
-  if (rail.paintedStart === start && rail.paintedEnd === end) return;
+  if (rail.contextLost || (rail.paintedStart === start && rail.paintedEnd === end)) return;
   const context = rail.context;
   // The synchronous theme inspector reads these semantic paint dependencies.
   rail.canvas.style.fill = start < end ? "" : "none";
@@ -176,13 +257,27 @@ export function TimelineMinimap({
     );
   });
   useImperativeHandle(ref, () => ({ updateVisibleRange }), [updateVisibleRange]);
-  const refreshCanvasRail = useStableCallback(() => {
+  const refreshCanvasRail = useStableCallback((animate = false) => {
     const rail = canvasRailRef.current;
     if (!rail) return;
+    if (
+      animate &&
+      !rail.reducedMotion &&
+      !rail.contextLost &&
+      rail.width > 2 &&
+      rail.height > 2 &&
+      rail.count === items.length
+    ) {
+      if (rail.activeIndex !== resolvedActiveIndex) retargetCanvasWidths(rail, resolvedActiveIndex);
+    } else {
+      stopCanvasWidthAnimation(rail);
+    }
     rail.count = items.length;
     rail.activeIndex = resolvedActiveIndex;
+    if (rail.contextLost) return;
     rebuildCanvasRail(rail);
     updateVisibleRange(visibleRowsRef.current.start, visibleRowsRef.current.end);
+    animateCanvasWidths(rail);
   });
   const railMounted = items.length >= TIMELINE_MINIMAP_MIN_ITEMS;
   useLayoutEffect(() => {
@@ -196,6 +291,7 @@ export function TimelineMinimap({
     const context = canvas.getContext("2d", { willReadFrequently: true });
     const baseContext = base.getContext("2d", { willReadFrequently: true });
     if (!context || !baseContext) return;
+    const motionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
     const rail: CanvasRail = {
       canvas,
       context,
@@ -206,6 +302,10 @@ export function TimelineMinimap({
       dpr: 0,
       count: 0,
       activeIndex: null,
+      widths: new Map(),
+      frame: null,
+      reducedMotion: motionQuery.matches,
+      contextLost: false,
       baseColor: getComputedStyle(baseProbe).stroke,
       activeColor: getComputedStyle(activeProbe).stroke,
       highlightColor: getComputedStyle(highlightProbe).stroke,
@@ -216,6 +316,7 @@ export function TimelineMinimap({
     const resize = (width: number, height: number) => {
       const dpr = window.devicePixelRatio || 1;
       if (rail.width === width && rail.height === height && rail.dpr === dpr) return;
+      stopCanvasWidthAnimation(rail);
       rail.width = width;
       rail.height = height;
       rail.dpr = dpr;
@@ -245,12 +346,28 @@ export function TimelineMinimap({
       const { width, height } = canvas.getBoundingClientRect();
       resize(width, height);
     };
-    const restore = () => {
+    const lostBackings = new Set<EventTarget | null>();
+    const loseContext = (event: Event) => {
+      lostBackings.add(event.currentTarget);
+      rail.contextLost = true;
+      stopCanvasWidthAnimation(rail);
+    };
+    const restore = (event: Event) => {
+      lostBackings.delete(event.currentTarget);
+      if (lostBackings.size > 0) return;
+      rail.contextLost = false;
       const { width, height } = rail;
       // Context restoration resets drawing state even when the CSS box is equal.
       rail.dpr = 0;
       resize(width, height);
     };
+    const onMotionChange = () => {
+      rail.reducedMotion = motionQuery.matches;
+      refreshCanvasRail();
+    };
+    motionQuery.addEventListener("change", onMotionChange);
+    canvas.addEventListener("contextlost", loseContext);
+    base.addEventListener("contextlost", loseContext);
     canvas.addEventListener("contextrestored", restore);
     base.addEventListener("contextrestored", restore);
     measure();
@@ -289,6 +406,10 @@ export function TimelineMinimap({
     onDprChange();
     window.addEventListener("resize", measure);
     return () => {
+      stopCanvasWidthAnimation(rail);
+      motionQuery.removeEventListener("change", onMotionChange);
+      canvas.removeEventListener("contextlost", loseContext);
+      base.removeEventListener("contextlost", loseContext);
       canvas.removeEventListener("contextrestored", restore);
       base.removeEventListener("contextrestored", restore);
       stopObserving();
@@ -301,7 +422,7 @@ export function TimelineMinimap({
   }, [railMounted, refreshCanvasRail]);
   useLayoutEffect(() => {
     // The stable callback refs have committed before this effect redraws widths.
-    refreshCanvasRail();
+    refreshCanvasRail(true);
     // oxlint-disable-next-line react/exhaustive-effect-dependencies -- Stable callback reads current data; count and active index changes must rebuild the rail.
   }, [items.length, resolvedActiveIndex, refreshCanvasRail]);
   useLayoutEffect(() => {
