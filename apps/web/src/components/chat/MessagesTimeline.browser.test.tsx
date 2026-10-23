@@ -186,6 +186,141 @@ function expectEntryNearTop(container: HTMLElement, list: LegendListRef, entry: 
 }
 
 describe("MessagesTimeline minimap integration", () => {
+  it.each(["populated", "empty"] as const)(
+    "uses the %s destination after switching threads with a parent refresh queued",
+    async (destination) => {
+      const entries = history("source");
+      const destinationEntries = destination === "empty" ? [] : history("destination", 24);
+      const props = { ...baseProps(), liveFollowEnabled: false };
+      await using screen = await renderElement(
+        <MessagesTimeline {...props} timelineEntries={entries} />,
+      );
+      await vi.waitFor(() => expect(props.listRef.current).not.toBeNull());
+      const list = props.listRef.current!;
+      const middle = entries[40]!;
+      await vi.waitFor(() => expect(list.getState().indexByKey(middle.id)).toBeDefined());
+      await act(() => {
+        void list.scrollToIndex({
+          index: list.getState().indexByKey(middle.id)!,
+          animated: false,
+          viewOffset: 24,
+        });
+      });
+      await vi.waitFor(() => {
+        expectEntryNearTop(screen.container, list, middle);
+        expectMinimapMatchesViewport(screen.container, list, entries);
+      });
+      const sourceCanvas = screen.container.querySelector("[data-minimap-canvas]");
+      const sourceMarkers = paintedMinimapMarkerIndices(
+        screen.container,
+        userTurns(entries).length,
+      );
+      const requestFrame = window.requestAnimationFrame.bind(window);
+      const cancelFrame = window.cancelAnimationFrame.bind(window);
+      const queuedFrames: number[] = [];
+      const refresh = vi.fn<FrameRequestCallback>();
+      using cancelFrameSpy = vi.spyOn(window, "cancelAnimationFrame");
+      using requestFrameSpy = vi
+        .spyOn(window, "requestAnimationFrame")
+        .mockImplementation((callback) => {
+          // Identify only the parent's minimap callback by its ref reset and refresh call.
+          // LegendList and the parent's other frame callbacks keep their native scheduling.
+          const source = callback.toString();
+          if (
+            queuedFrames.length > 0 ||
+            !/minimapRefreshFrameRef\.current\s*=\s*null/.test(source) ||
+            !/refreshMinimap\s*\(/.test(source)
+          ) {
+            return requestFrame(callback);
+          }
+          const frame = requestFrame(callback);
+          cancelFrame(frame);
+          queuedFrames.push(frame);
+          refresh.mockImplementation(callback);
+          return frame;
+        });
+
+      await vi.waitFor(async () => {
+        await act(() => list.getScrollableNode().dispatchEvent(new Event("scroll")));
+        expect(
+          queuedFrames,
+          "A must queue the parent's minimap refresh before switching",
+        ).toHaveLength(1);
+      });
+      expect(refresh).not.toHaveBeenCalled();
+
+      // Preserve the parent, its list ref and callbacks; only the thread identity changes.
+      await screen.rerender(
+        <MessagesTimeline
+          {...props}
+          routeThreadKey={`${props.routeThreadKey}-${destination}`}
+          timelineEntries={destinationEntries}
+        />,
+      );
+      await vi.waitFor(() => {
+        if (destinationEntries.length === 0) {
+          expect(props.listRef.current).toBeNull();
+        } else {
+          expect(props.listRef.current).toBe(list);
+          expect(list.getState().indexByKey(middle.id)).toBeUndefined();
+          expect(list.getState().data).toHaveLength(destinationEntries.length);
+        }
+      });
+
+      if (destinationEntries.length > 0) {
+        const target = destinationEntries[8]!;
+        await vi.waitFor(() => expect(list.getState().indexByKey(target.id)).toBeDefined());
+        await act(() => {
+          void list.scrollToIndex({
+            index: list.getState().indexByKey(target.id)!,
+            animated: false,
+            viewOffset: 24,
+          });
+        });
+        await vi.waitFor(() => {
+          expectEntryNearTop(screen.container, list, target);
+          expect(visibleTurns(screen.container, list, destinationEntries).length).toBeGreaterThan(
+            0,
+          );
+          expect(screen.container.querySelector("[data-minimap-canvas]")).not.toBe(sourceCanvas);
+        });
+      }
+
+      expect(refresh).not.toHaveBeenCalled();
+      expect(cancelFrameSpy).not.toHaveBeenCalledWith(queuedFrames[0]);
+      requestFrameSpy.mockRestore();
+      await act(() => {
+        refresh(0);
+        // Assert during this callback's turn, before any later frame can repair stale pixels.
+        if (destinationEntries.length > 0) {
+          const painted = expectMinimapMatchesViewport(screen.container, list, destinationEntries);
+          expect(painted).not.toEqual(sourceMarkers);
+        } else {
+          expect(screen.container.querySelector("[data-minimap-canvas]")).toBeNull();
+          expect(screen.container.querySelector("[data-timeline-row-id]")).toBeNull();
+          expect(screen.buttons(/^(Previous|Next) turn$/)).toHaveLength(0);
+        }
+      });
+      expect(refresh).toHaveBeenCalledTimes(1);
+      if (destinationEntries.length === 0) return;
+
+      const turns = userTurns(destinationEntries);
+      const current = visibleTurns(screen.container, list, destinationEntries)[0]!;
+      const previous = turns[current - 1]!;
+      const next = turns[current]!;
+      await click(screen.button("Previous turn"));
+      await vi.waitFor(() => {
+        expectEntryNearTop(screen.container, list, previous);
+        expectMinimapMatchesViewport(screen.container, list, destinationEntries);
+      });
+      await click(screen.button("Next turn"));
+      await vi.waitFor(() => {
+        expectEntryNearTop(screen.container, list, next);
+        expectMinimapMatchesViewport(screen.container, list, destinationEntries);
+      });
+    },
+  );
+
   it("refreshes visible markers and previous/next destinations after prepending history", async () => {
     const entries = history();
     const props = { ...baseProps(), liveFollowEnabled: false };
