@@ -1,5 +1,13 @@
 import { resolveTimelineMinimapPreview, type TimelineMinimapItem } from "./timelineMinimapItems";
-import { useEffect, useRef, useState, type MouseEvent } from "react";
+import {
+  useEffect,
+  useImperativeHandle,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type MouseEvent,
+  type Ref,
+} from "react";
 import { ChevronDownIcon, ChevronUpIcon } from "lucide-react";
 import { Button } from "../ui/button";
 import {
@@ -12,6 +20,85 @@ import {
 } from "./MessagesTimeline.logic";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { cn } from "~/lib/utils";
+import { useStableCallback } from "~/hooks/useStableCallback";
+import { resolveTimelineMinimapMarkers } from "./timelineMinimapRail";
+import { observeResize } from "~/lib/observeResize";
+
+interface CanvasRail {
+  canvas: HTMLCanvasElement;
+  context: CanvasRenderingContext2D;
+  base: HTMLCanvasElement;
+  baseContext: CanvasRenderingContext2D;
+  width: number;
+  height: number;
+  dpr: number;
+  count: number;
+  activeIndex: number | null;
+  baseColor: string;
+  activeColor: string;
+  highlightColor: string;
+  paintedStart: number | null;
+  paintedEnd: number | null;
+}
+
+// One stroke per layer, as with the SVG compound paths. Stroking each tick
+// separately would accumulate alpha where dense ticks overlap.
+function strokeCanvasRail(
+  context: CanvasRenderingContext2D,
+  rail: CanvasRail,
+  start: number,
+  end: number,
+  excludedIndex: number | null = null,
+) {
+  const scaleX = (rail.width - 2) / 24;
+  const height = rail.height - 2;
+  context.beginPath();
+  for (let index = Math.max(0, start); index < Math.min(rail.count, end); index += 1) {
+    if (index === excludedIndex) continue;
+    const distance = rail.activeIndex === null ? null : Math.abs(index - rail.activeIndex);
+    const width = distance === 0 ? 24 : distance === 1 ? 16 : distance === 2 ? 10 : 8;
+    const y = 1 + (resolveTimelineMinimapTopPercent(index, rail.count) / 100) * height;
+    context.moveTo(1 + scaleX, y);
+    context.lineTo(1 + (width - 1) * scaleX, y);
+  }
+  context.stroke();
+  // Do not retain a count-sized current path between paints.
+  context.beginPath();
+}
+
+function rebuildCanvasRail(rail: CanvasRail) {
+  const context = rail.baseContext;
+  rail.paintedStart = null;
+  rail.paintedEnd = null;
+  context.clearRect(0, 0, rail.width, rail.height);
+  if (rail.width <= 2 || rail.height <= 2) return;
+  context.strokeStyle = rail.baseColor;
+  strokeCanvasRail(context, rail, 0, rail.count, rail.activeIndex);
+  if (rail.activeIndex !== null) {
+    context.strokeStyle = rail.activeColor;
+    strokeCanvasRail(context, rail, rail.activeIndex, rail.activeIndex + 1);
+  }
+}
+
+function paintCanvasRail(rail: CanvasRail, start: number, end: number) {
+  if (rail.paintedStart === start && rail.paintedEnd === end) return;
+  const context = rail.context;
+  // The synchronous theme inspector reads these semantic paint dependencies.
+  rail.canvas.style.fill = start < end ? "" : "none";
+  context.clearRect(0, 0, rail.width, rail.height);
+  if (rail.width > 2 && rail.height > 2) {
+    // Matching source/destination backing sizes makes this a 1:1 device-pixel copy.
+    context.drawImage(rail.base, 0, 0, rail.width, rail.height);
+    context.strokeStyle = rail.highlightColor;
+    strokeCanvasRail(context, rail, start, end);
+  }
+  rail.paintedStart = start;
+  rail.paintedEnd = end;
+}
+
+export interface TimelineMinimapHandle {
+  updateVisibleRange: (start: number | null, end: number | null) => void;
+}
 
 function timelineMinimapEventTargetsPreview(target: EventTarget): boolean {
   return target instanceof Element && target.closest("[data-minimap-preview]") !== null;
@@ -35,23 +122,32 @@ function onMouseButtonsReleased(onRelease: () => void): () => void {
 }
 
 export function TimelineMinimap({
+  ref,
   hasPersistentGutter,
   hitStripWidth,
-  currentIndex,
   items,
-  stripMap,
   onWheel,
   onSelect,
 }: {
+  ref: Ref<TimelineMinimapHandle>;
   hasPersistentGutter: boolean;
   hitStripWidth: number;
-  currentIndex: number | null;
   items: ReadonlyArray<TimelineMinimapItem>;
-  stripMap: Map<string, HTMLSpanElement>;
   onWheel: (event: WheelEvent) => void;
   onSelect: (item: TimelineMinimapItem) => void;
 }) {
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
+  const [currentIndex, setCurrentIndex] = useState<number | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const baseColorRef = useRef<HTMLSpanElement>(null);
+  const activeColorRef = useRef<HTMLSpanElement>(null);
+  const highlightColorRef = useRef<HTMLSpanElement>(null);
+  const canvasRailRef = useRef<CanvasRail | null>(null);
+  const visibleRowsRef = useRef<{ start: number | null; end: number | null }>({
+    start: null,
+    end: null,
+  });
+  const rowIndices = items.map((item) => item.rowIndex);
   const wheelTargetRef = (node: HTMLDivElement | null) => {
     if (!node) return;
     node.addEventListener("wheel", onWheel, { passive: false });
@@ -68,9 +164,152 @@ export function TimelineMinimap({
 
   const resolvedActiveIndex =
     activeIndex !== null && activeIndex < items.length ? activeIndex : null;
-  const activeItem = resolveTimelineMinimapPreview(
-    resolvedActiveIndex === null ? null : (items[resolvedActiveIndex] ?? null),
-  );
+  const updateVisibleRange = useStableCallback((start: number | null, end: number | null) => {
+    visibleRowsRef.current = { start, end };
+    const markers = resolveTimelineMinimapMarkers(rowIndices, start, end);
+    const rail = canvasRailRef.current;
+    if (rail) {
+      paintCanvasRail(rail, markers.start, markers.end);
+    }
+    setCurrentIndex((current) =>
+      current === markers.currentIndex ? current : markers.currentIndex,
+    );
+  });
+  useImperativeHandle(ref, () => ({ updateVisibleRange }), [updateVisibleRange]);
+  const refreshCanvasRail = useStableCallback(() => {
+    const rail = canvasRailRef.current;
+    if (!rail) return;
+    rail.count = items.length;
+    rail.activeIndex = resolvedActiveIndex;
+    rebuildCanvasRail(rail);
+    updateVisibleRange(visibleRowsRef.current.start, visibleRowsRef.current.end);
+  });
+  const railMounted = items.length >= TIMELINE_MINIMAP_MIN_ITEMS;
+  useLayoutEffect(() => {
+    const canvas = canvasRef.current;
+    const baseProbe = baseColorRef.current;
+    const activeProbe = activeColorRef.current;
+    const highlightProbe = highlightColorRef.current;
+    if (!railMounted || !canvas || !baseProbe || !activeProbe || !highlightProbe) return;
+    const base = document.createElement("canvas");
+    // This is a CPU-backing preference, not a guarantee about Chromium's backend.
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    const baseContext = base.getContext("2d", { willReadFrequently: true });
+    if (!context || !baseContext) return;
+    const rail: CanvasRail = {
+      canvas,
+      context,
+      base,
+      baseContext,
+      width: 0,
+      height: 0,
+      dpr: 0,
+      count: 0,
+      activeIndex: null,
+      baseColor: getComputedStyle(baseProbe).stroke,
+      activeColor: getComputedStyle(activeProbe).stroke,
+      highlightColor: getComputedStyle(highlightProbe).stroke,
+      paintedStart: null,
+      paintedEnd: null,
+    };
+    canvasRailRef.current = rail;
+    const resize = (width: number, height: number) => {
+      const dpr = window.devicePixelRatio || 1;
+      if (rail.width === width && rail.height === height && rail.dpr === dpr) return;
+      rail.width = width;
+      rail.height = height;
+      rail.dpr = dpr;
+      const backingWidth = Math.max(0, Math.ceil(width * dpr));
+      const backingHeight = Math.max(0, Math.ceil(height * dpr));
+      for (const target of [canvas, base]) {
+        if (target.width !== backingWidth) target.width = backingWidth;
+        if (target.height !== backingHeight) target.height = backingHeight;
+      }
+      for (const target of [context, baseContext]) {
+        target.setTransform(
+          width > 0 ? backingWidth / width : 1,
+          0,
+          0,
+          height > 0 ? backingHeight / height : 1,
+          0,
+          0,
+        );
+        target.lineWidth = 2;
+        target.lineCap = "round";
+        target.globalAlpha = 1;
+        target.globalCompositeOperation = "source-over";
+      }
+      refreshCanvasRail();
+    };
+    const measure = () => {
+      const { width, height } = canvas.getBoundingClientRect();
+      resize(width, height);
+    };
+    const restore = () => {
+      const { width, height } = rail;
+      // Context restoration resets drawing state even when the CSS box is equal.
+      rail.dpr = 0;
+      resize(width, height);
+    };
+    canvas.addEventListener("contextrestored", restore);
+    base.addEventListener("contextrestored", restore);
+    measure();
+    const stopObserving = observeResize(canvas, (entries) => {
+      const entry = entries[0];
+      if (entry) resize(entry.contentRect.width, entry.contentRect.height);
+    });
+    // Palette edits, previews and contrast updates can keep the same light/dark
+    // hook value. Observe the root attributes that the existing theme code writes.
+    const themeObserver = new MutationObserver(() => {
+      const baseColor = getComputedStyle(baseProbe).stroke;
+      const activeColor = getComputedStyle(activeProbe).stroke;
+      const highlightColor = getComputedStyle(highlightProbe).stroke;
+      if (
+        rail.baseColor === baseColor &&
+        rail.activeColor === activeColor &&
+        rail.highlightColor === highlightColor
+      )
+        return;
+      rail.baseColor = baseColor;
+      rail.activeColor = activeColor;
+      rail.highlightColor = highlightColor;
+      refreshCanvasRail();
+    });
+    themeObserver.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["class", "style", "data-theme-id"],
+    });
+    let dprQuery: MediaQueryList | null = null;
+    const onDprChange = () => {
+      dprQuery?.removeEventListener("change", onDprChange);
+      dprQuery = window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
+      dprQuery.addEventListener("change", onDprChange);
+      measure();
+    };
+    onDprChange();
+    window.addEventListener("resize", measure);
+    return () => {
+      canvas.removeEventListener("contextrestored", restore);
+      base.removeEventListener("contextrestored", restore);
+      stopObserving();
+      themeObserver.disconnect();
+      dprQuery?.removeEventListener("change", onDprChange);
+      window.removeEventListener("resize", measure);
+      if (canvasRailRef.current === rail) canvasRailRef.current = null;
+      canvas.width = canvas.height = base.width = base.height = 0;
+    };
+  }, [railMounted, refreshCanvasRail]);
+  useLayoutEffect(() => {
+    // The stable callback refs have committed before this effect redraws widths.
+    refreshCanvasRail();
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- Stable callback reads current data; count and active index changes must rebuild the rail.
+  }, [items.length, resolvedActiveIndex, refreshCanvasRail]);
+  useLayoutEffect(() => {
+    updateVisibleRange(visibleRowsRef.current.start, visibleRowsRef.current.end);
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- Stable callback reads the current mapping; new row indices must refresh the retained range.
+  }, [rowIndices, updateVisibleRange]);
+  const previewItem = resolvedActiveIndex === null ? null : (items[resolvedActiveIndex] ?? null);
+  const activeItem = resolveTimelineMinimapPreview(previewItem);
   const navigationInteractive =
     resolveTimelineMinimapNavigationInteractive(hitStripWidth) && !passThrough;
   const activeTopPercent =
@@ -208,44 +447,27 @@ export function TimelineMinimap({
             type="button"
           >
             <div className="absolute top-0 left-3 h-full w-px bg-border/15" />
-            {items.map((item, index) => {
-              const top = `${resolveTimelineMinimapTopPercent(index, items.length)}%`;
-              const activeDistance =
-                resolvedActiveIndex === null ? null : Math.abs(index - resolvedActiveIndex);
-              return (
-                // Compositor-friendly on purpose: in-view state and the hover
-                // fisheye animate constantly (every scroll tick and streaming
-                // update flips a band of strips), so the strip animates only
-                // transform and opacity.
-                <span
-                  aria-hidden="true"
-                  className={cn(
-                    "group/strip pointer-events-none absolute left-0 h-0.5 w-6 origin-left -translate-y-1/2 rounded-full transition-transform duration-150",
-                    activeDistance === 0 ? "bg-muted-foreground/75" : "bg-muted-foreground/35",
-                    activeDistance === 0
-                      ? "scale-x-100"
-                      : activeDistance === 1
-                        ? "scale-x-[0.667]"
-                        : activeDistance === 2
-                          ? "scale-x-[0.417]"
-                          : "scale-x-[0.333]",
-                  )}
-                  data-in-view="false"
-                  data-minimap-strip
-                  key={item.id}
-                  ref={(node) => {
-                    if (node) {
-                      stripMap.set(item.id, node);
-                    } else {
-                      stripMap.delete(item.id);
-                    }
-                  }}
-                  style={{ top }}
-                >
-                  <span className="absolute inset-0 rounded-full bg-foreground/90 opacity-0 transition-opacity duration-150 group-data-[in-view=true]/strip:opacity-100" />
-                </span>
-              );
-            })}
+            <span
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-y-0 left-0 h-full w-6 overflow-visible"
+            >
+              <canvas
+                className="absolute stroke-muted-foreground/35 fill-foreground/90"
+                data-theme-canvas-paint
+                data-minimap-canvas
+                ref={canvasRef}
+                style={{
+                  fill: "none",
+                  top: -1,
+                  left: -1,
+                  width: "calc(100% + 2px)",
+                  height: "calc(100% + 2px)",
+                }}
+              />
+              <span className="hidden stroke-muted-foreground/35" ref={baseColorRef} />
+              <span className="hidden stroke-muted-foreground/75" ref={activeColorRef} />
+              <span className="hidden stroke-foreground/90" ref={highlightColorRef} />
+            </span>
             {activeItem ? (
               <span
                 className="pointer-events-auto absolute left-8 w-80 cursor-text select-text"

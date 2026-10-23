@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import "~/index.css";
 
 import { act, render } from "../../../test/render";
+import { paintedMinimapMarkerIndices } from "../../../test/minimapPixels";
 import { MessagesTimeline } from "./MessagesTimeline";
 import { remarkThoughtPreview } from "./TimelineWorkEntryRow.logic";
 import { parseMarkdownWithMath } from "@t3tools/shared/markdownMath";
@@ -127,6 +128,164 @@ function setup({ scheduledTasks = [] as ReadonlyArray<{ id: string; title: strin
 
 const TASK_ID = ScheduledTaskId.make("task-1");
 const AUTOMATION_PROMPT = "Triage the inbox\n\nLabel every new issue and close duplicates.";
+
+function history(prefix = "history", count = 60): Entry[] {
+  const body = [
+    "The conversation covers scroll anchoring, measured row heights, and loading earlier turns.",
+    "Keep the current question in view while the surrounding history changes and replies wrap.",
+    "Check the viewport against the rendered messages before navigating to another question.",
+  ].join(" ");
+  return Array.from({ length: count }, (_, index) =>
+    message(
+      `Message ${prefix}-${index}\n\n${Array.from({ length: 4 }, () => body).join("\n\n")}`,
+      { role: index % 2 === 0 ? "user" : "assistant" },
+      `${prefix}-${index}`,
+    ),
+  );
+}
+
+function userTurns(entries: ReadonlyArray<Entry>) {
+  return entries.filter(
+    (entry): entry is Extract<Entry, { kind: "message" }> =>
+      entry.kind === "message" && entry.message.role === "user",
+  );
+}
+
+function visibleTurns(container: HTMLElement, list: LegendListRef, entries: ReadonlyArray<Entry>) {
+  const viewport = list.getScrollableNode().getBoundingClientRect();
+  return userTurns(entries).flatMap((entry, index) => {
+    const row = container.querySelector<HTMLElement>(`[data-timeline-row-id="${entry.id}"]`);
+    if (!row) return [];
+    const bounds = row.getBoundingClientRect();
+    return bounds.height > 0 && bounds.top < viewport.bottom && bounds.bottom > viewport.top
+      ? [index]
+      : [];
+  });
+}
+
+function expectMinimapMatchesViewport(
+  container: HTMLElement,
+  list: LegendListRef,
+  entries: ReadonlyArray<Entry>,
+) {
+  // Use mounted DOM geometry as the oracle, independently of the parent's range resolver.
+  const visible = visibleTurns(container, list, entries);
+  expect(visible.length).toBeGreaterThan(0);
+  const painted = paintedMinimapMarkerIndices(container, userTurns(entries).length);
+  expect(painted).toEqual(visible);
+  return painted;
+}
+
+function expectEntryNearTop(container: HTMLElement, list: LegendListRef, entry: Entry) {
+  const row = container.querySelector<HTMLElement>(`[data-timeline-row-id="${entry.id}"]`);
+  expect(row).not.toBeNull();
+  const offset =
+    row!.getBoundingClientRect().top - list.getScrollableNode().getBoundingClientRect().top;
+  expect(offset).toBeGreaterThanOrEqual(0);
+  expect(offset).toBeLessThan(48);
+}
+
+describe("MessagesTimeline minimap integration", () => {
+  it("refreshes visible markers and previous/next destinations after prepending history", async () => {
+    const entries = history();
+    const props = { ...baseProps(), liveFollowEnabled: false };
+    await using screen = await renderElement(
+      <MessagesTimeline {...props} timelineEntries={entries} />,
+    );
+    await vi.waitFor(() => expect(props.listRef.current).not.toBeNull());
+    const list = props.listRef.current!;
+    const middle = entries[40]!;
+    await vi.waitFor(() => expect(list.getState().indexByKey(middle.id)).toBeDefined());
+    await act(() => {
+      void list.scrollToIndex({
+        index: list.getState().indexByKey(middle.id)!,
+        animated: false,
+        viewOffset: 24,
+      });
+    });
+    await vi.waitFor(() => {
+      expectEntryNearTop(screen.container, list, middle);
+      expectMinimapMatchesViewport(screen.container, list, entries);
+    });
+    const originalMarkers = paintedMinimapMarkerIndices(
+      screen.container,
+      userTurns(entries).length,
+    );
+    const prepended = [...history("earlier", 12), ...entries];
+
+    // Keep the ref, callbacks and thread key stable so this updates the existing list.
+    await screen.rerender(<MessagesTimeline {...props} timelineEntries={prepended} />);
+    await vi.waitFor(() => {
+      expect(props.listRef.current).toBe(list);
+      expectEntryNearTop(screen.container, list, middle);
+      const after = expectMinimapMatchesViewport(screen.container, list, prepended);
+      expect(after).not.toEqual(originalMarkers);
+    });
+
+    const turns = userTurns(prepended);
+    const current = visibleTurns(screen.container, list, prepended)[0]!;
+    const previous = turns[current - 1]!;
+    const next = turns[current]!;
+    await click(screen.button("Previous turn"));
+    await vi.waitFor(() => {
+      expectEntryNearTop(screen.container, list, previous);
+      expectMinimapMatchesViewport(screen.container, list, prepended);
+    });
+    await click(screen.button("Next turn"));
+    await vi.waitFor(() => {
+      expectEntryNearTop(screen.container, list, next);
+      expectMinimapMatchesViewport(screen.container, list, prepended);
+    });
+  });
+
+  it("refreshes the visible band after a height-only resize without changing rows or scroll offset", async () => {
+    const entries = history();
+    const props = { ...baseProps(), liveFollowEnabled: false };
+    await using screen = await renderElement(
+      <MessagesTimeline {...props} timelineEntries={entries} />,
+    );
+    await vi.waitFor(() => expect(props.listRef.current).not.toBeNull());
+    const list = props.listRef.current!;
+    const middle = entries[40]!;
+    await vi.waitFor(() => expect(list.getState().indexByKey(middle.id)).toBeDefined());
+    await act(() => {
+      void list.scrollToIndex({
+        index: list.getState().indexByKey(middle.id)!,
+        animated: false,
+        viewOffset: 24,
+      });
+    });
+    await vi.waitFor(() => {
+      expectEntryNearTop(screen.container, list, middle);
+      expect(expectMinimapMatchesViewport(screen.container, list, entries).length).toBeGreaterThan(
+        1,
+      );
+    });
+    const viewport = list.getScrollableNode();
+    const scrollTop = viewport.scrollTop;
+    const before = paintedMinimapMarkerIndices(screen.container, userTurns(entries).length);
+    const rows = list.getState().data;
+
+    await act(() => {
+      screen.container.style.height = "360px";
+    });
+    await vi.waitFor(() => {
+      expect(viewport.clientHeight).toBe(360);
+      expect(list.getState().data).toBe(rows);
+      expect(Math.abs(viewport.scrollTop - scrollTop)).toBeLessThan(1);
+      const after = expectMinimapMatchesViewport(screen.container, list, entries);
+      expect(after.length).toBeLessThan(before.length);
+      expect(after[0]).toBe(before[0]);
+    });
+
+    const next = userTurns(entries)[visibleTurns(screen.container, list, entries)[0]! + 1]!;
+    await click(screen.button("Next turn"));
+    await vi.waitFor(() => {
+      expectEntryNearTop(screen.container, list, next);
+      expectMinimapMatchesViewport(screen.container, list, entries);
+    });
+  });
+});
 
 describe("MessagesTimeline messages", () => {
   it("settles when equally long messages have very different rendered heights", async () => {
