@@ -13,12 +13,12 @@ export function minimapMarkerPixels(container: ParentNode, count: number, railX 
     throw new Error("Minimap has no drawable backing");
   }
   const { data } = context.getImageData(0, 0, canvas.width, canvas.height);
-  // The canvas adds one CSS pixel around the rail. Use the actual backing ratio
-  // rather than assuming DPR is integral or that its dimensions round exactly.
-  const x = Math.floor(((1 + railX) / bounds.width) * canvas.width);
+  const rail = canvas.parentElement!.getBoundingClientRect();
+  // The padded backing is pixel-aligned independently of the logical rail.
+  const x = Math.floor(((rail.left + railX - bounds.left) / bounds.width) * canvas.width);
   return Array.from({ length: count }, (_, index) => {
-    const railY = count <= 1 ? 0 : (index / (count - 1)) * (bounds.height - 2);
-    const y = Math.floor(((1 + railY) / bounds.height) * canvas.height);
+    const railY = count <= 1 ? 0 : (index / (count - 1)) * rail.height;
+    const y = Math.floor(((rail.top + railY - bounds.top) / bounds.height) * canvas.height);
     const offset = (y * canvas.width + x) * 4;
     return Array.from(data.subarray(offset, offset + 4));
   });

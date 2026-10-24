@@ -577,10 +577,11 @@ describe("TimelineMinimap", () => {
         expect(paintedMinimapMarkerIndices(screen.container, 2)).toEqual([0, 1]);
       });
       const canvas = minimapCanvas(screen.container);
-      const { width, height } = canvas.style;
+      const geometry = canvas.parentElement!;
+      const { width, height } = geometry.style;
       await act(() => {
-        canvas.style.width = "0px";
-        canvas.style.height = "0px";
+        geometry.style.width = "0px";
+        geometry.style.height = "0px";
       });
       await vi.waitFor(() => {
         expect(canvas.getBoundingClientRect().width).toBe(0);
@@ -589,8 +590,8 @@ describe("TimelineMinimap", () => {
         expect(canvas.height).toBe(0);
       });
       await act(() => {
-        canvas.style.width = width;
-        canvas.style.height = height;
+        geometry.style.width = width;
+        geometry.style.height = height;
       });
       // No range update since the empty render: resize must repaint retained rows.
       await vi.waitFor(() => {
@@ -737,7 +738,7 @@ describe("TimelineMinimap", () => {
       expect(paintedMinimapMarkerIndices(screen.container, 5)).toEqual([2]);
 
       await act(() => {
-        canvas.style.height = "66px";
+        canvas.parentElement!.style.height = "64px";
       });
       await vi.waitFor(() => {
         expect(canvas.getBoundingClientRect().height).toBe(66);

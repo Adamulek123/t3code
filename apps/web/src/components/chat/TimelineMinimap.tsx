@@ -39,6 +39,7 @@ interface CanvasRail {
   width: number;
   height: number;
   dpr: number;
+  padding: number;
   count: number;
   activeIndex: number | null;
   widths: Map<number, CanvasWidthTransition>;
@@ -116,33 +117,40 @@ function animateCanvasWidths(rail: CanvasRail) {
     }
     const start = rail.paintedStart ?? 0;
     const end = rail.paintedEnd ?? 0;
-    // Rebuild the compound strokes together so overlapping dense ticks keep their alpha.
+    // Rebuild the compound shapes together so overlapping dense ticks keep their alpha.
     rebuildCanvasRail(rail);
     paintCanvasRail(rail, start, end);
     animateCanvasWidths(rail);
   });
 }
 
-// One stroke per layer, as with the SVG compound paths. Stroking each tick
-// separately would accumulate alpha where dense ticks overlap.
-function strokeCanvasRail(
+// Fill once per layer so overlapping dense markers do not accumulate alpha.
+function fillCanvasRail(
   context: CanvasRenderingContext2D,
   rail: CanvasRail,
   start: number,
   end: number,
   excludedIndex: number | null = null,
 ) {
-  const scaleX = (rail.width - 2) / 24;
-  const height = rail.height - 2;
+  const scaleX = rail.padding;
+  const height = rail.height - 2 * rail.padding;
+  const transform = context.getTransform();
+  const radii = { x: 0, y: 0 };
   context.beginPath();
   for (let index = Math.max(0, start); index < Math.min(rail.count, end); index += 1) {
     if (index === excludedIndex) continue;
     const width = rail.widths.get(index)?.width ?? canvasMarkerWidth(index, rail.activeIndex);
-    const y = 1 + (resolveTimelineMinimapTopPercent(index, rail.count) / 100) * height;
-    context.moveTo(1 + scaleX, y);
-    context.lineTo(1 + (width - 1) * scaleX, y);
+    const y = rail.padding + (resolveTimelineMinimapTopPercent(index, rail.count) / 100) * height;
+    // CSS backgrounds snap their edges to device pixels; keep the same sharp bodies.
+    const top =
+      (Math.round((y - rail.padding) * transform.d + transform.f) - transform.f) / transform.d;
+    const bottom =
+      (Math.round((y + rail.padding) * transform.d + transform.f) - transform.f) / transform.d;
+    radii.x = (width / 24) * scaleX;
+    radii.y = (bottom - top) / 2;
+    context.roundRect(rail.padding, top, width * scaleX, bottom - top, radii);
   }
-  context.stroke();
+  context.fill();
   // Do not retain a count-sized current path between paints.
   context.beginPath();
 }
@@ -151,13 +159,16 @@ function rebuildCanvasRail(rail: CanvasRail) {
   const context = rail.baseContext;
   rail.paintedStart = null;
   rail.paintedEnd = null;
-  context.clearRect(0, 0, rail.width, rail.height);
-  if (rail.width <= 2 || rail.height <= 2) return;
-  context.strokeStyle = rail.baseColor;
-  strokeCanvasRail(context, rail, 0, rail.count, rail.activeIndex);
+  context.save();
+  context.resetTransform();
+  context.clearRect(0, 0, rail.base.width, rail.base.height);
+  context.restore();
+  if (rail.width <= 2 * rail.padding || rail.height <= 2 * rail.padding) return;
+  context.fillStyle = rail.baseColor;
+  fillCanvasRail(context, rail, 0, rail.count, rail.activeIndex);
   if (rail.activeIndex !== null) {
-    context.strokeStyle = rail.activeColor;
-    strokeCanvasRail(context, rail, rail.activeIndex, rail.activeIndex + 1);
+    context.fillStyle = rail.activeColor;
+    fillCanvasRail(context, rail, rail.activeIndex, rail.activeIndex + 1);
   }
 }
 
@@ -166,12 +177,18 @@ function paintCanvasRail(rail: CanvasRail, start: number, end: number) {
   const context = rail.context;
   // The synchronous theme inspector reads these semantic paint dependencies.
   rail.canvas.style.fill = start < end ? "" : "none";
-  context.clearRect(0, 0, rail.width, rail.height);
-  if (rail.width > 2 && rail.height > 2) {
-    // Matching source/destination backing sizes makes this a 1:1 device-pixel copy.
-    context.drawImage(rail.base, 0, 0, rail.width, rail.height);
-    context.strokeStyle = rail.highlightColor;
-    strokeCanvasRail(context, rail, start, end);
+  context.save();
+  context.resetTransform();
+  context.clearRect(0, 0, rail.canvas.width, rail.canvas.height);
+  context.restore();
+  if (rail.width > 2 * rail.padding && rail.height > 2 * rail.padding) {
+    // Copy device pixels directly; the logical transform includes a fractional-origin offset.
+    context.save();
+    context.resetTransform();
+    context.drawImage(rail.base, 0, 0);
+    context.restore();
+    context.fillStyle = rail.highlightColor;
+    fillCanvasRail(context, rail, start, end);
   }
   rail.paintedStart = start;
   rail.paintedEnd = end;
@@ -219,20 +236,26 @@ export function TimelineMinimap({
 }) {
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
   const [currentIndex, setCurrentIndex] = useState<number | null>(null);
+  const minimapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const baseColorRef = useRef<HTMLSpanElement>(null);
   const activeColorRef = useRef<HTMLSpanElement>(null);
   const highlightColorRef = useRef<HTMLSpanElement>(null);
   const canvasRailRef = useRef<CanvasRail | null>(null);
+  const measureRailRef = useRef<(() => void) | null>(null);
   const visibleRowsRef = useRef<{ start: number | null; end: number | null }>({
     start: null,
     end: null,
   });
   const rowIndices = items.map((item) => item.rowIndex);
   const wheelTargetRef = (node: HTMLDivElement | null) => {
+    minimapRef.current = node;
     if (!node) return;
     node.addEventListener("wheel", onWheel, { passive: false });
-    return () => node.removeEventListener("wheel", onWheel);
+    return () => {
+      node.removeEventListener("wheel", onWheel);
+      if (minimapRef.current === node) minimapRef.current = null;
+    };
   };
 
   const pressedOnStripRef = useRef(false);
@@ -264,8 +287,8 @@ export function TimelineMinimap({
       animate &&
       !rail.reducedMotion &&
       !rail.contextLost &&
-      rail.width > 2 &&
-      rail.height > 2 &&
+      rail.width > 2 * rail.padding &&
+      rail.height > 2 * rail.padding &&
       rail.count === items.length
     ) {
       if (rail.activeIndex !== resolvedActiveIndex) retargetCanvasWidths(rail, resolvedActiveIndex);
@@ -285,7 +308,10 @@ export function TimelineMinimap({
     const baseProbe = baseColorRef.current;
     const activeProbe = activeColorRef.current;
     const highlightProbe = highlightColorRef.current;
-    if (!railMounted || !canvas || !baseProbe || !activeProbe || !highlightProbe) return;
+    const minimap = minimapRef.current;
+    if (!railMounted || !canvas || !baseProbe || !activeProbe || !highlightProbe || !minimap)
+      return;
+    const railElement = canvas.parentElement!;
     const base = document.createElement("canvas");
     // This is a CPU-backing preference, not a guarantee about Chromium's backend.
     const context = canvas.getContext("2d", { willReadFrequently: true });
@@ -300,6 +326,7 @@ export function TimelineMinimap({
       width: 0,
       height: 0,
       dpr: 0,
+      padding: 1,
       count: 0,
       activeIndex: null,
       widths: new Map(),
@@ -313,39 +340,52 @@ export function TimelineMinimap({
       paintedEnd: null,
     };
     canvasRailRef.current = rail;
-    const resize = (width: number, height: number) => {
+    let previousOffsetX = Number.NaN;
+    let previousOffsetY = Number.NaN;
+    const resize = () => {
+      const bounds = railElement.getBoundingClientRect();
+      // w-6 and h-0.5 scale together with the interface font size.
+      const padding = bounds.width / 24;
+      const width = bounds.width > 0 ? bounds.width + 2 * padding : 0;
+      const height = bounds.height > 0 ? bounds.height + 2 * padding : 0;
       const dpr = window.devicePixelRatio || 1;
-      if (rail.width === width && rail.height === height && rail.dpr === dpr) return;
+      // Keep the backing on device pixels without moving the logical marker centers.
+      const offsetX = bounds.left - padding - Math.floor((bounds.left - padding) * dpr) / dpr;
+      const offsetY = bounds.top - padding - Math.floor((bounds.top - padding) * dpr) / dpr;
+      if (
+        rail.width === width &&
+        rail.height === height &&
+        rail.dpr === dpr &&
+        previousOffsetX === offsetX &&
+        previousOffsetY === offsetY
+      )
+        return;
+      previousOffsetX = offsetX;
+      previousOffsetY = offsetY;
       stopCanvasWidthAnimation(rail);
       rail.width = width;
       rail.height = height;
       rail.dpr = dpr;
-      const backingWidth = Math.max(0, Math.ceil(width * dpr));
-      const backingHeight = Math.max(0, Math.ceil(height * dpr));
+      rail.padding = padding;
+      const backingWidth = Math.max(0, width > 0 ? Math.ceil((width + offsetX) * dpr) : 0);
+      const backingHeight = Math.max(0, height > 0 ? Math.ceil((height + offsetY) * dpr) : 0);
+      canvas.style.width = `${backingWidth / dpr}px`;
+      canvas.style.height = `${backingHeight / dpr}px`;
+      canvas.style.left = `${-padding - offsetX}px`;
+      canvas.style.top = `${-padding - offsetY}px`;
       for (const target of [canvas, base]) {
         if (target.width !== backingWidth) target.width = backingWidth;
         if (target.height !== backingHeight) target.height = backingHeight;
       }
       for (const target of [context, baseContext]) {
-        target.setTransform(
-          width > 0 ? backingWidth / width : 1,
-          0,
-          0,
-          height > 0 ? backingHeight / height : 1,
-          0,
-          0,
-        );
-        target.lineWidth = 2;
-        target.lineCap = "round";
+        target.setTransform(dpr, 0, 0, dpr, offsetX * dpr, offsetY * dpr);
         target.globalAlpha = 1;
         target.globalCompositeOperation = "source-over";
       }
       refreshCanvasRail();
     };
-    const measure = () => {
-      const { width, height } = canvas.getBoundingClientRect();
-      resize(width, height);
-    };
+    const measure = resize;
+    measureRailRef.current = measure;
     const lostBackings = new Set<EventTarget | null>();
     const loseContext = (event: Event) => {
       lostBackings.add(event.currentTarget);
@@ -356,10 +396,9 @@ export function TimelineMinimap({
       lostBackings.delete(event.currentTarget);
       if (lostBackings.size > 0) return;
       rail.contextLost = false;
-      const { width, height } = rail;
       // Context restoration resets drawing state even when the CSS box is equal.
       rail.dpr = 0;
-      resize(width, height);
+      resize();
     };
     const onMotionChange = () => {
       rail.reducedMotion = motionQuery.matches;
@@ -371,10 +410,8 @@ export function TimelineMinimap({
     canvas.addEventListener("contextrestored", restore);
     base.addEventListener("contextrestored", restore);
     measure();
-    const stopObserving = observeResize(canvas, (entries) => {
-      const entry = entries[0];
-      if (entry) resize(entry.contentRect.width, entry.contentRect.height);
-    });
+    // Timeline resizing also moves this fixed-width rail during sidebar drags.
+    const stopObserving = observeResize([railElement, minimap.parentElement!], measure);
     // Palette edits, previews and contrast updates can keep the same light/dark
     // hook value. Observe the root attributes that the existing theme code writes.
     const themeObserver = new MutationObserver(() => {
@@ -417,10 +454,13 @@ export function TimelineMinimap({
       dprQuery?.removeEventListener("change", onDprChange);
       window.removeEventListener("resize", measure);
       if (canvasRailRef.current === rail) canvasRailRef.current = null;
+      if (measureRailRef.current === measure) measureRailRef.current = null;
       canvas.width = canvas.height = base.width = base.height = 0;
     };
   }, [railMounted, refreshCanvasRail]);
   useLayoutEffect(() => {
+    // Count changes can resize the logical rail before ResizeObserver delivers.
+    if (canvasRailRef.current?.count !== items.length) measureRailRef.current?.();
     // The stable callback refs have committed before this effect redraws widths.
     refreshCanvasRail(true);
     // oxlint-disable-next-line react/exhaustive-effect-dependencies -- Stable callback reads current data; count and active index changes must rebuild the rail.
