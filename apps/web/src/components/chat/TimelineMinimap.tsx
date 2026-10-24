@@ -141,7 +141,7 @@ function fillCanvasRail(
     if (index === excludedIndex) continue;
     const width = rail.widths.get(index)?.width ?? canvasMarkerWidth(index, rail.activeIndex);
     const y = rail.padding + (resolveTimelineMinimapTopPercent(index, rail.count) / 100) * height;
-    // CSS backgrounds snap their edges to device pixels; keep the same sharp bodies.
+    // Snap marker edges to device pixels to keep thin bodies sharp.
     const top =
       (Math.round((y - rail.padding) * transform.d + transform.f) - transform.f) / transform.d;
     const bottom =
@@ -180,13 +180,11 @@ function paintCanvasRail(rail: CanvasRail, start: number, end: number) {
   context.save();
   context.resetTransform();
   context.clearRect(0, 0, rail.canvas.width, rail.canvas.height);
+  const drawable = rail.width > 2 * rail.padding && rail.height > 2 * rail.padding;
+  // Copy device pixels directly; the logical transform includes a fractional-origin offset.
+  if (drawable) context.drawImage(rail.base, 0, 0);
   context.restore();
-  if (rail.width > 2 * rail.padding && rail.height > 2 * rail.padding) {
-    // Copy device pixels directly; the logical transform includes a fractional-origin offset.
-    context.save();
-    context.resetTransform();
-    context.drawImage(rail.base, 0, 0);
-    context.restore();
+  if (drawable) {
     context.fillStyle = rail.highlightColor;
     fillCanvasRail(context, rail, start, end);
   }
@@ -238,7 +236,6 @@ export function TimelineMinimap({
   const [currentIndex, setCurrentIndex] = useState<number | null>(null);
   const minimapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const baseColorRef = useRef<HTMLSpanElement>(null);
   const activeColorRef = useRef<HTMLSpanElement>(null);
   const highlightColorRef = useRef<HTMLSpanElement>(null);
   const canvasRailRef = useRef<CanvasRail | null>(null);
@@ -275,9 +272,7 @@ export function TimelineMinimap({
     if (rail) {
       paintCanvasRail(rail, markers.start, markers.end);
     }
-    setCurrentIndex((current) =>
-      current === markers.currentIndex ? current : markers.currentIndex,
-    );
+    setCurrentIndex(markers.currentIndex);
   });
   useImperativeHandle(ref, () => ({ updateVisibleRange }), [updateVisibleRange]);
   const refreshCanvasRail = useStableCallback((animate = false) => {
@@ -305,12 +300,10 @@ export function TimelineMinimap({
   const railMounted = items.length >= TIMELINE_MINIMAP_MIN_ITEMS;
   useLayoutEffect(() => {
     const canvas = canvasRef.current;
-    const baseProbe = baseColorRef.current;
     const activeProbe = activeColorRef.current;
     const highlightProbe = highlightColorRef.current;
     const minimap = minimapRef.current;
-    if (!railMounted || !canvas || !baseProbe || !activeProbe || !highlightProbe || !minimap)
-      return;
+    if (!railMounted || !canvas || !activeProbe || !highlightProbe || !minimap) return;
     const railElement = canvas.parentElement!;
     const base = document.createElement("canvas");
     // This is a CPU-backing preference, not a guarantee about Chromium's backend.
@@ -333,7 +326,7 @@ export function TimelineMinimap({
       frame: null,
       reducedMotion: motionQuery.matches,
       contextLost: false,
-      baseColor: getComputedStyle(baseProbe).stroke,
+      baseColor: getComputedStyle(canvas).stroke,
       activeColor: getComputedStyle(activeProbe).stroke,
       highlightColor: getComputedStyle(highlightProbe).stroke,
       paintedStart: null,
@@ -342,7 +335,7 @@ export function TimelineMinimap({
     canvasRailRef.current = rail;
     let previousOffsetX = Number.NaN;
     let previousOffsetY = Number.NaN;
-    const resize = () => {
+    const measure = () => {
       const bounds = railElement.getBoundingClientRect();
       // w-6 and h-0.5 scale together with the interface font size.
       const padding = bounds.width / 24;
@@ -379,12 +372,9 @@ export function TimelineMinimap({
       }
       for (const target of [context, baseContext]) {
         target.setTransform(dpr, 0, 0, dpr, offsetX * dpr, offsetY * dpr);
-        target.globalAlpha = 1;
-        target.globalCompositeOperation = "source-over";
       }
       refreshCanvasRail();
     };
-    const measure = resize;
     measureRailRef.current = measure;
     const lostBackings = new Set<EventTarget | null>();
     const loseContext = (event: Event) => {
@@ -398,7 +388,7 @@ export function TimelineMinimap({
       rail.contextLost = false;
       // Context restoration resets drawing state even when the CSS box is equal.
       rail.dpr = 0;
-      resize();
+      measure();
     };
     const onMotionChange = () => {
       rail.reducedMotion = motionQuery.matches;
@@ -409,13 +399,12 @@ export function TimelineMinimap({
     base.addEventListener("contextlost", loseContext);
     canvas.addEventListener("contextrestored", restore);
     base.addEventListener("contextrestored", restore);
-    measure();
     // Timeline resizing also moves this fixed-width rail during sidebar drags.
     const stopObserving = observeResize([railElement, minimap.parentElement!], measure);
     // Palette edits, previews and contrast updates can keep the same light/dark
     // hook value. Observe the root attributes that the existing theme code writes.
     const themeObserver = new MutationObserver(() => {
-      const baseColor = getComputedStyle(baseProbe).stroke;
+      const baseColor = getComputedStyle(canvas).stroke;
       const activeColor = getComputedStyle(activeProbe).stroke;
       const highlightColor = getComputedStyle(highlightProbe).stroke;
       if (
@@ -625,7 +614,6 @@ export function TimelineMinimap({
                   height: "calc(100% + 2px)",
                 }}
               />
-              <span className="hidden stroke-muted-foreground/35" ref={baseColorRef} />
               <span className="hidden stroke-muted-foreground/75" ref={activeColorRef} />
               <span className="hidden stroke-foreground/90" ref={highlightColorRef} />
             </span>

@@ -185,6 +185,29 @@ function expectEntryNearTop(container: HTMLElement, list: LegendListRef, entry: 
   expect(offset).toBeLessThan(48);
 }
 
+async function scrollToEntry(
+  screen: Awaited<ReturnType<typeof renderElement>>,
+  listRef: TimelineProps["listRef"],
+  entries: ReadonlyArray<Entry>,
+  entry: Entry,
+) {
+  await vi.waitFor(() => expect(listRef.current).not.toBeNull());
+  const list = listRef.current!;
+  await vi.waitFor(() => expect(list.getState().indexByKey(entry.id)).toBeDefined());
+  await act(() => {
+    void list.scrollToIndex({
+      index: list.getState().indexByKey(entry.id)!,
+      animated: false,
+      viewOffset: 24,
+    });
+  });
+  await vi.waitFor(() => {
+    expectEntryNearTop(screen.container, list, entry);
+    expectMinimapMatchesViewport(screen.container, list, entries);
+  });
+  return list;
+}
+
 describe("MessagesTimeline minimap integration", () => {
   it.each(["populated", "empty"] as const)(
     "uses the %s destination after switching threads with a parent refresh queued",
@@ -195,21 +218,8 @@ describe("MessagesTimeline minimap integration", () => {
       await using screen = await renderElement(
         <MessagesTimeline {...props} timelineEntries={entries} />,
       );
-      await vi.waitFor(() => expect(props.listRef.current).not.toBeNull());
-      const list = props.listRef.current!;
       const middle = entries[40]!;
-      await vi.waitFor(() => expect(list.getState().indexByKey(middle.id)).toBeDefined());
-      await act(() => {
-        void list.scrollToIndex({
-          index: list.getState().indexByKey(middle.id)!,
-          animated: false,
-          viewOffset: 24,
-        });
-      });
-      await vi.waitFor(() => {
-        expectEntryNearTop(screen.container, list, middle);
-        expectMinimapMatchesViewport(screen.container, list, entries);
-      });
+      const list = await scrollToEntry(screen, props.listRef, entries, middle);
       const sourceCanvas = screen.container.querySelector("[data-minimap-canvas]");
       const sourceMarkers = paintedMinimapMarkerIndices(
         screen.container,
@@ -327,21 +337,8 @@ describe("MessagesTimeline minimap integration", () => {
     await using screen = await renderElement(
       <MessagesTimeline {...props} timelineEntries={entries} />,
     );
-    await vi.waitFor(() => expect(props.listRef.current).not.toBeNull());
-    const list = props.listRef.current!;
     const middle = entries[40]!;
-    await vi.waitFor(() => expect(list.getState().indexByKey(middle.id)).toBeDefined());
-    await act(() => {
-      void list.scrollToIndex({
-        index: list.getState().indexByKey(middle.id)!,
-        animated: false,
-        viewOffset: 24,
-      });
-    });
-    await vi.waitFor(() => {
-      expectEntryNearTop(screen.container, list, middle);
-      expectMinimapMatchesViewport(screen.container, list, entries);
-    });
+    const list = await scrollToEntry(screen, props.listRef, entries, middle);
     const originalMarkers = paintedMinimapMarkerIndices(
       screen.container,
       userTurns(entries).length,
@@ -379,17 +376,8 @@ describe("MessagesTimeline minimap integration", () => {
     await using screen = await renderElement(
       <MessagesTimeline {...props} timelineEntries={entries} />,
     );
-    await vi.waitFor(() => expect(props.listRef.current).not.toBeNull());
-    const list = props.listRef.current!;
     const middle = entries[40]!;
-    await vi.waitFor(() => expect(list.getState().indexByKey(middle.id)).toBeDefined());
-    await act(() => {
-      void list.scrollToIndex({
-        index: list.getState().indexByKey(middle.id)!,
-        animated: false,
-        viewOffset: 24,
-      });
-    });
+    const list = await scrollToEntry(screen, props.listRef, entries, middle);
     await vi.waitFor(() => {
       expectEntryNearTop(screen.container, list, middle);
       expect(expectMinimapMatchesViewport(screen.container, list, entries).length).toBeGreaterThan(

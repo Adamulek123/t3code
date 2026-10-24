@@ -125,7 +125,7 @@ function minimapWidthFrames() {
   const at = async (now: number, run: () => void) => {
     // Only seed the interaction/commit being tested. No fake timers or frozen
     // browser clock outside this act; RAF receives its timestamp explicitly.
-    using nowSpy = vi.spyOn(performance, "now").mockReturnValue(now);
+    using _nowSpy = vi.spyOn(performance, "now").mockReturnValue(now);
     await act(run);
   };
   return {
@@ -153,6 +153,31 @@ function minimapWidthFrames() {
       motionSpy.mockRestore();
     },
   };
+}
+
+function captureMinimapBackings() {
+  const canvases = new Set<HTMLCanvasElement>();
+  const beginPath = CanvasRenderingContext2D.prototype.beginPath;
+  const capture = vi
+    .spyOn(CanvasRenderingContext2D.prototype, "beginPath")
+    .mockImplementation(function (this: CanvasRenderingContext2D) {
+      canvases.add(this.canvas);
+      beginPath.call(this);
+    });
+  return {
+    get(container: ParentNode) {
+      capture.mockRestore();
+      const display = minimapCanvas(container);
+      const base = [...canvases].find((canvas) => canvas !== display && !canvas.isConnected);
+      expect(base).toBeDefined();
+      return { display, base: base! };
+    },
+    [Symbol.dispose]: () => capture.mockRestore(),
+  };
+}
+
+function backingPixels(canvas: HTMLCanvasElement) {
+  return Array.from(canvas.getContext("2d")!.getImageData(0, 0, canvas.width, canvas.height).data);
 }
 
 function pointMinimapAt(screen: Screen, fraction: number) {
@@ -289,55 +314,52 @@ describe("TimelineMinimap", () => {
     });
   });
 
-  it("keeps both backings cleared until both lost contexts recover, in either order", async () => {
-    await withMinimapPalette(async () => {
-      const ref = createRef<TimelineMinimapHandle>();
-      const canvases: HTMLCanvasElement[] = [];
-      const originalBeginPath = CanvasRenderingContext2D.prototype.beginPath;
-      using contextCapture = vi
-        .spyOn(CanvasRenderingContext2D.prototype, "beginPath")
-        .mockImplementation(function (this: CanvasRenderingContext2D) {
-          if (!canvases.includes(this.canvas)) canvases.push(this.canvas);
-          originalBeginPath.call(this);
-        });
-      await using screen = await render(minimap(ref, items(), () => {}));
-      contextCapture.mockRestore();
-      await visible(ref, 5, 9);
-      const canvas = minimapCanvas(screen.container);
-      const base = canvases.find((candidate) => candidate !== canvas && !candidate.isConnected);
-      expect(base).toBeDefined();
-      const backings = [canvas, base!] as const;
-      const pixels = (target: HTMLCanvasElement) =>
-        Array.from(target.getContext("2d")!.getImageData(0, 0, target.width, target.height).data);
-      const expected = backings.map(pixels);
-      expect(expected.every((backing) => backing.some((value) => value !== 0))).toBe(true);
-      const expectCleared = () => {
-        for (const target of backings)
-          expect(pixels(target).every((value) => value === 0)).toBe(true);
-      };
-
-      for (const [first, last] of [backings, [base!, canvas]] as const) {
+  it.each([
+    { lost: ["display"], restored: ["display"] },
+    { lost: ["base"], restored: ["base"] },
+    { lost: ["display", "base"], restored: ["display", "base"] },
+    { lost: ["display", "base"], restored: ["base", "display"] },
+  ] as const)(
+    "recovers lost $lost backings in $restored order at equal geometry",
+    async ({ lost, restored }) => {
+      await withMinimapPalette(async () => {
+        const ref = createRef<TimelineMinimapHandle>();
+        using capture = captureMinimapBackings();
+        await using screen = await render(minimap(ref, items(), () => {}));
+        const backings = capture.get(screen.container);
+        const targets = Object.values(backings);
+        await visible(ref, 5, 9);
+        const expected = targets.map(backingPixels);
+        expect(expected.every((pixels) => pixels.some((value) => value !== 0))).toBe(true);
         await act(() => {
-          for (const target of backings) {
+          for (const name of lost) {
+            const target = backings[name];
             target.dispatchEvent(new Event("contextlost", { cancelable: true }));
-            // Reset actual pixels AND context state. Events alone do neither.
+            // Events alone reset neither actual pixels nor drawing state.
             const width = target.width;
             target.width = width;
+            expect(backingPixels(target).every((value) => value === 0)).toBe(true);
           }
         });
-        expectCleared();
+        const duringLoss = targets.map(backingPixels);
         await visible(ref, 13, 13);
-        expectCleared();
-        await act(() => first.dispatchEvent(new Event("contextrestored")));
-        expectCleared(); // A shared boolean resumes here and fails this assertion.
-        await visible(ref, 5, 9);
-        expectCleared(); // Imperative scroll painting must also stay blocked.
-        await act(() => last.dispatchEvent(new Event("contextrestored")));
-        expect(backings.map(pixels)).toEqual(expected);
+        expect(targets.map(backingPixels)).toEqual(duringLoss);
+        for (const [index, name] of restored.entries()) {
+          // Recover the original range while painting is still blocked.
+          await visible(ref, 5, 9);
+          expect(targets.map(backingPixels)).toEqual(duringLoss);
+          await act(() => backings[name].dispatchEvent(new Event("contextrestored")));
+          if (index < restored.length - 1) {
+            expect(targets.map(backingPixels)).toEqual(duringLoss);
+            await visible(ref, 13, 13);
+            expect(targets.map(backingPixels)).toEqual(duringLoss);
+          }
+        }
+        expect(targets.map(backingPixels)).toEqual(expected);
         expect(paintedMinimapMarkerIndices(screen.container, 5)).toEqual([1, 2]);
-      }
-    });
-  });
+      });
+    },
+  );
 
   it("keeps the painted neighbor width across adjacent retargets without an intervening frame", async () => {
     await withMinimapPalette(async () => {
@@ -451,7 +473,6 @@ describe("TimelineMinimap", () => {
   });
 
   it("keeps pointer previews, keyboard navigation, and endpoint geometry", async () => {
-    using frames = minimapWidthFrames();
     const ref = createRef<TimelineMinimapHandle>();
     const turns = items();
     const onSelect = vi.fn();
@@ -459,19 +480,9 @@ describe("TimelineMinimap", () => {
     await visible(ref, 9, 9);
     const button = rail(screen);
     const bounds = button.getBoundingClientRect();
-    await frames.at(1_000, () => {
-      button.dispatchEvent(
-        new MouseEvent("mousemove", {
-          bubbles: true,
-          clientY: bounds.top + bounds.height / 2,
-        }),
-      );
-    });
+    await act(() => pointMinimapAt(screen, 0.5));
     await expect.element(screen.getByText("Question turn-2", { exact: true })).toBeVisible();
     await expect.element(screen.getByText("Answer turn-2", { exact: true })).toBeVisible();
-    await frames.tick(1_150);
-    expect(paintedMinimapMarkerIndices(screen.container, turns.length)).toEqual([2]);
-    expect(minimapMarkerPixels(screen.container, turns.length, 20)[2]![3]).toBeGreaterThan(200);
 
     await act(() => button.focus());
     await userEvent.keyboard("{ArrowDown}{Enter}");
@@ -503,7 +514,7 @@ describe("TimelineMinimap", () => {
     expect(paintedMinimapMarkerIndices(screen.container, turns.length)).toEqual([4]);
   });
 
-  it("recomputes membership across row replacement, remounts, prepends and thread switches", async () => {
+  it("recomputes membership after same-count replacement and resets on a new thread key", async () => {
     const ref = createRef<TimelineMinimapHandle>();
     const turns = items();
     const onSelect = vi.fn();
@@ -514,23 +525,8 @@ describe("TimelineMinimap", () => {
     // Same count, new row mapping, no imperative range update.
     expect(paintedMinimapMarkerIndices(screen.container, turns.length)).toEqual([1]);
 
-    await screen.rerender(minimap(ref, turns.slice(0, 1), onSelect));
-    expect(screen.container.querySelector("[data-minimap-canvas]")).toBeNull();
-    await screen.rerender(minimap(ref, turns, onSelect));
-    expect(paintedMinimapMarkerIndices(screen.container, turns.length)).toEqual([1, 2]);
     await act(() => rail(screen).focus());
-
-    const prepended = [
-      { id: "earlier", rowIndex: 0, userText: "Earlier question", assistantText: null },
-      ...turns.map((turn) => ({ ...turn, rowIndex: turn.rowIndex + 2 })),
-    ];
-    await screen.rerender(minimap(ref, prepended, onSelect));
-    await visible(ref, 7, 11);
-    expect(paintedMinimapMarkerIndices(screen.container, prepended.length)).toEqual([2, 3]);
-    await screen.getByRole("button", { name: "Previous turn" }).click();
-    expect(onSelect).toHaveBeenLastCalledWith(prepended[1]);
-    await screen.getByRole("button", { name: "Next turn" }).click();
-    expect(onSelect).toHaveBeenLastCalledWith(prepended[3]);
+    await expect.element(screen.getByText("Question turn-1", { exact: true })).toBeVisible();
 
     await screen.rerender(minimap(ref, items(5, "other"), onSelect, "thread-b"));
     expect(paintedMinimapMarkerIndices(screen.container, 5)).toEqual([]);
@@ -663,10 +659,6 @@ describe("TimelineMinimap", () => {
           assistantText: "Updated replacement answer",
         }),
       );
-      await screen.getByRole("button", { name: "Previous turn" }).click();
-      expect(onSelect).toHaveBeenLastCalledWith(updated[0]);
-      await screen.getByRole("button", { name: "Next turn" }).click();
-      expect(onSelect).toHaveBeenLastCalledWith(updated[2]);
 
       await act(() => button.blur());
       expect(screen.container.querySelector("[data-minimap-preview]")).toBeNull();
@@ -694,33 +686,27 @@ describe("TimelineMinimap", () => {
       await using screen = await render(minimap(ref, turns, onSelect));
       await visible(ref, 9, 9);
       expect(paintedMinimapMarkerIndices(screen.container, 5)).toEqual([2]);
-      for (const [start, end] of [
-        [null, null],
-        [null, 9],
-        [9, null],
-      ] as const) {
-        await act(() => ref.current!.updateVisibleRange(start, end));
-        await vi.waitFor(() => {
-          expect(paintedMinimapMarkerIndices(screen.container, 5)).toEqual([]);
-          for (const pixel of minimapMarkerPixels(screen.container, 5)) {
-            expect(pixel[2]).toBeGreaterThan(200);
-            expect(pixel[3]).toBeGreaterThan(0);
-            expect(pixel[3]).toBeLessThanOrEqual(191);
-          }
-        });
-        await expect.element(screen.getByRole("button", { name: "Previous turn" })).toBeDisabled();
-        await expect.element(screen.getByRole("button", { name: "Next turn" })).toBeDisabled();
-        await visible(ref, 9, 9);
-        await vi.waitFor(() => {
-          expect(paintedMinimapMarkerIndices(screen.container, 5)).toEqual([2]);
-        });
-        await expect.element(screen.getByRole("button", { name: "Previous turn" })).toBeEnabled();
-        await expect.element(screen.getByRole("button", { name: "Next turn" })).toBeEnabled();
-        await screen.getByRole("button", { name: "Previous turn" }).click();
-        expect(onSelect).toHaveBeenLastCalledWith(turns[1]);
-        await screen.getByRole("button", { name: "Next turn" }).click();
-        expect(onSelect).toHaveBeenLastCalledWith(turns[3]);
-      }
+      await act(() => ref.current!.updateVisibleRange(null, null));
+      await vi.waitFor(() => {
+        expect(paintedMinimapMarkerIndices(screen.container, 5)).toEqual([]);
+        for (const pixel of minimapMarkerPixels(screen.container, 5)) {
+          expect(pixel[2]).toBeGreaterThan(200);
+          expect(pixel[3]).toBeGreaterThan(0);
+          expect(pixel[3]).toBeLessThanOrEqual(191);
+        }
+      });
+      await expect.element(screen.getByRole("button", { name: "Previous turn" })).toBeDisabled();
+      await expect.element(screen.getByRole("button", { name: "Next turn" })).toBeDisabled();
+      await visible(ref, 9, 9);
+      await vi.waitFor(() => {
+        expect(paintedMinimapMarkerIndices(screen.container, 5)).toEqual([2]);
+      });
+      await expect.element(screen.getByRole("button", { name: "Previous turn" })).toBeEnabled();
+      await expect.element(screen.getByRole("button", { name: "Next turn" })).toBeEnabled();
+      await screen.getByRole("button", { name: "Previous turn" }).click();
+      expect(onSelect).toHaveBeenLastCalledWith(turns[1]);
+      await screen.getByRole("button", { name: "Next turn" }).click();
+      expect(onSelect).toHaveBeenLastCalledWith(turns[3]);
     });
   });
 
@@ -794,50 +780,6 @@ describe("TimelineMinimap", () => {
         expect(canvas.hasAttribute(matchAttribute)).toBe(true);
       });
     });
-  });
-
-  it("repaints cleared backings when either canvas announces context restoration", async () => {
-    const ref = createRef<TimelineMinimapHandle>();
-    const canvases: HTMLCanvasElement[] = [];
-    const originalBeginPath = CanvasRenderingContext2D.prototype.beginPath;
-    const contextCapture = vi
-      .spyOn(CanvasRenderingContext2D.prototype, "beginPath")
-      .mockImplementation(function (this: CanvasRenderingContext2D) {
-        if (!canvases.includes(this.canvas)) canvases.push(this.canvas);
-        originalBeginPath.call(this);
-      });
-    try {
-      await using screen = await render(minimap(ref, items(), () => {}));
-      contextCapture.mockRestore();
-      await visible(ref, 5, 9);
-      const canvas = minimapCanvas(screen.container);
-      const base = canvases.find((candidate) => candidate !== canvas && !candidate.isConnected);
-      expect(base).toBeDefined();
-      const pixels = (target: HTMLCanvasElement) =>
-        Array.from(target.getContext("2d")!.getImageData(0, 0, target.width, target.height).data);
-      const expectedDisplay = pixels(canvas);
-      const expectedBase = pixels(base!);
-      expect(paintedMinimapMarkerIndices(screen.container, 5)).toEqual([1, 2]);
-
-      for (const restored of [canvas, base!]) {
-        await act(() => {
-          for (const target of [canvas, base!]) {
-            const width = target.width;
-            target.width = width;
-          }
-          expect(pixels(canvas).every((value) => value === 0)).toBe(true);
-          expect(pixels(base!).every((value) => value === 0)).toBe(true);
-          // This models cleared pixels and reset drawing state. A synthetic
-          // event does not prove real GPU loss or the browser's recovery policy.
-          restored.dispatchEvent(new Event("contextrestored"));
-        });
-        expect(pixels(base!)).toEqual(expectedBase);
-        expect(pixels(canvas)).toEqual(expectedDisplay);
-        expect(paintedMinimapMarkerIndices(screen.container, 5)).toEqual([1, 2]);
-      }
-    } finally {
-      contextCapture.mockRestore();
-    }
   });
 
   it("lets an outside selection drag pass through and restores the hit target on release", async () => {

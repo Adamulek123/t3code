@@ -5,6 +5,10 @@ import { resolveTimelineMinimapMarkers } from "./timelineMinimapRail";
 describe("minimap visible markers", () => {
   it.each([
     { start: null, end: null, markers: [0, 0], current: null },
+    { start: null, end: 9, markers: [0, 0], current: null },
+    { start: 9, end: null, markers: [0, 0], current: null },
+    { start: undefined, end: 10, markers: [0, 0], current: null },
+    { start: 2, end: undefined, markers: [0, 0], current: null },
     { start: 0, end: 1, markers: [0, 0], current: null },
     { start: 0, end: 2, markers: [0, 1], current: 0 },
     { start: 2, end: 2, markers: [0, 1], current: 0 },
@@ -22,14 +26,12 @@ describe("minimap visible markers", () => {
     });
   });
 
-  it("has no current turn in an empty timeline or an unknown viewport", () => {
+  it("has no visible markers or current turn in an empty timeline", () => {
     expect(resolveTimelineMinimapMarkers([], 0, 20)).toEqual({
       start: 0,
       end: 0,
       currentIndex: null,
     });
-    expect(resolveTimelineMinimapMarkers([2, 6], undefined, 10).currentIndex).toBeNull();
-    expect(resolveTimelineMinimapMarkers([2, 6], 2, undefined).currentIndex).toBeNull();
   });
 
   it("finds visible markers near the end of a large timeline", () => {
