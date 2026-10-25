@@ -602,17 +602,11 @@ export function TimelineMinimap({
               className="pointer-events-none absolute inset-y-0 left-0 h-full w-6 overflow-visible"
             >
               <canvas
-                className="absolute stroke-muted-foreground/35 fill-foreground/90"
+                className="absolute -top-px -left-px h-[calc(100%+2px)] w-[calc(100%+2px)] stroke-muted-foreground/35 fill-foreground/90"
                 data-theme-canvas-paint
                 data-minimap-canvas
                 ref={canvasRef}
-                style={{
-                  fill: "none",
-                  top: -1,
-                  left: -1,
-                  width: "calc(100% + 2px)",
-                  height: "calc(100% + 2px)",
-                }}
+                style={{ fill: "none" }}
               />
               <span className="hidden stroke-muted-foreground/75" ref={activeColorRef} />
               <span className="hidden stroke-foreground/90" ref={highlightColorRef} />
