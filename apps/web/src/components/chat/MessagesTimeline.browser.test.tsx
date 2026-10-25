@@ -333,7 +333,11 @@ describe("MessagesTimeline minimap integration", () => {
     async (destination) => {
       const entries = history("source");
       const destinationEntries = destination === "empty" ? [] : history("destination", 24);
-      const props = { ...baseProps(), liveFollowEnabled: false };
+      const props = {
+        ...baseProps(),
+        liveFollowEnabled: false,
+        cancelPositionRestoreRef: createRef<(() => void) | null>(),
+      };
       await using screen = await renderElement(
         <MessagesTimeline {...props} timelineEntries={entries} />,
       );
@@ -397,10 +401,12 @@ describe("MessagesTimeline minimap integration", () => {
       });
 
       if (destinationEntries.length > 0) {
+        // Restoration owns scrolling until its effect cleans up.
+        await vi.waitFor(() => expect(props.cancelPositionRestoreRef.current).toBeNull());
         const target = destinationEntries[8]!;
         await vi.waitFor(() => expect(list.getState().indexByKey(target.id)).toBeDefined());
-        await act(() => {
-          void list.scrollToIndex({
+        await act(async () => {
+          await list.scrollToIndex({
             index: list.getState().indexByKey(target.id)!,
             animated: false,
             viewOffset: 24,
