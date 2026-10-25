@@ -331,6 +331,7 @@ describe("MessagesTimeline minimap integration", () => {
   it.each(["populated", "empty"] as const)(
     "uses the %s destination after switching threads with a parent refresh queued",
     async (destination) => {
+      setup();
       const entries = history("source");
       const destinationEntries = destination === "empty" ? [] : history("destination", 24);
       const props = {
@@ -457,6 +458,7 @@ describe("MessagesTimeline minimap integration", () => {
   );
 
   it("refreshes visible markers and previous/next destinations after prepending history", async () => {
+    setup();
     const entries = history();
     const props = { ...baseProps(), liveFollowEnabled: false };
     await using screen = await renderElement(
@@ -496,6 +498,7 @@ describe("MessagesTimeline minimap integration", () => {
   });
 
   it("refreshes the visible band after a height-only resize without changing rows or scroll offset", async () => {
+    setup();
     const entries = history();
     const props = { ...baseProps(), liveFollowEnabled: false };
     await using screen = await renderElement(
