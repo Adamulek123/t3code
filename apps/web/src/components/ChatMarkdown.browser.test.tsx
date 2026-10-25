@@ -351,8 +351,8 @@ describe("GitHub mentions through the markdown pipeline", () => {
 
   it("shows the profile URL on hover and opens it through the link context menu", async () => {
     setup();
-    using open = vi.spyOn(window, "open").mockReturnValue(null);
     await using screen = await renderText("Thanks @Adamulek123.", { extraRehypePlugins });
+    using open = vi.spyOn(window, "open").mockReturnValue(null);
     const { container } = screen;
     const link = container.querySelector<HTMLAnchorElement>("a[data-pull-request-mention]")!;
     await userEvent.hover(link);
