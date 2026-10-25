@@ -97,6 +97,7 @@ export function PullRequestMarkdown({
         className,
       )}
       data-image-gallery
+      data-pull-request-markdown
     >
       {segments.map((segment) => {
         if (segment.kind === "markdown" || segment.media === "image") {
