@@ -17,6 +17,7 @@ const AUTOLINK_IGNORED_TYPES = new Set(["a", "code", "pre", "kbd", "samp", "scri
 
 export function rehypePullRequestAutolinks(options: {
   readonly autolinks: (text: string) => ReadonlyArray<ReferenceAutolink>;
+  readonly userMentionsHandled?: boolean;
 }) {
   const visit = (node: MarkdownNode): void => {
     const children = node.children;
@@ -29,7 +30,14 @@ export function rehypePullRequestAutolinks(options: {
         continue;
       }
       const value = child.value;
-      const links = options.autolinks(value);
+      // The mention pass already checked authored escapes and username boundaries.
+      // Keep host-specific team links, but do not relink rejected user mentions.
+      const links = options
+        .autolinks(value)
+        .filter(
+          (link) =>
+            !options.userMentionsHandled || link.kind !== "mention" || link.text.includes("/"),
+        );
       if (links.length === 0) continue;
       const replacements: MarkdownNode[] = [];
       let start = 0;

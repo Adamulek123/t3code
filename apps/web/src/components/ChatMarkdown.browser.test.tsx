@@ -291,6 +291,7 @@ describe("GitHub mentions through the markdown pipeline", () => {
       [
         rehypePullRequestAutolinks,
         {
+          userMentionsHandled: true,
           autolinks: changeRequestReferenceAutolinker({
             provider: "github",
             url: "https://github.com/pingdotgg/t3code/pull/1",
@@ -423,7 +424,7 @@ describe("GitHub mentions through the markdown pipeline", () => {
     },
   );
 
-  it("keeps reference links out of code, authored links and invalid word boundaries", async () => {
+  it("keeps host-qualified references while excluding code, authored links and invalid SHAs", async () => {
     setup();
     const sha = "a".repeat(40);
     await using screen = await renderText(
@@ -431,7 +432,15 @@ describe("GitHub mentions through the markdown pipeline", () => {
       { extraRehypePlugins },
     );
     const { container } = screen;
-    expect(container.querySelectorAll("a[data-pull-request-autolink]")).toHaveLength(2);
+    expect(
+      [...container.querySelectorAll<HTMLAnchorElement>("a[data-pull-request-autolink]")].map(
+        (link) => [link.textContent, link.href],
+      ),
+    ).toEqual([
+      ["#123", "https://github.com/pingdotgg/t3code/issues/123"],
+      [sha.slice(0, 7), `https://github.com/pingdotgg/t3code/commit/${sha}`],
+      ["word#123", "https://github.com/word/t3code/issues/123"],
+    ]);
     expect(container.querySelector("code a")).toBeNull();
     expect(container.querySelector("a[href='https://example.com']")?.textContent).toBe(
       `#123 ${sha}`,

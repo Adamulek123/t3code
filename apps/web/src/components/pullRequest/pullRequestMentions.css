@@ -1,3 +1,5 @@
+@reference "../../index.css";
+
 [data-pull-request-markdown] .chat-markdown a[data-pull-request-mention] {
   border-radius: 0.25em;
   color: var(--contrast-foreground);
@@ -13,9 +15,11 @@
   box-decoration-break: clone;
 }
 
-.dark [data-pull-request-markdown] .chat-markdown a[data-pull-request-mention="self"] {
-  color: color-mix(in srgb, var(--mention-color) 45%, var(--color-foreground));
-  background-color: color-mix(in srgb, var(--mention-color) 12%, transparent);
+[data-pull-request-markdown] .chat-markdown a[data-pull-request-mention="self"] {
+  @variant dark {
+    color: color-mix(in srgb, var(--mention-color) 45%, var(--color-foreground));
+    background-color: color-mix(in srgb, var(--mention-color) 12%, transparent);
+  }
 }
 
 [data-pull-request-markdown]

@@ -11,7 +11,7 @@ type Node = {
   children?: Node[];
 };
 
-function links(markdown: string) {
+function links(markdown: string, userMentionsHandled = false) {
   const autolinks = changeRequestReferenceAutolinker({
     provider: "github",
     url: "https://github.com/team/repo/pull/8",
@@ -29,7 +29,7 @@ function links(markdown: string) {
       { type: "element", tagName: "code", children: [{ type: "text", value: "#14" }] },
     ],
   };
-  rehypePullRequestAutolinks({ autolinks })(tree as never);
+  rehypePullRequestAutolinks({ autolinks, userMentionsHandled })(tree as never);
   const found: Array<[string | undefined, unknown, unknown]> = [];
   const visit = (node: Node) => {
     if (node.tagName === "a") {
@@ -46,6 +46,15 @@ function links(markdown: string) {
 }
 
 describe("rehypePullRequestAutolinks", () => {
+  it("defers user mentions to the authored-text pass while keeping team links", () => {
+    expect(links("@reader @team/reviewers #12", true)).toEqual([
+      ["@team/reviewers", "https://github.com/orgs/team/teams/reviewers", "mention"],
+      ["#12", "https://github.com/team/repo/issues/12", "reference"],
+      ["#13", "https://example.com", undefined],
+    ]);
+    expect(links("@reader")[0]).toEqual(["@reader", "https://github.com/reader", "mention"]);
+  });
+
   it("links the host's references in prose and leaves links and code alone", () => {
     expect(links("Fixes #12 in abcdef1.")).toEqual([
       ["#12", "https://github.com/team/repo/issues/12", "reference"],

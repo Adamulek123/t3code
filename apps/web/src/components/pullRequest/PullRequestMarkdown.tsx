@@ -84,7 +84,12 @@ export function PullRequestMarkdown({
       { repositoryUrl: context.repositoryUrl, viewer: context.viewer },
     ]);
   }
-  if (autolinks) extraRehypePlugins.push([rehypePullRequestAutolinks, { autolinks }]);
+  if (autolinks) {
+    extraRehypePlugins.push([
+      rehypePullRequestAutolinks,
+      { autolinks, userMentionsHandled: Boolean(context?.repositoryUrl) },
+    ]);
+  }
   return (
     <div
       className={cn(
