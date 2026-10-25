@@ -6,8 +6,9 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import "~/index.css";
 
 import { act, render } from "../../../test/render";
-import { paintedMinimapMarkerIndices } from "../../../test/minimapPixels";
+import { minimapMarkerPixels, paintedMinimapMarkerIndices } from "../../../test/minimapPixels";
 import { MessagesTimeline } from "./MessagesTimeline";
+import type { MessagesTimelineRow } from "./MessagesTimeline.logic";
 import { makeStreamingTimelineFixture } from "../../test-fixtures";
 import { deriveTimelineEntriesFromVisibleTurnItems } from "../../session-logic";
 import { remarkThoughtPreview } from "./TimelineWorkEntryRow.logic";
@@ -211,6 +212,122 @@ async function scrollToEntry(
 }
 
 describe("MessagesTimeline minimap integration", () => {
+  it("keeps user markers and navigation across an on-return compaction finishing", async () => {
+    setup();
+    const fixture = makeStreamingTimelineFixture();
+    const prompt = fixture.visibleTurnItems[3]!;
+    const assistant = fixture.visibleTurnItems[5]!;
+    if (prompt.item.type !== "user_message" || assistant.item.type !== "assistant_message") {
+      throw new Error("Expected streaming fixture messages");
+    }
+    const promptItem = prompt.item;
+    const assistantItem = assistant.item;
+    const before = history("before-compaction", 12);
+    const after = history("after-compaction", 12);
+    const entries = (completed: boolean) => [
+      ...before,
+      ...deriveTimelineEntriesFromVisibleTurnItems({
+        visibleTurnItems: [
+          {
+            ...prompt,
+            item: { ...promptItem, text: "/compact", idleCompaction: "onReturn" },
+          },
+          {
+            ...assistant,
+            item: {
+              ...assistantItem,
+              type: "compaction",
+              driver: null,
+              status: completed ? "completed" : "running",
+              beforeTokenCount: 899_000,
+              afterTokenCount: completed ? 19_000 : undefined,
+            },
+          },
+        ],
+        optimisticMessages: [],
+      }),
+      ...(completed ? after : []),
+    ];
+    const props = { ...baseProps(), liveFollowEnabled: false };
+    const ui = (completed: boolean) => (
+      <MessagesTimeline
+        {...props}
+        timelineEntries={entries(completed)}
+        isWorking={!completed}
+        isCompacting={!completed}
+        activeTurnInProgress={!completed}
+        activeTurnStartedAt={fixture.time(5)}
+        latestRun={{
+          runId: fixture.runId,
+          status: completed ? "completed" : "running",
+          startedAt: fixture.time(5),
+          completedAt: completed ? fixture.time(9) : null,
+        }}
+      />
+    );
+    await using screen = await renderElement(ui(false));
+    const previous = before[10]!;
+    const next = after[0]!;
+    await vi.waitFor(() => expect(props.listRef.current).not.toBeNull());
+    const list = props.listRef.current!;
+    const expectMarkers = (ordinaryEntries: Entry[]) => {
+      const rows = list.getState().data as ReadonlyArray<MessagesTimelineRow>;
+      const users = rows.filter((row) => row.kind === "message" && row.message.role === "user");
+      expect(users.map((row) => row.id)).toEqual(
+        userTurns(ordinaryEntries).map((entry) => entry.id),
+      );
+      expect(screen.text()).not.toContain("/compact");
+      // Check every tick, including unhighlighted ones, at the actual user-row count.
+      expect(
+        minimapMarkerPixels(screen.container, users.length).every((pixel) => pixel[3]! > 0),
+      ).toBe(true);
+      expectMinimapMatchesViewport(screen.container, list, ordinaryEntries);
+    };
+    await vi.waitFor(() => {
+      expect(screen.text()).toContain("Compacting after being idle…");
+      expect(list.getState().indexByKey("working-indicator-row")).toBeDefined();
+      expect(screen.container.querySelector('[role="separator"]')).toBeNull();
+      expectMarkers(before);
+    });
+    const canvas = screen.container.querySelector("[data-minimap-canvas]");
+
+    // Retain the parent, list ref and thread identity as the divider replaces working status.
+    await screen.rerender(ui(true));
+    const ordinaryEntries = [...before, ...after];
+    await vi.waitFor(() => {
+      expect(props.listRef.current).toBe(list);
+      expect(screen.container.querySelector("[data-minimap-canvas]")).toBe(canvas);
+      expect(screen.text()).not.toContain("Compacting after being idle…");
+      expect(list.getState().indexByKey("working-indicator-row")).toBeUndefined();
+      expectMarkers(ordinaryEntries);
+    });
+
+    const updatedRows = list.getState().data as ReadonlyArray<MessagesTimelineRow>;
+    const dividerIndex = updatedRows.findIndex((row) => row.kind === "context-compaction");
+    expect(dividerIndex).toBeGreaterThanOrEqual(0);
+    await act(() => {
+      void list.scrollToIndex({ index: dividerIndex, animated: false, viewOffset: 24 });
+    });
+    await vi.waitFor(() => {
+      expect(screen.container.querySelectorAll('[role="separator"]')).toHaveLength(1);
+      expect(screen.text()).toContain("Context compacted after being idle 899K");
+      expect(screen.text()).toContain("19K tokens");
+      expectMarkers(ordinaryEntries);
+    });
+
+    await scrollToEntry(screen, props.listRef, ordinaryEntries, next);
+    await click(screen.button("Previous turn"));
+    await vi.waitFor(() => {
+      expectEntryNearTop(screen.container, list, previous);
+      expectMarkers(ordinaryEntries);
+    });
+    await click(screen.button("Next turn"));
+    await vi.waitFor(() => {
+      expectEntryNearTop(screen.container, list, next);
+      expectMarkers(ordinaryEntries);
+    });
+  });
+
   it.each(["populated", "empty"] as const)(
     "uses the %s destination after switching threads with a parent refresh queued",
     async (destination) => {
