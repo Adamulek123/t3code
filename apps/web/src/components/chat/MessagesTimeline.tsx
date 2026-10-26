@@ -846,10 +846,10 @@ const ConversationTimeline = memo(function ConversationTimeline({
 
   useLayoutEffect(() => {
     // Replacements and prepends can change marker indices without a scroll event.
-    refreshMinimap();
+    // Defer geometry reads until LegendList finishes adjusting the committed rows.
     scheduleMinimapRefresh();
     // oxlint-disable-next-line react/exhaustive-effect-dependencies -- Stable callbacks must recheck replaced rows and completed position restoration.
-  }, [rows, restoringThreadPosition, refreshMinimap, scheduleMinimapRefresh]);
+  }, [rows, restoringThreadPosition, scheduleMinimapRefresh]);
 
   // The measurement the last remember wrote, so a follow release can rewrite
   // it without reading render state from a listener.

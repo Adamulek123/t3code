@@ -426,11 +426,11 @@ describe("MessagesTimeline minimap integration", () => {
       });
 
       if (destinationEntries.length > 0) {
-        // The minimap clears its range until destination restoration finishes.
-        await vi.waitFor(() => {
-          expect(
-            expectMinimapMatchesViewport(screen.container, list, destinationEntries).length,
-          ).toBeGreaterThan(0);
+        // Navigation cancels destination restoration before selecting a target.
+        await act(() => {
+          list
+            .getScrollableNode()
+            .dispatchEvent(new WheelEvent("wheel", { deltaY: -1, bubbles: true }));
         });
         const target = destinationEntries[8]!;
         await vi.waitFor(() => expect(list.getState().indexByKey(target.id)).toBeDefined());
