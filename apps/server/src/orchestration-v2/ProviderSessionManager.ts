@@ -1725,6 +1725,37 @@ export const layerWithOptions = (
               modelFamily: normalizeModelMetricLabel(model),
             },
           });
+        const withTurnActivity = (
+          input: ProviderAdapter.ProviderAdapterV2TurnInput,
+          start: () => Effect.Effect<void, ProviderAdapter.ProviderAdapterV2Error>,
+        ) =>
+          observeActivity(
+            providerSessionId,
+            ensureThreadAttached({
+              providerSessionId,
+              threadId: input.threadId,
+              providerInstanceId: runtime.instanceId,
+            }),
+          ).pipe(
+            // Failed or stopped starts may omit turn.terminal; clear their turns so sessions can idle.
+            Effect.andThen(
+              holdThreadLoaded({
+                runtime,
+                threadId: input.threadId,
+                providerThread: input.providerThread,
+              }),
+            ),
+            Effect.andThen(
+              Effect.acquireUseRelease(
+                observeActivity(providerSessionId, markBusy(runtime, input)),
+                start,
+                (_, exit) =>
+                  Exit.isFailure(exit)
+                    ? observeActivity(providerSessionId, markIdle(runtime, input.attemptId))
+                    : Effect.void,
+              ),
+            ),
+          );
         return {
           ...runtime,
           subscribeEvents,
@@ -1830,34 +1861,15 @@ export const layerWithOptions = (
               ),
             ),
           startTurn: (input) =>
-            observeActivity(
-              providerSessionId,
-              ensureThreadAttached({
-                providerSessionId,
-                threadId: input.threadId,
-                providerInstanceId: runtime.instanceId,
-              }),
-            ).pipe(
-              // Failed or stopped starts may omit turn.terminal; clear their turns so sessions can idle.
-              Effect.andThen(
-                holdThreadLoaded({
-                  runtime,
-                  threadId: input.threadId,
-                  providerThread: input.providerThread,
-                }),
-              ),
-              Effect.andThen(
-                Effect.acquireUseRelease(
-                  observeActivity(providerSessionId, markBusy(runtime, input)),
-                  () =>
-                    runtime.startTurn(input).pipe(turnMetrics("send", input.modelSelection.model)),
-                  (_, exit) =>
-                    Exit.isFailure(exit)
-                      ? observeActivity(providerSessionId, markIdle(runtime, input.attemptId))
-                      : Effect.void,
-                ),
-              ),
+            withTurnActivity(input, () =>
+              runtime.startTurn(input).pipe(turnMetrics("send", input.modelSelection.model)),
             ),
+          ...(runtime.compactThread === undefined
+            ? {}
+            : {
+                compactThread: (input: ProviderAdapter.ProviderAdapterV2TurnInput) =>
+                  withTurnActivity(input, () => runtime.compactThread!(input)),
+              }),
           steerTurn: (input) =>
             observeActivity(providerSessionId, touchActivity(providerSessionId)).pipe(
               Effect.andThen(runtime.steerTurn(input).pipe(turnMetrics("steer"))),

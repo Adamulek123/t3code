@@ -427,6 +427,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
               resumeCount: current.resumeCount + 1,
             })).pipe(Effect.as(threadInput.providerThread)),
           startTurn: () => options.startTurn ?? Effect.void,
+          compactThread: () => options.startTurn ?? Effect.void,
           steerTurn: () => Effect.void,
           interruptTurn: () =>
             Ref.update(state, (current) => ({
@@ -1346,6 +1347,24 @@ it.effect.each([false, true])(
         yield* fixture.assertSettled;
       }).pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 1000 })));
     }),
+);
+
+it.effect("ProviderSessionManagerV2 unloads a shared thread after compaction settles", () =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    yield* Effect.gen(function* () {
+      const fixture = yield* makeAttemptActivityFixture(state, true);
+      yield* fixture.runtime.resumeThread({
+        providerThread: fixture.first.providerThread,
+        threadId: fixture.first.threadId,
+      });
+      yield* fixture.runtime.compactThread!(fixture.first);
+      yield* fixture.snapshot(fixture.first);
+      yield* fixture.assertBusy;
+      yield* fixture.terminal(fixture.first);
+      yield* fixture.assertSettled;
+    }).pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 1000 })));
+  }),
 );
 
 it.effect.each(["failure", "interrupt"] as const)(
