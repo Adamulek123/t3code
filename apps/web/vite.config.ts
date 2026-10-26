@@ -1,3 +1,5 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Vite config runs before any Effect runtime.
+import * as NodeFSP from "node:fs/promises";
 import * as NodeZlib from "node:zlib";
 
 import react from "@vitejs/plugin-react";
@@ -9,6 +11,7 @@ import "vite-plus/test/config";
 import { defineConfig, type Connect, type Plugin } from "vite-plus";
 import * as Hash from "effect/Hash";
 import pkg from "./package.json" with { type: "json" };
+import pdfjsPkg from "pdfjs-dist/package.json" with { type: "json" };
 
 import {
   DEV_PROXIED_ORIGIN_PRESERVING_PREFIXES,
@@ -95,9 +98,30 @@ const browserTestApiPort = 61_000 + ((Hash.string(import.meta.dirname) >>> 0) % 
 
 const browserTestProject = {
   extends: true,
-  // Pre-bundled so a late first import does not trigger a mid-run reload. The
-  // dependency scan misses autocomplete because tests reach it only through lazy imports.
-  optimizeDeps: { include: ["vite-plus/test/browser", "@base-ui/react/autocomplete"] },
+  // Pre-bundle lazy browser and worker dependencies to avoid mid-run reloads.
+  optimizeDeps: {
+    include: [
+      "vite-plus/test/browser",
+      "@base-ui/react/autocomplete",
+      "saxes",
+      "@betteroffice/docx/editor",
+      "@betteroffice/docx/layout",
+      "@betteroffice/docx/layout/render",
+      "@betteroffice/docx/yrs",
+      "@betteroffice/fonts",
+      "@betteroffice/pptx",
+      "@betteroffice/xlsx",
+      "@betteroffice/xlsx/headless",
+      "fast-xml-parser",
+      "entities",
+      "dompurify",
+      "heic-to/next",
+      "jszip",
+      "pdfjs-dist",
+      "sql.js",
+      "tiff",
+    ],
+  },
   test: {
     name: "browser",
     include: ["src/**/*.browser.test.{ts,tsx}"],
@@ -116,6 +140,34 @@ const browserTestProject = {
         // position starts hovered. test/browserSetup.ts parks it off the page before each test.
         resetPointer: async ({ page }) => {
           await page.mouse.move(-1, -1);
+        },
+      },
+    },
+  },
+} satisfies TestProjectInlineConfiguration;
+
+// Render scenarios count React commits; they run only through scripts/render-metrics.ts,
+// which reads the per-scenario reports this command writes.
+const renderScenariosProject = {
+  ...browserTestProject,
+  test: {
+    ...browserTestProject.test,
+    name: "renders",
+    include: ["test/*.renders.tsx"],
+    // App scenarios mount the whole app per test, which outlasts 15s on a loaded machine.
+    hookTimeout: 60_000,
+    testTimeout: 60_000,
+    setupFiles: ["./test/renderCounter.ts", ...browserTestProject.test.setupFiles],
+    browser: {
+      ...browserTestProject.test.browser,
+      // Vitest names each instance in place, so a shared array would clash with the browser project.
+      instances: [{ browser: "chromium" }],
+      commands: {
+        ...browserTestProject.test.browser.commands,
+        writeRenderReport: async (_context, scenario: string, json: string) => {
+          const directory = process.env.T3CODE_RENDER_REPORT_DIR;
+          if (!directory) throw new Error("T3CODE_RENDER_REPORT_DIR is not set");
+          await NodeFSP.writeFile(`${directory}/${scenario}.json`, json);
         },
       },
     },
@@ -244,6 +296,12 @@ export default defineConfig(() => {
     },
     resolve: {
       tsconfigPaths: true,
+      alias: {
+        "@betteroffice/fonts-cjk": new URL(
+          "./src/components/files/office/fonts-cjk.ts",
+          import.meta.url,
+        ).pathname,
+      },
       dedupe: ["react", "react-dom"],
     },
     experimental: {
@@ -294,9 +352,38 @@ export default defineConfig(() => {
       emptyOutDir: true,
       manifest: true,
       sourcemap: buildSourcemap,
+      rolldownOptions: {
+        output: {
+          // PDF.js resolves decoder modules and ICC data relative to wasmUrl.
+          assetFileNames: (asset) =>
+            asset.originalFileNames.some((path) => /[/\\]pdfjs-dist[/\\]wasm[/\\]/.test(path))
+              ? `assets/pdfjs-${pdfjsPkg.version}/[name][extname]`
+              : "assets/[name]-[hash][extname]",
+          codeSplitting: {
+            // Preview imports must not fold shared file icons back into main.
+            groups: [
+              {
+                name: "react",
+                test: /\/node_modules\/(?:react|react-dom|scheduler)\//,
+                includeDependenciesRecursively: false,
+              },
+              {
+                name: "icons",
+                test: /\/(?:components\/chat\/PierreEntryIcon\.tsx|pierre-icons\.ts|mediaPreview\.ts)$/,
+                includeDependenciesRecursively: false,
+              },
+            ],
+          },
+        },
+      },
     },
+    worker: { format: "es" },
     test: {
-      projects: [defineProject(unitTestProject), defineProject(browserTestProject)],
+      projects: [
+        defineProject(unitTestProject),
+        defineProject(browserTestProject),
+        defineProject(renderScenariosProject),
+      ],
     },
   };
 });
