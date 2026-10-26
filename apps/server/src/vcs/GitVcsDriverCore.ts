@@ -17,7 +17,6 @@ import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
-import * as Scheduler from "effect/Scheduler";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -1435,54 +1434,6 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       worktreeRoot,
       isAtRepositoryRoot,
       currentBranch,
-    } satisfies GitRepositoryPaths;
-  });
-
-  const resolveWorktreeCreationPaths = Effect.fn("resolveWorktreeCreationPaths")(function* (
-    cwd: string,
-  ) {
-    const result = yield* executeGitWithStableDiagnostics(
-      "GitVcsDriver.resolveRepositoryPaths.batch",
-      cwd,
-      ["rev-parse", "--git-common-dir", "--show-toplevel", "--symbolic-full-name", "HEAD"],
-      { timeoutMs: 5_000, allowNonZeroExit: true },
-    ).pipe(Effect.orElseSucceed(() => null));
-    // Git emits LF even on Windows. Preserve CR so ambiguous paths use full discovery.
-    const lines = result?.stdout.replace(/\n$/, "").split("\n");
-    const [commonDirOutput, worktreeRootOutput, headRef] = lines ?? [];
-    if (
-      result?.exitCode !== 0 ||
-      /[\r\n]/.test(cwd) ||
-      lines?.length !== 3 ||
-      !commonDirOutput ||
-      !worktreeRootOutput ||
-      !headRef ||
-      commonDirOutput.startsWith('"') ||
-      worktreeRootOutput.startsWith('"') ||
-      /[\r\n]/.test(commonDirOutput + worktreeRootOutput) ||
-      (headRef !== "HEAD" && !/^refs\/heads\/[^\r\n]+$/.test(headRef))
-    ) {
-      return yield* resolveRepositoryPathsUncached(cwd);
-    }
-    // Match full discovery when Git reports paths relative to a symlink's physical cwd.
-    const physicalCwd = yield* fileSystem.realPath(cwd).pipe(Effect.orElseSucceed(() => undefined));
-    const resolvedGitCommonDir = path.isAbsolute(commonDirOutput)
-      ? path.normalize(commonDirOutput)
-      : path.resolve(physicalCwd ?? cwd, commonDirOutput);
-    const gitCommonDir = yield* fileSystem
-      .realPath(resolvedGitCommonDir)
-      .pipe(Effect.orElseSucceed(() => resolvedGitCommonDir));
-    const worktreeRoot = path.normalize(
-      path.isAbsolute(worktreeRootOutput)
-        ? worktreeRootOutput
-        : path.resolve(cwd, worktreeRootOutput),
-    );
-    return {
-      gitCommonDir,
-      worktreeRoot,
-      isAtRepositoryRoot:
-        physicalCwd === undefined ? undefined : path.relative(worktreeRoot, physicalCwd) === "",
-      currentBranch: headRef === "HEAD" ? null : headRef.slice("refs/heads/".length),
     } satisfies GitRepositoryPaths;
   });
 
@@ -4488,11 +4439,9 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
   const invalidateWorktreeCreationCaches = Effect.fn(
     "GitVcsDriverCore.invalidateWorktreeCreationCaches",
   )(function* (cwd: string) {
-    const epochBeforeDiscovery = listRefsEpochSequence;
-    const repositoryPaths = yield* resolveWorktreeCreationPaths(cwd).pipe(
+    let gitCommonDir = yield* readGitCommonDir(cwd).pipe(
       Effect.catchTags({ GitCommandError: () => Effect.succeed(null) }),
     );
-    let gitCommonDir = repositoryPaths?.gitCommonDir ?? null;
     if (gitCommonDir === null) {
       gitCommonDir = yield* Cache.getOption(
         repositoryPathsCache,
@@ -4506,12 +4455,6 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       invalidateListRefsSnapshot(cwd, gitCommonDir).pipe(Effect.ignore),
       invalidateStatusStaticCaches(cwd, gitCommonDir).pipe(Effect.ignore),
     ]);
-    // Cache.set is synchronous; keep its publication in the same scheduler step as the check.
-    yield* Effect.suspend(() =>
-      repositoryPaths !== null && listRefsEpochSequence === epochBeforeDiscovery + 1
-        ? Cache.set(repositoryPathsCache, normalizeRepositoryPathsCacheKey(cwd), repositoryPaths)
-        : Effect.void,
-    ).pipe(Effect.provideService(Scheduler.PreventSchedulerYield, true));
   });
   const initRepoWithListRefsInvalidation: GitVcsDriver.GitVcsDriver["Service"]["initRepo"] = (
     input,
