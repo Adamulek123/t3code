@@ -214,7 +214,7 @@ describe("TimelineMinimap", () => {
       await using screen = await render(minimap(ref, items(), () => {}));
       const alpha = (x: number) => minimapMarkerPixels(screen.container, 5, x)[2]![3]!;
       await visible(ref, 9, 9);
-      expect(alpha(6)).toBeGreaterThan(200);
+      expect(alpha(6)).toBeGreaterThan(160);
       expect(alpha(10)).toBe(0);
       await visible(ref, 1, 1);
       await visible(ref, 9, 9);
@@ -222,15 +222,15 @@ describe("TimelineMinimap", () => {
 
       await frames.at(1_000, () => pointMinimapAt(screen, 0.5));
       expect(frames.pending.size, "hover must match and queue the width callback").toBe(1);
-      expect(alpha(6)).toBeGreaterThan(200);
+      expect(alpha(6)).toBeGreaterThan(160);
       expect(alpha(10)).toBe(0); // Still the original 8px tick at the start.
       await frames.tick(1_075);
-      expect(alpha(18)).toBeGreaterThan(200);
+      expect(alpha(18)).toBeGreaterThan(160);
       expect(alpha(22)).toBe(0); // Between 8 and 24, with the original eased motion.
       await frames.tick(1_149);
       expect(frames.pending.size).toBe(1);
       await frames.tick(1_150);
-      expect(alpha(22)).toBeGreaterThan(200);
+      expect(alpha(22)).toBeGreaterThan(160);
       expect(frames.pending.size).toBe(0);
 
       const settledRequests = frames.requests;
@@ -243,14 +243,14 @@ describe("TimelineMinimap", () => {
 
       await frames.at(1_200, () => leaveMinimap(screen));
       expect(frames.pending.size).toBe(1);
-      expect(alpha(22)).toBeGreaterThan(200);
+      expect(alpha(22)).toBeGreaterThan(160);
       await frames.tick(1_275);
-      expect(alpha(9)).toBeGreaterThan(200);
+      expect(alpha(9)).toBeGreaterThan(160);
       expect(alpha(14)).toBe(0);
       await frames.tick(1_349);
       expect(frames.pending.size).toBe(1);
       await frames.tick(1_350);
-      expect(alpha(6)).toBeGreaterThan(200);
+      expect(alpha(6)).toBeGreaterThan(160);
       expect(alpha(10)).toBe(0);
       expect(frames.pending.size).toBe(0);
       const finishedRequests = frames.requests;
@@ -432,12 +432,12 @@ describe("TimelineMinimap", () => {
       await act(() => frames.reduceMotion(true));
       expect(frames.pending.size).toBe(0);
       expect(frames.canceled.length).toBeGreaterThan(0);
-      expect(alpha(20)).toBeGreaterThan(200);
+      expect(alpha(20)).toBeGreaterThan(160);
       const requests = frames.requests;
       await act(() => leaveMinimap(screen));
       expect(alpha(20)).toBe(0);
       await act(() => pointMinimapAt(screen, 0.5));
-      expect(alpha(20)).toBeGreaterThan(200);
+      expect(alpha(20)).toBeGreaterThan(160);
       expect(frames.requests).toBe(requests);
       await act(() => frames.reduceMotion(false));
       await frames.at(5_200, () => leaveMinimap(screen));
@@ -692,7 +692,7 @@ describe("TimelineMinimap", () => {
         for (const pixel of minimapMarkerPixels(screen.container, 5)) {
           expect(pixel[2]).toBeGreaterThan(200);
           expect(pixel[3]).toBeGreaterThan(0);
-          expect(pixel[3]).toBeLessThanOrEqual(191);
+          expect(pixel[3]).toBeLessThanOrEqual(153);
         }
       });
       await expect.element(screen.getByRole("button", { name: "Previous turn" })).toBeDisabled();
@@ -717,10 +717,10 @@ describe("TimelineMinimap", () => {
       await visible(ref, 9, 9);
       const canvas = minimapCanvas(screen.container);
       const before = minimapMarkerPixels(screen.container, 5);
-      expect(before[2]![0]).toBeGreaterThan(200);
-      expect(before[2]![3]).toBeGreaterThan(200);
+      expect(before[2]![0]).toBeGreaterThan(160);
+      expect(before[2]![3]).toBeGreaterThan(160);
       expect(before[0]![2]).toBeGreaterThan(200);
-      expect(before[0]![3]).toBeLessThanOrEqual(191);
+      expect(before[0]![3]).toBeLessThanOrEqual(153);
       expect(paintedMinimapMarkerIndices(screen.container, 5)).toEqual([2]);
 
       await act(() => {
@@ -738,7 +738,7 @@ describe("TimelineMinimap", () => {
       });
       await vi.waitFor(() => {
         const after = minimapMarkerPixels(screen.container, 5);
-        expect(after[2]![1]).toBeGreaterThan(200);
+        expect(after[2]![1]).toBeGreaterThan(160);
         expect(after[0]![0]).toBeGreaterThan(200);
         expect(paintedMinimapMarkerIndices(screen.container, 5)).toEqual([2]);
       });

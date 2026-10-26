@@ -25,10 +25,10 @@ export function minimapMarkerPixels(container: ParentNode, count: number, railX 
 }
 
 export function paintedMinimapMarkerIndices(container: ParentNode, count: number) {
-  // Base alpha is 35%, active alpha is 75% (at most about 191). The 90%
-  // highlight over either exceeds 200. Callers use sparse markers to avoid
+  // Base alpha is 25%, active alpha is 60% (at most 153). The 55%
+  // highlight over either exceeds 160. Callers use sparse markers to avoid
   // antialiased overlap admitting an unselected neighbor.
   return minimapMarkerPixels(container, count).flatMap((pixel, index) =>
-    pixel[3]! > 200 ? [index] : [],
+    pixel[3]! > 160 ? [index] : [],
   );
 }
