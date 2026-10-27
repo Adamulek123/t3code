@@ -2934,8 +2934,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
     }
     if (
-      (command.type === "thread.metadata.update" ||
-        command.type === "thread.worktree-branch.renamed") &&
+      command.type === "thread.metadata.update" &&
       command.expectedWorkspaceBindingId !== undefined &&
       command.expectedWorkspaceBindingId !== (thread.workspaceBindingId ?? null)
     ) {

@@ -536,6 +536,8 @@ const make = Effect.gen(function* () {
           ),
           Effect.flatMap((renamed) =>
             Effect.gen(function* () {
+              // A completed Git rename is a fact about this path and branch. A newer
+              // binding to the same checkout must keep its ownership while reflecting it.
               yield* threads
                 .dispatch({
                   type: "thread.worktree-branch.renamed",
@@ -544,7 +546,6 @@ const make = Effect.gen(function* () {
                   branch: renamed.branch,
                   expectedBranch: oldBranch,
                   expectedWorktreePath: worktreeCwd,
-                  expectedWorkspaceBindingId: workspaceCommandId,
                 })
                 .pipe(
                   Effect.catchCause((cause) =>
@@ -575,7 +576,6 @@ const make = Effect.gen(function* () {
                       branch: renamed.branch,
                       expectedBranch: oldBranch,
                       expectedWorktreePath: worktreeCwd,
-                      expectedWorkspaceBindingId: thread.workspaceBindingId ?? null,
                     })
                     .pipe(
                       Effect.catchCause((cause) =>

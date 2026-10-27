@@ -2716,3 +2716,126 @@ it.effect("replays an accepted send after the project disables the instance", ()
     }
   }).pipe(Effect.provide(Layer.mergeAll(harness.layer, layerFiles)));
 });
+
+it.effect.each(["same", "path", "branch"] as const)(
+  "reconciles a renamed checkout after a newer %s selection",
+  (selection) =>
+    Effect.gen(function* () {
+      const nameStarted = yield* Deferred.make<void>();
+      const allowName = yield* Deferred.make<void>();
+      const renameStarted = yield* Deferred.make<void>();
+      const allowRename = yield* Deferred.make<void>();
+      const allowSetup = yield* Deferred.make<void>();
+      let setupAttempts = 0;
+      const harness = makeHarness({
+        pathExists: () => Effect.succeed(true),
+        generateBranchName: () =>
+          Deferred.succeed(nameStarted, undefined).pipe(
+            Effect.andThen(Deferred.await(allowName)),
+            Effect.as({ branch: "generated-branch" }),
+          ),
+        renameBranch: (input) =>
+          Deferred.succeed(renameStarted, undefined).pipe(
+            Effect.andThen(Deferred.await(allowRename)),
+            Effect.as({ branch: input.newBranch }),
+          ),
+        runSetup: () =>
+          ++setupAttempts === 1
+            ? Deferred.await(allowSetup).pipe(
+                Effect.andThen(Effect.fail(new Error("setup failed") as never)),
+              )
+            : Effect.succeed({ status: "no-script" as const }),
+      });
+      yield* Effect.gen(function* () {
+        const launches = yield* ThreadLaunch.ThreadLaunchService;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const input = launchInput({
+          command: "launch:rename-adopted",
+          thread: "thread:rename-adopted",
+          message: "Start",
+          workspace: { type: "worktree", baseRef: "main" },
+        });
+        yield* launches.launch(input);
+        yield* Deferred.await(nameStarted);
+        const original = (yield* threads.getThreadProjection(input.threadId)).thread;
+        const childId = ThreadId.make("thread:rename-sharing");
+        yield* threads.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("rename-sharing:create"),
+          threadId: childId,
+          projectId,
+          title: "Sharing",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: original.branch,
+          worktreePath: original.worktreePath,
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* threads.dispatch({
+          type: "thread.metadata.update",
+          commandId: CommandId.make("rename-adopted:first"),
+          threadId: input.threadId,
+          branch: original.branch,
+          worktreePath: original.worktreePath,
+        });
+        yield* Deferred.succeed(allowName, undefined);
+        yield* Deferred.await(renameStarted);
+        const latestBinding = CommandId.make("rename-adopted:second");
+        yield* threads.dispatch({
+          type: "thread.metadata.update",
+          commandId: latestBinding,
+          threadId: input.threadId,
+          branch: selection === "branch" ? "user-branch" : original.branch,
+          worktreePath: selection === "path" ? "/other-checkout" : original.worktreePath,
+        });
+        if (selection === "same") {
+          yield* Deferred.succeed(allowSetup, undefined);
+          const failed = yield* awaitPreparation(input.threadId, input.commandId);
+          const retry = {
+            commandId: CommandId.make("rename-adopted:retry"),
+            threadId: input.threadId,
+            runId: failed.runs[0]!.id,
+          };
+          yield* launches.retryPreparation(retry);
+          const retried = yield* awaitPreparation(input.threadId, retry.commandId);
+          assert.equal(retried.thread.branch, original.branch);
+          assert.equal(retried.thread.workspaceBindingId, `${retry.commandId}:workspace`);
+          assert.equal(harness.createWorktree.mock.calls.length, 1);
+        }
+        yield* Deferred.succeed(allowRename, undefined);
+        yield* threads.streamStoredEventsFrom({ threadId: childId }).pipe(
+          Stream.filter(
+            (stored) => stored.commandId === `${input.commandId}:branch-rename:${childId}`,
+          ),
+          Stream.runHead,
+        );
+        const renamed = (yield* threads.getThreadProjection(input.threadId)).thread;
+        assert.equal(
+          renamed.branch,
+          selection === "same"
+            ? "generated-branch"
+            : selection === "branch"
+              ? "user-branch"
+              : original.branch,
+        );
+        assert.equal(
+          renamed.worktreePath,
+          selection === "path" ? "/other-checkout" : original.worktreePath,
+        );
+        assert.equal(
+          renamed.workspaceBindingId,
+          selection === "same" ? "rename-adopted:retry:workspace" : latestBinding,
+        );
+        assert.equal(
+          (yield* threads.getThreadProjection(childId)).thread.branch,
+          "generated-branch",
+        );
+        if (selection !== "same") {
+          yield* Deferred.succeed(allowSetup, undefined);
+          yield* awaitPreparation(input.threadId, input.commandId);
+        }
+      }).pipe(Effect.provide(harness.layer));
+    }),
+);

@@ -3279,7 +3279,6 @@ const OrchestrationV2InternalCommand = Schema.Union([
     branch: TrimmedNonEmptyString,
     expectedBranch: TrimmedNonEmptyString,
     expectedWorktreePath: TrimmedNonEmptyString,
-    expectedWorkspaceBindingId: Schema.NullOr(CommandId),
   }),
   Schema.Struct({
     type: Schema.Literal("thread.pull-request-watch.sync"),
