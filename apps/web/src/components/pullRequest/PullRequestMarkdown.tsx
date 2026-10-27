@@ -22,7 +22,6 @@ import { MediaVideoPlayer } from "../media/MediaVideoPlayer";
 import { rehypePullRequestAutolinks, splitPullRequestBody } from "./pullRequestMarkdown.logic";
 
 import { rehypePullRequestMentions } from "./pullRequestMentions";
-import "./pullRequestMentions.css";
 
 export const PullRequestMarkdownContext = createContext<{
   autolinks: ((text: string) => ReadonlyArray<ReferenceAutolink>) | null;
