@@ -1608,6 +1608,10 @@ export const CodexAdapterV2Driver: ProviderAdapterDriver<CodexSettings, CodexAda
 };
 
 export interface CodexAdapterV2Options {
+  readonly testHooks?: {
+    readonly afterCapacityRetryFinalization?: Effect.Effect<void>;
+    readonly afterCapacityRetryScheduled?: Effect.Effect<void>;
+  };
   readonly instanceId: ProviderInstanceId;
   readonly settings: CodexSettings;
   readonly environment: NodeJS.ProcessEnv;
@@ -6219,66 +6223,83 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               yield* Effect.sleep(retryDelayMs).pipe(
                 Effect.andThen(
                   Effect.gen(function* () {
-                    const nativeThreadId = yield* getNativeThreadId(context.providerThread);
-                    const claimed = yield* turnTerminalizationPermit.withPermits(1)(
+                    // Release admission once pending startup is visible; notifications may precede the RPC response.
+                    const pendingInstalled = yield* Deferred.make<void>();
+                    const retryFiber = yield* rollbackAdmission.withPermit(
                       Effect.gen(function* () {
-                        if (
-                          (yield* Ref.get(activeTurns)).get(terminal.nativeTurnId) !== context ||
-                          goalStops.has(nativeThreadId) ||
-                          (yield* Ref.get(interruptingNativeTurns)).has(terminal.nativeTurnId)
-                        )
-                          return false;
-                        capacityContinuations.set(nativeThreadId, { context, retry: state });
-                        yield* finalizeCodexTurn({ ...terminal, continueRun: true });
-                        return true;
+                        const nativeThreadId = yield* getNativeThreadId(context.providerThread);
+                        const claimed = yield* turnTerminalizationPermit.withPermits(1)(
+                          Effect.gen(function* () {
+                            if (
+                              (yield* Ref.get(activeTurns)).get(terminal.nativeTurnId) !==
+                                context ||
+                              goalStops.has(nativeThreadId) ||
+                              (yield* Ref.get(interruptingNativeTurns)).has(terminal.nativeTurnId)
+                            )
+                              return false;
+                            capacityContinuations.set(nativeThreadId, { context, retry: state });
+                            yield* finalizeCodexTurn({ ...terminal, continueRun: true });
+                            return true;
+                          }),
+                        );
+                        if (!claimed) return undefined;
+                        yield* (
+                          adapterOptions.testHooks?.afterCapacityRetryFinalization ?? Effect.void
+                        );
+                        // Notifications before the RPC response also take the terminalization permit.
+                        const retryFiber = yield* startNativeTurn(
+                          {
+                            ...context.input,
+                            providerTurnOrdinal: context.providerTurnOrdinal + 1,
+                          },
+                          [],
+                          Deferred.succeed(pendingInstalled, undefined).pipe(Effect.asVoid),
+                        ).pipe(
+                          Effect.catch((cause) =>
+                            Effect.gen(function* () {
+                              if (yield* Deferred.isDone(pending)) return;
+                              yield* Effect.logWarning(
+                                "orchestration-v2.codex-capacity-retry-start-failed",
+                                {
+                                  providerTurnId: context.providerTurnId,
+                                  cause,
+                                },
+                              );
+                              yield* emitProviderEvent({
+                                type: "turn_item.updated",
+                                driver: CODEX_PROVIDER,
+                                turnItem: codexRetryTurnItem(
+                                  context,
+                                  state,
+                                  "failed",
+                                  yield* DateTime.now,
+                                ),
+                              });
+                              yield* Deferred.succeed(pending, undefined);
+                              yield* turnTerminalizationPermit.withPermits(1)(
+                                emitOrDeferRootTerminal({ ...terminal, providerRetry: state }),
+                              );
+                            }),
+                          ),
+                          Effect.ensuring(Deferred.succeed(pendingInstalled, undefined)),
+                          Effect.ensuring(
+                            Effect.sync(() => {
+                              if (capacityContinuations.get(nativeThreadId)?.context === context)
+                                capacityContinuations.delete(nativeThreadId);
+                            }),
+                          ),
+                          Effect.forkChild({ startImmediately: true }),
+                        );
+                        yield* Deferred.await(pendingInstalled);
+                        return retryFiber;
                       }),
                     );
-                    if (!claimed) return;
-                    // Notifications before the RPC response also take the terminalization permit.
-                    yield* startNativeTurn(
-                      {
-                        ...context.input,
-                        providerTurnOrdinal: context.providerTurnOrdinal + 1,
-                      },
-                      [],
-                    ).pipe(
-                      Effect.catch((cause) =>
-                        Effect.gen(function* () {
-                          if (yield* Deferred.isDone(pending)) return;
-                          yield* Effect.logWarning(
-                            "orchestration-v2.codex-capacity-retry-start-failed",
-                            {
-                              providerTurnId: context.providerTurnId,
-                              cause,
-                            },
-                          );
-                          yield* emitProviderEvent({
-                            type: "turn_item.updated",
-                            driver: CODEX_PROVIDER,
-                            turnItem: codexRetryTurnItem(
-                              context,
-                              state,
-                              "failed",
-                              yield* DateTime.now,
-                            ),
-                          });
-                          yield* Deferred.succeed(pending, undefined);
-                          yield* turnTerminalizationPermit.withPermits(1)(
-                            emitOrDeferRootTerminal({ ...terminal, providerRetry: state }),
-                          );
-                        }),
-                      ),
-                      Effect.ensuring(
-                        Effect.sync(() => {
-                          if (capacityContinuations.get(nativeThreadId)?.context === context)
-                            capacityContinuations.delete(nativeThreadId);
-                        }),
-                      ),
-                    );
+                    if (retryFiber !== undefined) yield* Fiber.join(retryFiber);
                   }),
                 ),
                 Effect.forkIn(scope, { startImmediately: true }),
               );
+              yield* adapterOptions.testHooks?.afterCapacityRetryScheduled ?? Effect.void;
               return true;
             }),
           );
@@ -6485,6 +6506,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           function* (
             turnInput: ProviderAdapter.ProviderAdapterV2TurnInput,
             codexInput: ReadonlyArray<CodexSchema.V2TurnStartParams__UserInput>,
+            onPendingInstalled: Effect.Effect<void> = Effect.void,
           ) {
             const threadId = yield* getNativeThreadId(turnInput.providerThread);
             const mcpSession = yield* mcpSessions.read(turnInput.threadId);
@@ -6511,6 +6533,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               else next.delete(threadId);
               return next;
             });
+            yield* onPendingInstalled;
             const started = yield* client.request("turn/start", turnStartParams);
             // A turn/started notification may have registered and completed this turn already.
             if ((yield* Ref.get(pendingRootTurns)).get(threadId) !== turnInput) return;
@@ -7585,8 +7608,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   (nativeThreadId != null &&
                     (goalActivations.has(nativeThreadId) ||
                       goalHolds.has(nativeThreadId) ||
-                      (goalsByNativeThread.get(nativeThreadId) ?? rollbackInput.providerThread.goal)
-                        ?.status === "active"));
+                      (goalsByNativeThread.has(nativeThreadId)
+                        ? goalsByNativeThread.get(nativeThreadId)
+                        : rollbackInput.providerThread.goal
+                      )?.status === "active"));
                 const background = yield* runtime.hasPendingBackgroundWorkForThread!(
                   rollbackInput.providerThread,
                 );

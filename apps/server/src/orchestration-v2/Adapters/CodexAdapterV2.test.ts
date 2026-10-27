@@ -915,6 +915,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       Effect.void,
     onRequest: (method: string, params: unknown) => Effect.Effect<void> = () => Effect.void,
     readChildMetadata?: Parameters<typeof withCodexReplayChildMetadata>[2],
+    testHooks?: CodexAdapterV2.CodexAdapterV2Options["testHooks"],
   ) =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -959,6 +960,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         settings: DEFAULT_CODEX_SETTINGS,
         environment: {},
         clientFactory,
+        ...(testHooks === undefined ? {} : { testHooks }),
         crypto: yield* Crypto.Crypto,
         fileSystem,
         idAllocator,
@@ -2216,6 +2218,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
 
   it.effect.each([
     "recover",
+    "admission",
     "completion-only",
     "exhaust",
     "stop",
@@ -2368,6 +2371,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           if (outcome === "exhaust") entries.push(...failureEntries(attempt));
           if (
             outcome === "recover" ||
+            outcome === "admission" ||
             outcome === "completion-only" ||
             outcome === "started-first" ||
             outcome === "stop-starting"
@@ -2426,6 +2430,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         const milestones = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
         const starts: Array<unknown> = [];
         const retryStarted = yield* Deferred.make<void>();
+        const retryScheduled = yield* Deferred.make<void>();
+        const retryFinalized = yield* Deferred.make<void>();
+        const releaseRetry = yield* Deferred.make<void>();
+        const admitted = yield* Deferred.make<void>();
         const harness = yield* makeCodexReplayHarness(
           makeCodexReplayTranscript({ scenario, entries }),
           (event) =>
@@ -2442,6 +2450,17 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                 if (starts.length === 2) yield* Deferred.succeed(retryStarted, undefined);
               }
             }),
+          undefined,
+          outcome === "admission"
+            ? {
+                afterCapacityRetryScheduled: Deferred.succeed(retryScheduled, undefined).pipe(
+                  Effect.asVoid,
+                ),
+                afterCapacityRetryFinalization: Deferred.succeed(retryFinalized, undefined).pipe(
+                  Effect.andThen(Deferred.await(releaseRetry)),
+                ),
+              }
+            : undefined,
         );
         const turnInput = makeCodexTestTurnInput({
           threadId: harness.threadId,
@@ -2480,7 +2499,27 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                   })
                   .pipe(Effect.forkScoped)
               : undefined;
+          if (outcome === "admission") yield* Deferred.await(retryScheduled);
           yield* TestClock.adjust(Math.min(2_000 * 2 ** (attempt - 1), 30_000));
+          if (outcome === "admission") {
+            yield* Deferred.await(retryFinalized);
+            const admission = yield* harness.runtime.withRollbackAdmission!(
+              {
+                providerThread: harness.providerThread,
+                providerThreadTurns: [],
+                target: {
+                  type: "thread_start",
+                  checkpointId: CheckpointId.make("capacity-admission"),
+                  appRunOrdinal: 0,
+                },
+              },
+              () => Deferred.succeed(admitted, undefined),
+            ).pipe(Effect.result, Effect.forkChild({ startImmediately: true }));
+            assert.isFalse(yield* Deferred.isDone(admitted));
+            yield* Deferred.succeed(releaseRetry, undefined);
+            yield* Fiber.join(admission);
+            assert.equal(starts.length, 2);
+          }
           if (outcome === "stop-starting") {
             yield* Deferred.await(retryStarted);
             const stopping = yield* harness.runtime
@@ -2522,6 +2561,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         assert.equal(
           terminal?.status,
           outcome === "recover" ||
+            outcome === "admission" ||
             outcome === "completion-only" ||
             outcome === "steer" ||
             outcome === "started-first" ||
@@ -6676,6 +6716,62 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       events.flatMap((event) =>
         event.type === "provider_thread.updated" ? [event.providerThread.goal?.status ?? null] : [],
       );
+
+    it.effect("admits rollback after a native goal is cleared despite stale input", () =>
+      Effect.gen(function* () {
+        const harness = yield* makeCodexReplayHarness(
+          makeCodexReplayTranscript({
+            scenario: "goal-clear-admission",
+            entries: [
+              ...codexReplayPreamble({
+                nativeThreadId,
+                nativeTurnId: "clear-turn",
+                prompt: "clear test",
+              }),
+              notification("turn done", "turn/completed", {
+                threadId: nativeThreadId,
+                turn: makeCodexReplayTurn({ id: "clear-turn", status: "completed" }),
+              }),
+              notification("goal active", "thread/goal/updated", {
+                threadId: nativeThreadId,
+                turnId: null,
+                goal: codexGoal("active", 0),
+              }),
+              notification("goal cleared", "thread/goal/cleared", {
+                threadId: nativeThreadId,
+                turnId: null,
+              }),
+            ],
+          }),
+        );
+        yield* harness.runtime.startTurn(yield* goalTurnInput(harness, "clear test"));
+        yield* harness.firstTerminal;
+        yield* harness.until(() =>
+          harness.events.some(
+            (event) =>
+              event.type === "provider_thread.updated" && event.providerThread.goal === null,
+          ),
+        );
+        const result = yield* harness.runtime.withRollbackAdmission!(
+          {
+            providerThread: { ...harness.providerThread, goal: { objective, status: "active" } },
+            providerThreadTurns: [],
+            target: {
+              type: "thread_start",
+              checkpointId: CheckpointId.make("goal-cleared"),
+              appRunOrdinal: 0,
+            },
+          },
+          () => Effect.succeed(true),
+        );
+        assert.isTrue(result);
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    );
 
     it.effect("keeps a /goal run open across the turns Codex continues on its own", () =>
       Effect.gen(function* () {
