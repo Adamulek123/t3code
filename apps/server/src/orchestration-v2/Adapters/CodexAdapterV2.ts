@@ -6760,12 +6760,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               ...(yield* Ref.get(activeTurns)).values(),
               ...(yield* Ref.get(settledTurns)).values(),
             ];
-            const roots = contexts.filter(
-              (context) => context.providerThread.id === providerThread.id,
-            );
             for (const context of contexts) {
-              if (!roots.some((root) => context === root || isDescendantCodexTurn(context, root)))
-                continue;
+              // Descendants retain their ancestry after the root leaves the runtime maps.
+              let ancestor: ActiveCodexTurnContext | undefined = context;
+              while (ancestor !== undefined && ancestor.providerThread.id !== providerThread.id) {
+                ancestor = ancestor.subagent?.parentContext;
+              }
+              if (ancestor === undefined) continue;
               if (yield* turnHasRetainedBackgroundWork(context.nativeTurnId)) return true;
               if (
                 context.subagent !== null &&

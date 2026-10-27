@@ -5410,6 +5410,37 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         assert.equal(harness.terminalEvents()[0]?.status, "completed");
         assert.lengthOf(harness.continuationRequests, 0);
 
+        assert.isTrue(
+          yield* harness.runtime.hasPendingBackgroundWorkForThread!(harness.providerThread),
+        );
+        const rollbackInput = {
+          providerThread: harness.providerThread,
+          target: {
+            type: "thread_start" as const,
+            checkpointId: CheckpointId.make("late-child-admission"),
+            appRunOrdinal: 0 as const,
+          },
+          providerThreadTurns: [],
+        };
+        const admissionError = yield* harness.runtime.withRollbackAdmission!(rollbackInput, () =>
+          Effect.die("a running descendant must exclude restoration"),
+        ).pipe(Effect.flip);
+        assert.equal(admissionError._tag, "ProviderAdapterProtocolError");
+        const unrelated = {
+          ...rollbackInput,
+          providerThread: {
+            ...harness.providerThread,
+            id: ProviderThreadId.make("unrelated-admission-thread"),
+            nativeThreadRef: null,
+          },
+        };
+        assert.isFalse(
+          yield* harness.runtime.hasPendingBackgroundWorkForThread!(unrelated.providerThread),
+        );
+        assert.isTrue(
+          yield* harness.runtime.withRollbackAdmission!(unrelated, () => Effect.succeed(true)),
+        );
+
         yield* TestClock.adjust("60 seconds");
         yield* harness.until(
           () => harness.subagentUpdates().at(-1)?.subagent.result === "NATIVE_CHILD_16900_DONE",
