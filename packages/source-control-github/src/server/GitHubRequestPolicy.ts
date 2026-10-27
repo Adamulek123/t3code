@@ -15,16 +15,11 @@ import * as GitHubCredentials from "./GitHubCredentials.ts";
 import * as GitHubQuota from "./GitHubQuota.ts";
 
 const DEFAULT_TIMEOUT = Duration.seconds(30);
-/** Polite to GitHub's secondary limits, which punish bursts of concurrent requests. */
+/** GitHub's secondary limits penalize concurrent bursts. */
 const CONCURRENCY = 8;
-/** The headers every GitHub request carries besides its token. */
 const REQUEST_HEADERS = { "x-github-api-version": "2022-11-28", "user-agent": "t3code" };
 
-/**
- * A credential already verified for one host. Every request made under it must target that
- * host, so a page cannot read one account's data with another's token mid-flight. Server-local:
- * never put its value in RPC payloads or cache keys.
- */
+/** Pin requests to this host's credential across account switches. Keep it out of RPCs/cache keys. */
 export const PinnedGitHubCredential = Context.Reference<{
   readonly host: string;
   readonly token: Redacted.Redacted<string>;
@@ -73,11 +68,6 @@ export class GitHubApiNotFoundError extends Schema.TaggedError<GitHubApiNotFound
   }
 }
 
-/**
- * GitHub answered with a failure that is none of the above. `githubErrors` carries GitHub's own
- * error messages, from a GraphQL `errors` list or a REST `message`/`errors` body: they name the
- * field and the reason ("A pull request already exists for acme:feature"), never a token.
- */
 export class GitHubApiResponseError extends Schema.TaggedError<GitHubApiResponseError>()(
   "GitHubApiResponseError",
   {
@@ -107,10 +97,6 @@ export function normalizeHost(host: string): string {
   return host.trim().toLowerCase();
 }
 
-/**
- * Where the API for a host lives. github.com and GHE.com data residency serve it from an `api.`
- * subdomain; GitHub Enterprise Server serves it under `/api` on the instance itself.
- */
 export function gitHubApiUrls(host: string): { readonly rest: string; readonly graphql: string } {
   const normalized = normalizeHost(host);
   if (normalized === "github.com") {
@@ -125,7 +111,6 @@ export function gitHubApiUrls(host: string): { readonly rest: string; readonly g
   return { rest: `https://${normalized}/api/v3`, graphql: `https://${normalized}/api/graphql` };
 }
 
-/** The numeric rate-limit headers GitHub sends, as span attributes. */
 function rateLimitAttributes(
   headers: Readonly<Record<string, string | undefined>>,
 ): Record<string, number | string> {
@@ -144,7 +129,6 @@ function rateLimitAttributes(
   return attributes;
 }
 
-/** The pause GitHub asked for, from `retry-after` or the primary limit's reset. */
 function retryAtFrom(
   headers: Readonly<Record<string, string | undefined>>,
   now: number,
@@ -155,15 +139,10 @@ function retryAtFrom(
   return Number.isFinite(reset) && reset > now ? reset : undefined;
 }
 
-/**
- * Whether GitHub refused a request for its rate limit. A GraphQL answer can say so with HTTP 200:
- * a `RATE_LIMITED` error, or an exhausted quota that answers an untyped "API rate limit already
- * exceeded" error, which the headers confirm.
- */
+/** HTTP 200 GraphQL rate limits use RATE_LIMITED or untyped errors with quota headers. */
 export function isRateLimited(input: {
   readonly status: number;
   readonly headers: Readonly<Record<string, string | undefined>>;
-  /** The GraphQL `errors` list, when the answer is a GraphQL one and has any. */
   readonly graphqlErrors?: ReadonlyArray<{ readonly type?: unknown; readonly message?: unknown }>;
   readonly body?: string;
 }): boolean {
@@ -185,12 +164,7 @@ export function isRateLimited(input: {
   );
 }
 
-/**
- * What one GitHub answer means, as the transport that read it decided: `Ok` carries what the
- * request returns; every other verdict fails with the `GitHubApi*Error` that says why.
- */
 export type GitHubAnswer<A> = {
-  /** Unset when the transport reported none. */
   readonly status: number | undefined;
   readonly headers: Readonly<Record<string, string | undefined>>;
 } & (
@@ -209,23 +183,15 @@ export interface GitHubRequest {
   readonly timeout?: Duration.Input | undefined;
 }
 
-/**
- * What every GitHub request goes through, REST and GraphQL alike: the host's credential, one
- * shared pool of request slots, the quota reserve and the host-wide pause before it is sent, and
- * what GitHub's answer says about them after. Each transport only sends and reads its answer.
- */
+/** REST/GraphQL share credentials, slots, quota reserves and host-wide pauses. */
 export class GitHubRequestPolicy extends Context.Service<
   GitHubRequestPolicy,
   {
-    /**
-     * Sends one request. `send` receives the headers it must carry (the token and GitHub's API
-     * version) and reports the answer; a failure of its own passes through untouched.
-     */
+    /** send receives auth/version headers; its failures pass through unchanged. */
     readonly request: <A, E, R>(
       input: GitHubRequest,
       send: (headers: Readonly<Record<string, string>>) => Effect.Effect<GitHubAnswer<A>, E, R>,
     ) => Effect.Effect<A, E | GitHubApiError, R>;
-    /** The credential a request to `host` would carry right now. */
     readonly credential: (
       host: string,
     ) => Effect.Effect<
@@ -235,7 +201,7 @@ export class GitHubRequestPolicy extends Context.Service<
   }
 >()("@t3tools/source-control-github/server/GitHubRequestPolicy") {}
 
-/** @public Service construction is part of the canonical Effect module API. */
+/** @public */
 export const make = Effect.gen(function* () {
   const credentials = yield* GitHubCredentials.GitHubCredentials;
   const quota = yield* GitHubQuota.GitHubQuota;
@@ -252,7 +218,6 @@ export const make = Effect.gen(function* () {
     const normalized = normalizeHost(host);
     const pinned = yield* PinnedGitHubCredential;
     if (pinned !== null) {
-      // A pinned page only ever talks to the host it verified.
       if (pinned.host !== normalized) {
         return yield* new GitHubApiAuthenticationError({
           host: normalized,
@@ -265,145 +230,139 @@ export const make = Effect.gen(function* () {
     return { token: held.token, fingerprint: held.fingerprint };
   });
 
-  const request: GitHubRequestPolicy["Service"]["request"] = <A, E, R>(
+  // The REST/GraphQL transport span owns request and quota metadata.
+  const request: GitHubRequestPolicy["Service"]["request"] = Effect.fnUntraced(function* <A, E, R>(
     input: GitHubRequest,
     send: (headers: Readonly<Record<string, string>>) => Effect.Effect<GitHubAnswer<A>, E, R>,
-  ) =>
-    Effect.gen(function* () {
-      const host = normalizeHost(input.host);
-      const context = { host, operation: input.operation };
+  ) {
+    const host = normalizeHost(input.host);
+    const context = { host, operation: input.operation };
+    yield* Effect.annotateCurrentSpan({
+      "github.host": host,
+      "github.operation": input.operation,
+    });
+    const { token, fingerprint } = yield* credential(host);
+    const scope = yield* SourceControlRateLimit.CredentialScope;
+    // A refusal pauses the whole host, whichever quota it spent: the key PullRequestService
+    // records its own backoff under.
+    const key = { provider: SourceControlProviderKind.make("github"), host };
+
+    // Settlement annotates the request span with status and rate-limit attributes.
+    const settle = Effect.fnUntraced(function* (lease: number, answer: GitHubAnswer<A>) {
+      yield* quota.observe(host, answer.headers);
       yield* Effect.annotateCurrentSpan({
-        "github.host": host,
-        "github.operation": input.operation,
+        ...(answer.status === undefined ? {} : { "http.response.status_code": answer.status }),
+        ...rateLimitAttributes(answer.headers),
       });
-      const { token, fingerprint } = yield* credential(host);
-      const scope = yield* SourceControlRateLimit.CredentialScope;
-      // A refusal pauses the whole host, whichever quota it spent: the key PullRequestService
-      // records its own backoff under.
-      const key = { provider: SourceControlProviderKind.make("github"), host };
-
-      const settle = (lease: number, answer: GitHubAnswer<A>) =>
-        Effect.gen(function* () {
-          yield* quota.observe(host, answer.headers);
+      switch (answer._tag) {
+        case "Ok":
+          yield* limits.recordSuccess({ ...key, lease });
+          return answer.value;
+        case "RateLimited": {
+          const retryAt = retryAtFrom(answer.headers, yield* Clock.currentTimeMillis);
+          yield* limits.recordRateLimit({ ...key, lease, retryAt });
           yield* Effect.annotateCurrentSpan({
-            ...(answer.status === undefined ? {} : { "http.response.status_code": answer.status }),
-            ...rateLimitAttributes(answer.headers),
+            "github.rate_limited": true,
+            ...(retryAt === undefined ? {} : { "github.retry_at": retryAt }),
           });
-          switch (answer._tag) {
-            case "Ok":
-              yield* limits.recordSuccess({ ...key, lease });
-              return answer.value;
-            case "RateLimited": {
-              const retryAt = retryAtFrom(answer.headers, yield* Clock.currentTimeMillis);
-              yield* limits.recordRateLimit({ ...key, lease, retryAt });
-              yield* Effect.annotateCurrentSpan({
-                "github.rate_limited": true,
-                ...(retryAt === undefined ? {} : { "github.retry_at": retryAt }),
-              });
-              return yield* new GitHubApiRateLimitError({
-                ...context,
-                ...(retryAt === undefined ? {} : { retryAt }),
-              });
-            }
-            case "Unauthorized":
-              // The source may hold a newer token than the one that was refused.
-              yield* credentials.invalidate(host);
-              return yield* new GitHubApiAuthenticationError(context);
-            case "NotFound":
-              return yield* new GitHubApiNotFoundError(context);
-            case "Failed":
-              return yield* new GitHubApiResponseError({
-                ...context,
-                status: answer.status ?? 200,
-                ...(answer.messages === undefined ? {} : { githubErrors: answer.messages }),
-              });
-          }
-        });
+          return yield* new GitHubApiRateLimitError({
+            ...context,
+            ...(retryAt === undefined ? {} : { retryAt }),
+          });
+        }
+        case "Unauthorized":
+          // The source may hold a newer token than the one that was refused.
+          yield* credentials.invalidate(host);
+          return yield* new GitHubApiAuthenticationError(context);
+        case "NotFound":
+          return yield* new GitHubApiNotFoundError(context);
+        case "Failed":
+          return yield* new GitHubApiResponseError({
+            ...context,
+            status: answer.status ?? 200,
+            ...(answer.messages === undefined ? {} : { githubErrors: answer.messages }),
+          });
+      }
+    });
 
-      const run = Effect.gen(function* () {
-        const lease = yield* quota
-          .admit(host, input.resource, { allowReserve: input.allowReserve })
-          .pipe(
-            Effect.andThen(
-              limits.check(key, input.allowReserve ? { allowPaused: true } : undefined),
-            ),
-            Effect.tapError((paused) =>
-              Effect.annotateCurrentSpan({
-                "github.paused": true,
-                "github.retry_at": paused.retryAt,
-              }),
-            ),
-          );
-        // One deadline covers the headers and the body: a host that answers headers and then
-        // stalls must not hold a shared slot for undici's own five-minute body timeout.
-        const answer = yield* send({
-          ...REQUEST_HEADERS,
-          authorization: `Bearer ${Redacted.value(token)}`,
-        }).pipe(
-          Effect.timeoutOrElse({
-            duration: input.timeout ?? DEFAULT_TIMEOUT,
-            orElse: () =>
-              Effect.fail(
-                new GitHubApiRequestError({ ...context, cause: new Cause.TimeoutError() }),
-              ),
-          }),
+    const run = Effect.gen(function* () {
+      const lease = yield* quota
+        .admit(host, input.resource, { allowReserve: input.allowReserve })
+        .pipe(
+          Effect.andThen(limits.check(key, input.allowReserve ? { allowPaused: true } : undefined)),
+          Effect.tapError((paused) =>
+            Effect.annotateCurrentSpan({
+              "github.paused": true,
+              "github.retry_at": paused.retryAt,
+            }),
+          ),
         );
-        return yield* settle(lease, answer);
-      });
-      const background = yield* SourceControlReadContext.Background;
-      const gated = background
-        ? Effect.uninterruptibleMask((restore) =>
-            Effect.suspend(() => {
-              backgroundPending++;
-              let pending = true;
-              let admissionHeld = false;
-              const releaseAdmission = Effect.suspend(() => {
-                if (pending) {
-                  pending = false;
-                  backgroundPending--;
+      // One deadline covers the headers and the body: a host that answers headers and then
+      // stalls must not hold a shared slot for undici's own five-minute body timeout.
+      const answer = yield* send({
+        ...REQUEST_HEADERS,
+        authorization: `Bearer ${Redacted.value(token)}`,
+      }).pipe(
+        Effect.timeoutOrElse({
+          duration: input.timeout ?? DEFAULT_TIMEOUT,
+          orElse: () =>
+            Effect.fail(new GitHubApiRequestError({ ...context, cause: new Cause.TimeoutError() })),
+        }),
+      );
+      return yield* settle(lease, answer);
+    });
+    const background = yield* SourceControlReadContext.Background;
+    const gated = background
+      ? Effect.uninterruptibleMask((restore) =>
+          Effect.suspend(() => {
+            backgroundPending++;
+            let pending = true;
+            let admissionHeld = false;
+            const releaseAdmission = Effect.suspend(() => {
+              if (pending) {
+                pending = false;
+                backgroundPending--;
+              }
+              if (!admissionHeld) return Effect.void;
+              admissionHeld = false;
+              return backgroundAdmission.release(1).pipe(Effect.asVoid);
+            });
+            // Record ownership while masked: cancellation after a restored manual take can
+            // otherwise lose the admission ticket before its finalizer knows it was acquired.
+            const acquireAdmission: Effect.Effect<void> = tryBackgroundAdmission.pipe(
+              Effect.flatMap((available) => {
+                if (!available) {
+                  return restore(waitForBackgroundAdmission).pipe(Effect.andThen(acquireAdmission));
                 }
-                if (!admissionHeld) return Effect.void;
-                admissionHeld = false;
-                return backgroundAdmission.release(1).pipe(Effect.asVoid);
-              });
-              // Record ownership while masked: cancellation after a restored manual take can
-              // otherwise lose the admission ticket before its finalizer knows it was acquired.
-              const acquireAdmission: Effect.Effect<void> = tryBackgroundAdmission.pipe(
-                Effect.flatMap((available) => {
-                  if (!available) {
-                    return restore(waitForBackgroundAdmission).pipe(
-                      Effect.andThen(acquireAdmission),
-                    );
-                  }
-                  admissionHeld = true;
-                  return Effect.void;
-                }),
-              );
-              return acquireAdmission.pipe(
-                Effect.flatMap(() =>
-                  restore(
-                    slots.withPermit(
-                      // Only one background read waits at the shared gate. Return its ticket
-                      // before HTTP starts so background reads can still fill all eight slots.
-                      Effect.uninterruptible(releaseAdmission).pipe(Effect.andThen(run)),
-                    ),
+                admissionHeld = true;
+                return Effect.void;
+              }),
+            );
+            return acquireAdmission.pipe(
+              Effect.flatMap(() =>
+                restore(
+                  slots.withPermit(
+                    // Only one background read waits at the shared gate. Return its ticket
+                    // before HTTP starts so background reads can still fill all eight slots.
+                    Effect.uninterruptible(releaseAdmission).pipe(Effect.andThen(run)),
                   ),
                 ),
-                Effect.ensuring(releaseAdmission),
-              );
-            }),
-          )
-        : Effect.suspend(() =>
-            // Give a woken admission waiter a turn before a fresh ordinary read retakes a slot.
-            backgroundPending > 0
-              ? Effect.yieldNow.pipe(Effect.andThen(slots.withPermit(run)))
-              : slots.withPermit(run),
-          );
-      // The rate-limit scope follows the credential, so a pause on one account never blocks another.
-      return yield* gated.pipe(
-        Effect.provideService(SourceControlRateLimit.CredentialScope, scope || fingerprint),
-      );
-    });
+              ),
+              Effect.ensuring(releaseAdmission),
+            );
+          }),
+        )
+      : Effect.suspend(() =>
+          // Give a woken admission waiter a turn before a fresh ordinary read retakes a slot.
+          backgroundPending > 0
+            ? Effect.yieldNow.pipe(Effect.andThen(slots.withPermit(run)))
+            : slots.withPermit(run),
+        );
+    // The rate-limit scope follows the credential, so a pause on one account never blocks another.
+    return yield* gated.pipe(
+      Effect.provideService(SourceControlRateLimit.CredentialScope, scope || fingerprint),
+    );
+  });
 
   return GitHubRequestPolicy.of({ request, credential });
 });
