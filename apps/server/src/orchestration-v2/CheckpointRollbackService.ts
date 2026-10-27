@@ -106,8 +106,31 @@ export class CheckpointRollbackIndexRefreshError extends Schema.TaggedError<Chec
   }
 }
 
+export class CheckpointRollbackFinalizationError extends Schema.TaggedError<CheckpointRollbackFinalizationError>()(
+  "CheckpointRollbackFinalizationError",
+  {
+    threadId: ThreadId,
+    providerThreadId: ProviderThreadId,
+    checkpointId: CheckpointId,
+    stage: Schema.Literals(["stale-refs", "event-commit"]),
+    providerRolledBack: Schema.Boolean,
+    cause: Schema.Defect(),
+  },
+) {
+  override get message(): string {
+    const prefix = this.providerRolledBack
+      ? "Files were restored and the provider conversation was rolled back"
+      : "Files were restored";
+    return `${prefix}, but T3 could not finish finalizing checkpoint history. Checkpoint references and conversation history may not match. Check the server logs before retrying.`;
+  }
+}
+
 export const isCheckpointRollbackPostRestoreError = Schema.is(
-  Schema.Union([CheckpointRollbackPartialRestoreError, CheckpointRollbackIndexRefreshError]),
+  Schema.Union([
+    CheckpointRollbackPartialRestoreError,
+    CheckpointRollbackIndexRefreshError,
+    CheckpointRollbackFinalizationError,
+  ]),
 );
 
 const isCheckpointRollbackExecutionError = Schema.is(CheckpointRollbackExecutionError);
@@ -122,6 +145,7 @@ const isCheckpointRollbackError = Schema.is(
     CheckpointRollbackExecutionError,
     CheckpointRollbackPartialRestoreError,
     CheckpointRollbackIndexRefreshError,
+    CheckpointRollbackFinalizationError,
   ]),
 );
 
@@ -136,7 +160,8 @@ export function rollbackFailureClientMessage(
   error:
     | CheckpointRollbackExecutionError
     | CheckpointRollbackPartialRestoreError
-    | CheckpointRollbackIndexRefreshError,
+    | CheckpointRollbackIndexRefreshError
+    | CheckpointRollbackFinalizationError,
 ): string {
   if (isCheckpointRollbackPostRestoreError(error)) return error.message;
   if (error.reason === "rollback-admission-unavailable" || error.reason === "active-turn") {
@@ -160,6 +185,7 @@ export interface CheckpointRollbackServiceV2Shape {
     | CheckpointRollbackExecutionError
     | CheckpointRollbackPartialRestoreError
     | CheckpointRollbackIndexRefreshError
+    | CheckpointRollbackFinalizationError
   >;
 }
 
@@ -394,11 +420,24 @@ export const layer: Layer.Layer<
                 ),
               );
         if (staleCheckpoints.length > 0) {
-          yield* checkpoints.deleteStaleRefs({ scope, checkpoints: staleCheckpoints });
+          yield* checkpoints.deleteStaleRefs({ scope, checkpoints: staleCheckpoints }).pipe(
+            Effect.mapError((cause) =>
+              input.restoreFiles === false
+                ? cause
+                : new CheckpointRollbackFinalizationError({
+                    threadId: input.threadId,
+                    providerThreadId: input.providerThreadId,
+                    checkpointId: input.checkpointId,
+                    stage: "stale-refs",
+                    providerRolledBack: runsToRollback.length > 0,
+                    cause,
+                  }),
+            ),
+          );
         }
 
         // Lock against full-row thread writes that could restore the old native session after rollback.
-        yield* threadCommands.withLock(
+        const commitEvents = threadCommands.withLock(
           input.threadId,
           Effect.gen(function* () {
             const now = yield* DateTime.now;
@@ -472,6 +511,20 @@ export const layer: Layer.Layer<
             }
             yield* eventSink.write({ events });
           }),
+        );
+        yield* commitEvents.pipe(
+          Effect.mapError((cause) =>
+            input.restoreFiles === false
+              ? cause
+              : new CheckpointRollbackFinalizationError({
+                  threadId: input.threadId,
+                  providerThreadId: input.providerThreadId,
+                  checkpointId: input.checkpointId,
+                  stage: "event-commit",
+                  providerRolledBack: runsToRollback.length > 0,
+                  cause,
+                }),
+          ),
         );
       });
       if (session.withRollbackAdmission !== undefined) {

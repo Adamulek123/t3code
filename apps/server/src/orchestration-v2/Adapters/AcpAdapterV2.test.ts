@@ -7112,6 +7112,27 @@ describe("AcpAdapterV2", () => {
       if (Exit.isSuccess(interruptExit)) assert.fail("missing hard teardown must fail interrupt");
       assert.include(Cause.pretty(interruptExit.cause), "session is poisoned");
 
+      let admitted = false;
+      const admissionExit = yield* runtime.withRollbackAdmission!(
+        {
+          providerThread,
+          target: {
+            type: "thread_start",
+            checkpointId: CheckpointId.make("poisoned-rollback"),
+            appRunOrdinal: 0,
+          },
+          providerThreadTurns: [],
+        },
+        () =>
+          Effect.sync(() => {
+            admitted = true;
+          }),
+      ).pipe(Effect.exit);
+      if (Exit.isSuccess(admissionExit))
+        assert.fail("poisoned session must reject rollback admission");
+      assert.include(Cause.pretty(admissionExit.cause), "session is poisoned");
+      assert.isFalse(admitted);
+
       const startExit = yield* runtime
         .startTurn(
           makeTurnInput({ threadId, providerThread, instanceId, runtimePolicy, now, ordinal: 2 }),

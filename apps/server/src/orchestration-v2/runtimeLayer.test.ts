@@ -27,6 +27,7 @@ import {
   ProviderSessionId,
   ProviderThreadId,
   ProviderTurnId,
+  VcsProcessSpawnError,
   RunId,
   ScheduledTaskId,
   ThreadId,
@@ -1110,6 +1111,152 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
           );
         }
       }).pipe(Effect.scoped, Effect.provide(Layer.fresh(layerTest))),
+  );
+
+  it.effect.each([
+    { stage: "stale-refs", restoreFiles: true },
+    { stage: "event-commit", restoreFiles: true },
+    { stage: "stale-refs", restoreFiles: false },
+    { stage: "event-commit", restoreFiles: false },
+  ] as const)("handles rollback finalization failure %s", ({ stage, restoreFiles }) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem.pipe(Effect.provide(NodeServices.layer));
+      const path = yield* Path.Path.pipe(Effect.provide(NodeServices.layer));
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const sink = yield* EventSink.EventSinkV2;
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+      const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const checkpoints = yield* CheckpointStore.CheckpointStore;
+      const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "t3-rollback-finalization-" });
+      const file = path.join(cwd, "workspace.txt");
+      yield* fs.writeFileString(file, "before restore");
+      const { threadId, rollback } = yield* seedFailingRollbackThread(
+        `rollback-finalization-${stage}`,
+        cwd,
+      );
+      const before = yield* orchestrator.getThreadProjection(threadId);
+      const run = before.runs[0]!;
+      const providerThread = before.providerThreads[0]!;
+      const now = yield* DateTime.now;
+      const laterCheckpoint = {
+        ...before.checkpoints[0]!,
+        id: CheckpointId.make(`finalization-later-${stage}`),
+        ref: CheckpointRef.make(`refs/t3/finalization-later-${stage}`),
+        appRunOrdinal: run.ordinal,
+        ordinalWithinScope: 1,
+      };
+      yield* sink.write({
+        events: [
+          {
+            id: EventId.make(`finalization-later-event-${stage}`),
+            type: "checkpoint.captured",
+            threadId,
+            occurredAt: now,
+            payload: laterCheckpoint,
+          },
+        ],
+      });
+      let restores = 0;
+      let providerCalls = 0;
+      let refsRemain = true;
+      let commitCalls = 0;
+      const providerRollback = () =>
+        Effect.sync(() => {
+          providerCalls++;
+          return { providerThread };
+        });
+      const sessionSpy = vi.spyOn(sessions, "open").mockReturnValue(
+        Effect.succeed({
+          rollbackThread: providerRollback,
+          withRollbackAdmission: (
+            _input: unknown,
+            use: (rollback: typeof providerRollback) => Effect.Effect<unknown>,
+          ) => use(providerRollback),
+        } as unknown as ProviderAdapter.ProviderAdapterV2SessionRuntime),
+      );
+      const restoreSpy = vi.spyOn(checkpoints, "restoreCheckpoint").mockImplementation(() =>
+        Effect.gen(function* () {
+          restores++;
+          yield* fs.writeFileString(file, "restored");
+          return true;
+        }).pipe(Effect.orDie),
+      );
+      const deleteSpy = vi.spyOn(checkpoints, "deleteCheckpointRefs").mockImplementation(() =>
+        stage === "stale-refs"
+          ? Effect.fail(
+              new VcsProcessSpawnError({
+                operation: "delete refs",
+                command: "git",
+                cwd,
+                cause: "failure",
+              }),
+            )
+          : Effect.sync(() => {
+              refsRemain = false;
+            }),
+      );
+      const originalWrite = sink.write;
+      const writeSpy = vi.spyOn(sink, "write").mockImplementation((input) => {
+        if (input.events.some((event) => event.type === "provider-thread.updated")) {
+          commitCalls++;
+          if (stage === "event-commit")
+            return Effect.fail(
+              new EventSink.EventSinkWriteError({
+                eventCount: input.events.length,
+                cause: "failure",
+              }),
+            );
+        }
+        return originalWrite(input);
+      });
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          sessionSpy.mockRestore();
+          restoreSpy.mockRestore();
+          deleteSpy.mockRestore();
+          writeSpy.mockRestore();
+        }),
+      );
+      const commandId = CommandId.make(`rollback-finalization-request-${stage}`);
+      yield* rollback(commandId, restoreFiles);
+      yield* worker.drain();
+      const [first] = yield* outbox.listByCommandId(commandId);
+      assert.equal(first?.status, restoreFiles ? "failed" : "pending");
+      if (!restoreFiles) {
+        for (let attempt = 1; attempt < 5; attempt++) {
+          yield* TestClock.adjust("30 seconds");
+          yield* worker.drain();
+        }
+      }
+      const [effect] = yield* outbox.listByCommandId(commandId);
+      assert.equal(effect?.status, "failed");
+      assert.equal(effect?.attemptCount, restoreFiles ? 1 : 5);
+      assert.equal(restores, restoreFiles ? 1 : 0);
+      assert.equal(providerCalls, restoreFiles ? 1 : 5);
+      assert.equal(refsRemain, stage === "stale-refs");
+      assert.equal(commitCalls, stage === "event-commit" ? (restoreFiles ? 1 : 5) : 0);
+      const after = yield* orchestrator.getThreadProjection(threadId);
+      assert.equal(after.runs.find((candidate) => candidate.id === run.id)?.status, "completed");
+      assert.equal(
+        after.checkpoints.find((candidate) => candidate.id === laterCheckpoint.id)?.status,
+        "ready",
+      );
+      if (restoreFiles) {
+        assert.equal(
+          after.thread.rollbackFailure?.message,
+          "Files were restored and the provider conversation was rolled back, but T3 could not finish finalizing checkpoint history. Checkpoint references and conversation history may not match. Check the server logs before retrying.",
+        );
+      } else {
+        assert.equal(after.thread.rollbackFailure?.message, ROLLBACK_FAILED_MESSAGE);
+      }
+      yield* fs.writeFileString(file, "new edits");
+      yield* TestClock.adjust("30 seconds");
+      assert.equal(yield* worker.drain(), 0);
+      assert.equal(yield* fs.readFileString(file), "new edits");
+      assert.equal(restores, restoreFiles ? 1 : 0);
+      assert.equal(providerCalls, restoreFiles ? 1 : 5);
+    }).pipe(Effect.scoped, Effect.provide(Layer.fresh(layerTest))),
   );
 
   it.effect("rejects non-ready rollback targets before persisting events or effects", () =>

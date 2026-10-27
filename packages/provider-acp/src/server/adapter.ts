@@ -8426,6 +8426,17 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           withRollbackAdmission: (rollbackInput, use) =>
             runtimeTransitionPermit.withPermit(
               Effect.gen(function* () {
+                yield* awaitRuntimeTeardown().pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new ProviderAdapter.ProviderAdapterRollbackThreadError({
+                        driver,
+                        providerThreadId: rollbackInput.providerThread.id,
+                        checkpointId: rollbackInput.target.checkpointId,
+                        cause,
+                      }),
+                  ),
+                );
                 const currentTurn = yield* Ref.get(activeTurn);
                 if (
                   currentTurn !== null ||
