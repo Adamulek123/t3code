@@ -2,6 +2,7 @@ import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
 import { type ReactElement } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
+import { page, userEvent } from "vite-plus/test/browser";
 
 import { act, render } from "../../test/render";
 import "../index.css";
@@ -73,7 +74,6 @@ vi.mock(import("../hooks/useSettings"), async (original) => {
 
 import ChatMarkdown from "./ChatMarkdown";
 import { AudioPreview } from "./files/AudioPreview";
-import { userEvent, page } from "vite-plus/test/browser";
 import { changeRequestReferenceAutolinker } from "@t3tools/client-runtime/pull-request-markdown";
 import { rehypePullRequestMentions } from "./pullRequest/pullRequestMentions";
 import { rehypePullRequestAutolinks } from "./pullRequest/pullRequestMarkdown.logic";
