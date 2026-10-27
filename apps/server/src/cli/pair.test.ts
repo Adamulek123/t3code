@@ -543,9 +543,8 @@ describe("t3 pair", () => {
             if (address === null || typeof address === "string") {
               return yield* Effect.die(new Error("Expected a TCP address"));
             }
-            const baseDir = NodeFS.mkdtempSync(
-              NodePath.join(NodeOS.tmpdir(), "t3-pair-stalled-test-"),
-            );
+            const fs = yield* FileSystem.FileSystem;
+            const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-pair-stalled-test-" });
             const statePath = NodePath.join(baseDir, "userdata", "server-runtime.json");
             yield* persistServerRuntimeState({
               path: statePath,
