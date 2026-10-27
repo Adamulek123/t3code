@@ -107,7 +107,6 @@ it.effect.each([
           Layer.mock(ProjectionStoreV2)({
             getThread: () => Effect.succeed(projection.thread),
             getCheckpointRollbackContext: () => Effect.succeed(projection),
-            hasLiveRun: () => Effect.succeed(false),
             getShellSnapshot: () =>
               Effect.succeed({
                 schemaVersion: 1,
@@ -153,18 +152,6 @@ it.effect.each([
           Layer.mock(ProviderSessionManagerV2)({
             open: () =>
               Effect.succeed({
-                withRollbackAdmission: (
-                  _input: unknown,
-                  use: (
-                    rollback: () => Effect.Effect<{ providerThread: typeof providerThread }>,
-                  ) => Effect.Effect<unknown>,
-                ) =>
-                  use(() =>
-                    Effect.sync(() => {
-                      calls.push("provider");
-                      return { providerThread };
-                    }),
-                  ),
                 rollbackThread: () =>
                   Effect.sync(() => {
                     calls.push("provider");

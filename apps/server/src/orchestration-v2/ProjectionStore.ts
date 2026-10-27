@@ -613,7 +613,6 @@ export interface ProjectionStoreV2Shape {
   readonly canStartQueuedRun: (
     threadId: ThreadId,
   ) => Effect.Effect<boolean, ProjectionStoreV2Error>;
-  readonly hasLiveRun: (threadId: ThreadId) => Effect.Effect<boolean, ProjectionStoreV2Error>;
   readonly getRecoveryThreadIds: (
     kind: ProjectionRecoveryKind,
   ) => Effect.Effect<ReadonlyArray<ThreadId>, ProjectionStoreV2Error>;
@@ -5285,13 +5284,6 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         )
         .pipe(Effect.mapError(controlReadError(threadId)));
 
-    const hasLiveRun: ProjectionStoreV2Shape["hasLiveRun"] = (threadId) =>
-      sql<{ readonly found: number }>`SELECT 1 AS found FROM orchestration_v2_projection_runs
-        WHERE thread_id = ${threadId} AND status IN ('preparing', 'starting', 'running') LIMIT 1`.pipe(
-        Effect.map((rows) => rows.length > 0),
-        Effect.mapError(controlReadError(threadId)),
-      );
-
     const getMessageCount: ProjectionStoreV2Shape["getMessageCount"] = (threadId) =>
       sql<{
         count: number;
@@ -6801,7 +6793,6 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       getCheckpointRollbackContext: readOnReader(getCheckpointRollbackContext),
       getRunMessage: readOnReader(getRunMessage),
       canStartQueuedRun: readOnReader(canStartQueuedRun),
-      hasLiveRun: readOnReader(hasLiveRun),
       getPendingNativeUserInputs: readOnReader(getPendingNativeUserInputs),
       hasUnpairedRunInterruptRequest: readOnReader(hasUnpairedRunInterruptRequest),
       isNodeStored: readOnReader(isNodeStored),
@@ -7508,15 +7499,6 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
           return yield* new ProjectionStoreThreadNotFoundError({ threadId });
         const run = projection.runs.find((candidate) => candidate.id === runId);
         return projection.messages.find((message) => message.id === run?.userMessageId);
-      }),
-      hasLiveRun: Effect.fn("ProjectionStore.hasLiveRun")(function* (threadId) {
-        const projection = (yield* Ref.get(replayState)).projections.get(threadId);
-        if (projection === undefined)
-          return yield* new ProjectionStoreThreadNotFoundError({ threadId });
-        return projection.runs.some(
-          (run) =>
-            run.status === "preparing" || run.status === "starting" || run.status === "running",
-        );
       }),
       canStartQueuedRun: Effect.fn("ProjectionStore.canStartQueuedRun")(function* (threadId) {
         const projection = (yield* Ref.get(replayState)).projections.get(threadId);

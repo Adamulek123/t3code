@@ -437,11 +437,7 @@ export const layerExecutor: Layer.Layer<
                     CheckpointRollbackService.isCheckpointRollbackPostRestoreError(failure)
                       ? failure
                       : undefined;
-                  // A later retry must not restore after the active turn has made new edits.
-                  const admissionRejected =
-                    CheckpointRollbackService.isCheckpointRollbackAdmissionRejection(failure);
-                  if (willRetry && postRestoreFailure === undefined && !admissionRejected)
-                    return Effect.void;
+                  if (willRetry && postRestoreFailure === undefined) return Effect.void;
                   return threads
                     .dispatch({
                       type: "checkpoint.rollback.fail",
@@ -787,10 +783,6 @@ export const layerWithOptions = (
             effect.request.type === "provider-thread.rollback" &&
             Option.isSome(failure) &&
             CheckpointRollbackService.isCheckpointRollbackPostRestoreError(failure.value.cause);
-          const admissionRejected =
-            effect.request.type === "provider-thread.rollback" &&
-            Option.isSome(failure) &&
-            CheckpointRollbackService.isCheckpointRollbackAdmissionRejection(failure.value.cause);
           yield* Effect.logWarning("Orchestration effect execution failed", {
             effectId: effect.id,
             effectType: effect.request.type,
@@ -802,7 +794,7 @@ export const layerWithOptions = (
             ? yield* outbox
                 .succeed({ effectId: effect.id, workerId })
                 .pipe(Effect.onError((cause) => terminalizeClaim(effect, cause)))
-            : postRestoreFailure || admissionRejected || effect.attemptCount >= maxAttempts
+            : postRestoreFailure || effect.attemptCount >= maxAttempts
               ? yield* outbox
                   .fail({ effectId: effect.id, workerId, error })
                   .pipe(Effect.onError((cause) => terminalizeClaim(effect, cause)))
