@@ -126,7 +126,8 @@ remain agent-specific.
 
 ## Checkpoints
 
-Checkpoint rollback restores your files as usual. ACP agents cannot rewind their own conversation,
+Checkpoint rollback can restore files when the agent cannot resume work independently. For agents
+that can resume on their own, use conversation-only rollback. ACP agents cannot rewind their own conversation,
 so the next turn after a rollback starts a fresh agent session that no longer remembers the
 conversation from before the checkpoint.
 

@@ -670,12 +670,22 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
         attachments: [],
         dispatchMode: { type: "start_immediately" },
       });
-      const scope = (yield* orchestrator.getThreadProjection(threadId)).checkpointScopes[0]!;
+      const seededProjection = yield* orchestrator.getThreadProjection(threadId);
+      const scope = seededProjection.checkpointScopes[0]!;
+      const initialRun = seededProjection.runs[0]!;
       const now = yield* DateTime.now;
       const checkpointId = CheckpointId.make(`${name}-checkpoint`);
       yield* eventSink.write({
         commandId: CommandId.make(`${name}-seed`),
         events: [
+          {
+            id: EventId.make(`${name}-run-completed`),
+            type: "run.updated",
+            threadId,
+            runId: initialRun.id,
+            occurredAt: now,
+            payload: { ...initialRun, status: "completed", completedAt: now },
+          },
           {
             id: EventId.make(`${name}-checkpoint-event`),
             type: "checkpoint.captured",
@@ -747,6 +757,187 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
     }),
   );
 
+  it.effect.each(["starting", "running"] as const)(
+    "does not restore files while a turn is %s",
+    (status) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem.pipe(Effect.provide(NodeServices.layer));
+        const path = yield* Path.Path.pipe(Effect.provide(NodeServices.layer));
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const eventSink = yield* EventSink.EventSinkV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        const checkpointStore = yield* CheckpointStore.CheckpointStore;
+        const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "t3-active-rollback-" });
+        const file = path.join(cwd, "workspace.txt");
+        yield* fs.writeFileString(file, "in-flight changes");
+        const { threadId, rollback } = yield* seedFailingRollbackThread("active-rollback", cwd);
+        const before = yield* orchestrator.getThreadProjection(threadId);
+        assert.equal(before.runs[0]?.status, "completed");
+        const restoreSpy = vi
+          .spyOn(checkpointStore, "restoreCheckpoint")
+          .mockImplementation(() =>
+            fs.writeFileString(file, "checkpoint contents").pipe(Effect.as(true), Effect.orDie),
+          );
+        const sessionSpy = vi.spyOn(sessions, "open").mockReturnValue(
+          Effect.succeed({
+            withRollbackAdmission: (
+              _input: unknown,
+              use: (rollback: () => Effect.Effect<never>) => Effect.Effect<unknown>,
+            ) => use(() => Effect.die("rollback is not needed for an empty history")),
+            rollbackThread: () =>
+              Effect.fail(
+                new ProviderAdapter.ProviderAdapterRollbackThreadError({
+                  driver,
+                  providerThreadId: before.providerThreads[0]!.id,
+                  cause: "active turn",
+                }),
+              ),
+          } as unknown as ProviderAdapter.ProviderAdapterV2SessionRuntime),
+        );
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            restoreSpy.mockRestore();
+            sessionSpy.mockRestore();
+          }),
+        );
+        const commandId = CommandId.make("active-rollback-request");
+        yield* rollback(commandId, true);
+        const run = before.runs[0]!;
+        const now = yield* DateTime.now;
+        yield* eventSink.write({
+          events: [
+            {
+              id: EventId.make("active-rollback-running"),
+              type: "run.updated",
+              threadId,
+              runId: run.id,
+              occurredAt: now,
+              payload: {
+                ...run,
+                status,
+                completedAt: null,
+                startedAt: status === "running" ? now : null,
+              },
+            },
+          ],
+        });
+        const rejectedCommand = CommandId.make("active-rollback-rejected-request");
+        const rejected = yield* rollback(rejectedCommand, true).pipe(Effect.flip);
+        assert.include(String(rejected.cause), "while a turn is active");
+        assert.lengthOf(yield* outbox.listByCommandId(rejectedCommand), 0);
+        yield* worker.drain();
+        assert.equal(yield* fs.readFileString(file), "in-flight changes");
+        const [effect] = yield* outbox.listByCommandId(commandId);
+        assert.equal(effect?.status, "failed");
+        assert.equal(effect?.attemptCount, 1);
+        yield* TestClock.adjust("30 seconds");
+        assert.equal(yield* worker.drain(), 0);
+        assert.equal(yield* fs.readFileString(file), "in-flight changes");
+      }).pipe(Effect.scoped, Effect.provide(Layer.fresh(layerTest))),
+  );
+
+  it.effect.each([
+    { restoreFiles: true, admission: false },
+    { restoreFiles: false, admission: false },
+    { restoreFiles: true, admission: true },
+    { restoreFiles: false, admission: true },
+    { restoreFiles: true, admission: true, nativeActive: true },
+  ])(
+    "requires provider admission for file restore: %s",
+    ({ restoreFiles, admission, nativeActive = false }) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem.pipe(Effect.provide(NodeServices.layer));
+        const path = yield* Path.Path.pipe(Effect.provide(NodeServices.layer));
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const eventSink = yield* EventSink.EventSinkV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        const checkpointStore = yield* CheckpointStore.CheckpointStore;
+        const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "t3-no-rollback-admission-" });
+        const file = path.join(cwd, "workspace.txt");
+        yield* fs.writeFileString(file, "current");
+        const { threadId, rollback } = yield* seedFailingRollbackThread(
+          "no-rollback-admission",
+          cwd,
+        );
+        const before = yield* orchestrator.getThreadProjection(threadId);
+        const run = before.runs[0]!;
+        const now = yield* DateTime.now;
+        yield* eventSink.write({
+          events: [
+            {
+              id: EventId.make("no-rollback-admission-completed"),
+              type: "run.updated",
+              threadId,
+              runId: run.id,
+              occurredAt: now,
+              payload: { ...run, status: "completed", completedAt: now },
+            },
+          ],
+        });
+        let providerCalls = 0;
+        const providerThread = before.providerThreads[0]!;
+        const rollbackThread = () =>
+          Effect.sync(() => {
+            providerCalls++;
+            return { providerThread };
+          });
+        const sessionSpy = vi.spyOn(sessions, "open").mockReturnValue(
+          Effect.succeed({
+            ...(admission
+              ? {
+                  canRestoreRollbackFiles: Effect.succeed(false),
+                  withRollbackAdmission: (
+                    _input: unknown,
+                    use: (rollback: typeof rollbackThread) => Effect.Effect<unknown>,
+                  ) =>
+                    nativeActive
+                      ? Effect.fail(
+                          new ProviderAdapter.ProviderAdapterProtocolError({
+                            driver,
+                            detail: "native turn is still active",
+                          }),
+                        )
+                      : use(rollbackThread),
+                }
+              : {}),
+            rollbackThread,
+          } as unknown as ProviderAdapter.ProviderAdapterV2SessionRuntime),
+        );
+        const restoreSpy = vi
+          .spyOn(checkpointStore, "restoreCheckpoint")
+          .mockImplementation(() =>
+            fs.writeFileString(file, "checkpoint").pipe(Effect.as(true), Effect.orDie),
+          );
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            sessionSpy.mockRestore();
+            restoreSpy.mockRestore();
+          }),
+        );
+        const commandId = CommandId.make("no-rollback-admission-request");
+        yield* rollback(commandId, restoreFiles);
+        yield* worker.drain();
+        assert.equal(yield* fs.readFileString(file), "current");
+        assert.equal(restoreSpy.mock.calls.length, 0);
+        assert.equal(providerCalls, restoreFiles ? 0 : 1);
+        if (restoreFiles) {
+          const [effect] = yield* outbox.listByCommandId(commandId);
+          assert.equal(effect?.status, "failed");
+          assert.equal(effect?.attemptCount, 1);
+          assert.equal(
+            (yield* orchestrator.getThreadProjection(threadId)).thread.rollbackFailure?.message,
+            nativeActive
+              ? "Cannot restore a checkpoint while a turn is active."
+              : "This provider cannot safely restore files during conversation rollback. Rewind the conversation without restoring files instead.",
+          );
+        }
+      }).pipe(Effect.scoped, Effect.provide(Layer.fresh(layerTest))),
+  );
+
   it.effect.each(["partial-restore", "refresh-defect", "provider-only", "restore-fails"] as const)(
     "settles checkpoint rollback safely for %s",
     (outcome) =>
@@ -816,23 +1007,28 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
         if (outcome === "refresh-defect") {
           refreshSpy.mockImplementation(() => Effect.die(new Error("index refresh defect")));
         }
+        const rejectRollback = () =>
+          Effect.gen(function* () {
+            rejected += 1;
+            assert.equal(
+              yield* fs.readFileString(file).pipe(Effect.orDie),
+              outcome === "provider-only"
+                ? "current uncheckpointed contents"
+                : "checkpoint contents",
+            );
+            return yield* new ProviderAdapter.ProviderAdapterRollbackThreadError({
+              driver,
+              providerThreadId: providerThread.id,
+              cause: new Error("legacy history cannot be reverted"),
+            });
+          });
         const sessionSpy = vi.spyOn(sessions, "open").mockReturnValue(
           Effect.succeed({
-            rollbackThread: () =>
-              Effect.gen(function* () {
-                rejected += 1;
-                assert.equal(
-                  yield* fs.readFileString(file).pipe(Effect.orDie),
-                  outcome === "provider-only"
-                    ? "current uncheckpointed contents"
-                    : "checkpoint contents",
-                );
-                return yield* new ProviderAdapter.ProviderAdapterRollbackThreadError({
-                  driver,
-                  providerThreadId: providerThread.id,
-                  cause: new Error("legacy history cannot be reverted"),
-                });
-              }),
+            withRollbackAdmission: (
+              _input: unknown,
+              use: (rollback: typeof rejectRollback) => Effect.Effect<unknown>,
+            ) => use(rejectRollback),
+            rollbackThread: rejectRollback,
           } as unknown as ProviderAdapter.ProviderAdapterV2SessionRuntime),
         );
         yield* Effect.addFinalizer(() =>
@@ -950,6 +1146,19 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
       const projection = yield* orchestrator.getThreadProjection(threadId);
       const scope = projection.checkpointScopes[0]!;
       const now = yield* DateTime.now;
+      const readinessRun = projection.runs[0]!;
+      yield* eventSink.write({
+        events: [
+          {
+            id: EventId.make("runtime-rollback-readiness-completed"),
+            type: "run.updated",
+            threadId,
+            runId: readinessRun.id,
+            occurredAt: now,
+            payload: { ...readinessRun, status: "completed", completedAt: now },
+          },
+        ],
+      });
 
       for (const status of ["missing", "error", "stale", "ready"] as const) {
         const checkpointId = CheckpointId.make("runtime-rollback-checkpoint");

@@ -5700,6 +5700,23 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         now,
       });
 
+      const activeGoalAdmission = yield* harness.runtime.withRollbackAdmission!(
+        {
+          providerThread: {
+            ...harness.providerThread,
+            goal: { objective: "Continue autonomously", status: "active" },
+          },
+          target: {
+            type: "thread_start",
+            checkpointId: CheckpointId.make("checkpoint-codex-active-goal"),
+            appRunOrdinal: 0,
+          },
+          providerThreadTurns: [],
+        },
+        () => Effect.die("an active goal must not admit restoration"),
+      ).pipe(Effect.result);
+      assert.equal(activeGoalAdmission._tag, "Failure");
+
       const error = yield* Effect.flip(
         harness.runtime.rollbackThread({
           providerThread: harness.providerThread,

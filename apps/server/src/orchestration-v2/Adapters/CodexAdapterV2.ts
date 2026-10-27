@@ -1723,6 +1723,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           new Map<ProviderThreadId, Extract<OrchestrationV2TurnItem, { type: "error" }>>(),
         );
         const activeTurns = yield* Ref.make(new Map<string, ActiveCodexTurnContext>());
+        const rollbackAdmission = yield* Semaphore.make(1);
         const turnTokenUsageByThread = new Map<string, CodexTurnTokenUsageState>();
         const usageStateForThread = (nativeThreadId: string) => {
           let state = turnTokenUsageByThread.get(nativeThreadId);
@@ -6697,6 +6698,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             },
             (effect, turnInput) =>
               effect.pipe(
+                (effect) => rollbackAdmission.withPermit(effect),
                 Effect.mapError(
                   (cause) =>
                     new ProviderAdapter.ProviderAdapterTurnStartError({
@@ -6740,24 +6742,27 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               turnInput.restartContinuationOfRunId === undefined
                 ? parseGoalCommand(turnInput.message)
                 : null;
-            if (goalCommand !== null) return runGoalCommand(turnInput, goalCommand);
-            return Effect.gen(function* () {
-              yield* startNativeTurn(
-                turnInput,
-                turnInput.restartContinuationOfRunId === undefined
-                  ? yield* toCodexInput(turnInput)
-                  : [],
-              );
-            }).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new ProviderAdapter.ProviderAdapterTurnStartError({
-                    driver: CODEX_PROVIDER,
-                    threadId: turnInput.threadId,
-                    providerThreadId: turnInput.providerThread.id,
-                    runId: turnInput.runId,
-                    cause,
-                  }),
+            if (goalCommand !== null)
+              return rollbackAdmission.withPermit(runGoalCommand(turnInput, goalCommand));
+            return rollbackAdmission.withPermit(
+              Effect.gen(function* () {
+                yield* startNativeTurn(
+                  turnInput,
+                  turnInput.restartContinuationOfRunId === undefined
+                    ? yield* toCodexInput(turnInput)
+                    : [],
+                );
+              }).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderAdapter.ProviderAdapterTurnStartError({
+                      driver: CODEX_PROVIDER,
+                      threadId: turnInput.threadId,
+                      providerThreadId: turnInput.providerThread.id,
+                      runId: turnInput.runId,
+                      cause,
+                    }),
+                ),
               ),
             );
           },
@@ -7316,6 +7321,35 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 ),
               ),
           ),
+          withRollbackAdmission: (rollbackInput, use) =>
+            rollbackAdmission.withPermit(
+              Effect.gen(function* () {
+                const nativeThreadId = rollbackInput.providerThread.nativeThreadRef?.nativeId;
+                const active = [...(yield* Ref.get(activeTurns)).values()].some(
+                  (turn) => turn.providerThread.id === rollbackInput.providerThread.id,
+                );
+                const pending =
+                  nativeThreadId != null && (yield* Ref.get(pendingRootTurns)).has(nativeThreadId);
+                const goalRunning =
+                  (nativeThreadId == null &&
+                    rollbackInput.providerThread.goal?.status === "active") ||
+                  (nativeThreadId != null &&
+                    (goalActivations.has(nativeThreadId) ||
+                      goalHolds.has(nativeThreadId) ||
+                      (goalsByNativeThread.get(nativeThreadId) ?? rollbackInput.providerThread.goal)
+                        ?.status === "active"));
+                const background = yield* runtime.hasPendingBackgroundWorkForThread!(
+                  rollbackInput.providerThread,
+                );
+                if (active || pending || background || goalRunning) {
+                  return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                    driver: CODEX_PROVIDER,
+                    detail: "Cannot roll back while the provider thread has active work.",
+                  });
+                }
+                return yield* use(() => runtime.rollbackThread(rollbackInput));
+              }),
+            ),
           rollbackThread: Effect.fn("CodexAdapterV2.rollbackThread")(
             function* (threadInput) {
               const threadId = yield* getNativeThreadId(threadInput.providerThread);

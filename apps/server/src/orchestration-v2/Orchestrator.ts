@@ -10816,6 +10816,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         }
       }
 
+      if (hasLiveRun(projection)) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: "Cannot restore a checkpoint while a turn is active.",
+        });
+      }
+
       const now = yield* DateTime.now;
       yield* emit(
         events,

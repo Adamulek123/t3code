@@ -7728,6 +7728,97 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           }),
         );
 
+        const rollbackUnlocked = Effect.fn("AcpAdapterV2.rollbackThread.unlocked")(
+          function* (rollbackInput: ProviderAdapter.ProviderAdapterV2RollbackThreadInput) {
+            const currentTurn = yield* Ref.get(activeTurn);
+            if (currentTurn !== null) {
+              return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                driver,
+                detail: `Cannot roll back ACP provider thread ${rollbackInput.providerThread.id} while turn ${currentTurn.providerTurnId} is active`,
+              });
+            }
+            yield* awaitRuntimeTeardown();
+            itemIdentityVersion = 2;
+            prepareTerminalEnvironment(
+              yield* readMcpContext(rollbackInput.providerThread.appThreadId),
+            );
+            const replacement = yield* startReplacementAcpRuntime(
+              rollbackInput.providerThread.appThreadId,
+              (candidate) =>
+                Effect.gen(function* () {
+                  rememberTerminalEnvironment(
+                    candidate.sessionId,
+                    yield* readMcpContext(rollbackInput.providerThread.appThreadId),
+                  );
+                  yield* Ref.set(runtimeRestartRequired, false);
+                  yield* Ref.set(activeSessionId, candidate.sessionId);
+                  yield* setActiveSessionSetup(candidate);
+                  yield* Ref.set(activeSelection, null);
+                  yield* Ref.set(activeInteractionMode, null);
+                  yield* Ref.set(promptInstructionStates, new Map());
+                  yield* Ref.set(compactionMarkers, new Map());
+                  yield* Ref.set(providerTurns, new Map());
+                  yield* Ref.set(snapshot, {
+                    order: [],
+                    messages: new Map(),
+                    loadingRole: null,
+                    loadingMessageId: null,
+                    loadingIndex: 0,
+                  });
+                  yield* continuationPermit.withPermit(
+                    Effect.gen(function* () {
+                      yield* Ref.update(continuationGeneration, (value) => value + 1);
+                      yield* Ref.set(stoppedRunQuarantine, false);
+                      yield* Ref.set(wakeBuffer, []);
+                      yield* Ref.set(wakeReports, noWakeReports);
+                      yield* Ref.set(continuationRequested, false);
+                      yield* Ref.set(runningBackgroundTaskIds, new Set());
+                      yield* Ref.set(endedBackgroundTaskIds, new Set());
+                      yield* Ref.set(midTurnUnreportedCompletedTaskIds, new Set());
+                      yield* Ref.set(handledBackgroundTaskIdsInActiveTurn, new Set());
+                      yield* Ref.set(carryoverSubagents, null);
+                      yield* Ref.set(suppressPostSettleMonitorPrompt, false);
+                      yield* Ref.set(lastTurnRoute, null);
+                    }),
+                  );
+                }),
+            ).pipe(Effect.retry({ times: 1 }));
+            const now = yield* DateTime.now;
+            return {
+              providerThread: {
+                ...rollbackInput.providerThread,
+                nativeThreadRef: {
+                  driver,
+                  nativeId: replacement.sessionId,
+                  strength: "strong" as const,
+                },
+                nativeConversationHeadRef: null,
+                nativeMetadata: {
+                  ...rollbackInput.providerThread.nativeMetadata,
+                  itemIdentityVersion: 2 as const,
+                },
+                status: "idle" as const,
+                updatedAt: now,
+              },
+              providerTurns: [],
+              messages: [],
+              runtimeRequests: [],
+            };
+          },
+          (effect, rollbackInput) =>
+            effect.pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProviderAdapter.ProviderAdapterRollbackThreadError({
+                    driver,
+                    providerThreadId: rollbackInput.providerThread.id,
+                    checkpointId: rollbackInput.target.checkpointId,
+                    cause,
+                  }),
+              ),
+            ),
+        );
+
         const sessionRuntime: ProviderAdapter.ProviderAdapterV2SessionRuntime = {
           instanceId: options.instanceId,
           driver,
@@ -8329,97 +8420,27 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 ),
               ),
           ),
+          canRestoreRollbackFiles: Effect.sync(
+            () => !postSettleContinuationEnabled && !followsAgentWorkState,
+          ),
+          withRollbackAdmission: (rollbackInput, use) =>
+            runtimeTransitionPermit.withPermit(
+              Effect.gen(function* () {
+                const currentTurn = yield* Ref.get(activeTurn);
+                if (
+                  currentTurn !== null ||
+                  (yield* sessionRuntime.hasPendingBackgroundWork ?? Effect.succeed(false))
+                ) {
+                  return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                    driver,
+                    detail: `Cannot roll back ACP provider thread ${rollbackInput.providerThread.id} while provider work is active`,
+                  });
+                }
+                return yield* use(() => rollbackUnlocked(rollbackInput));
+              }),
+            ),
           rollbackThread: (rollbackInput) =>
-            runtimeTransitionPermit
-              .withPermit(
-                Effect.gen(function* () {
-                  const currentTurn = yield* Ref.get(activeTurn);
-                  if (currentTurn !== null) {
-                    return yield* new ProviderAdapter.ProviderAdapterProtocolError({
-                      driver,
-                      detail: `Cannot roll back ACP provider thread ${rollbackInput.providerThread.id} while turn ${currentTurn.providerTurnId} is active`,
-                    });
-                  }
-                  yield* awaitRuntimeTeardown();
-                  itemIdentityVersion = 2;
-                  prepareTerminalEnvironment(
-                    yield* readMcpContext(rollbackInput.providerThread.appThreadId),
-                  );
-                  const replacement = yield* startReplacementAcpRuntime(
-                    rollbackInput.providerThread.appThreadId,
-                    (candidate) =>
-                      Effect.gen(function* () {
-                        rememberTerminalEnvironment(
-                          candidate.sessionId,
-                          yield* readMcpContext(rollbackInput.providerThread.appThreadId),
-                        );
-                        yield* Ref.set(runtimeRestartRequired, false);
-                        yield* Ref.set(activeSessionId, candidate.sessionId);
-                        yield* setActiveSessionSetup(candidate);
-                        yield* Ref.set(activeSelection, null);
-                        yield* Ref.set(activeInteractionMode, null);
-                        yield* Ref.set(promptInstructionStates, new Map());
-                        yield* Ref.set(compactionMarkers, new Map());
-                        yield* Ref.set(providerTurns, new Map());
-                        yield* Ref.set(snapshot, {
-                          order: [],
-                          messages: new Map(),
-                          loadingRole: null,
-                          loadingMessageId: null,
-                          loadingIndex: 0,
-                        });
-                        yield* continuationPermit.withPermit(
-                          Effect.gen(function* () {
-                            yield* Ref.update(continuationGeneration, (value) => value + 1);
-                            yield* Ref.set(stoppedRunQuarantine, false);
-                            yield* Ref.set(wakeBuffer, []);
-                            yield* Ref.set(wakeReports, noWakeReports);
-                            yield* Ref.set(continuationRequested, false);
-                            yield* Ref.set(runningBackgroundTaskIds, new Set());
-                            yield* Ref.set(endedBackgroundTaskIds, new Set());
-                            yield* Ref.set(midTurnUnreportedCompletedTaskIds, new Set());
-                            yield* Ref.set(handledBackgroundTaskIdsInActiveTurn, new Set());
-                            yield* Ref.set(carryoverSubagents, null);
-                            yield* Ref.set(suppressPostSettleMonitorPrompt, false);
-                            yield* Ref.set(lastTurnRoute, null);
-                          }),
-                        );
-                      }),
-                  ).pipe(Effect.retry({ times: 1 }));
-                  const now = yield* DateTime.now;
-                  return {
-                    providerThread: {
-                      ...rollbackInput.providerThread,
-                      nativeThreadRef: {
-                        driver,
-                        nativeId: replacement.sessionId,
-                        strength: "strong" as const,
-                      },
-                      nativeConversationHeadRef: null,
-                      nativeMetadata: {
-                        ...rollbackInput.providerThread.nativeMetadata,
-                        itemIdentityVersion: 2 as const,
-                      },
-                      status: "idle" as const,
-                      updatedAt: now,
-                    },
-                    providerTurns: [],
-                    messages: [],
-                    runtimeRequests: [],
-                  };
-                }),
-              )
-              .pipe(
-                Effect.mapError(
-                  (cause) =>
-                    new ProviderAdapter.ProviderAdapterRollbackThreadError({
-                      driver,
-                      providerThreadId: rollbackInput.providerThread.id,
-                      checkpointId: rollbackInput.target.checkpointId,
-                      cause,
-                    }),
-                ),
-              ),
+            runtimeTransitionPermit.withPermit(rollbackUnlocked(rollbackInput)),
           forkThread: Effect.fn("AcpAdapterV2.forkThread")(
             function* (forkInput) {
               return yield* runtimeTransitionPermit.withPermit(

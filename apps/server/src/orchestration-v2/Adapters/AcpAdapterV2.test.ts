@@ -3087,6 +3087,19 @@ describe("AcpAdapterV2", () => {
       if (activeRollback._tag === "Failure") {
         assert.include(String(activeRollback.failure.cause), "while turn");
       }
+      const activeAdmission = yield* runtime.withRollbackAdmission!(
+        {
+          providerThread,
+          providerThreadTurns: [],
+          target: {
+            type: "thread_start",
+            checkpointId: CheckpointId.make("checkpoint-acp-active-admission"),
+            appRunOrdinal: 0,
+          },
+        },
+        () => Effect.die("active ACP turn must not admit restore"),
+      ).pipe(Effect.result);
+      assert.equal(activeAdmission._tag, "Failure");
       const firstProviderTurnId = idAllocator.derive.providerTurn({
         driver: ACP_TEST_DRIVER,
         nativeTurnId: acpScopedNativeId(instanceId, `${firstSessionId}:turn:1`),

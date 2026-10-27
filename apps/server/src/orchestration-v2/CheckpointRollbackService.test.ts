@@ -52,6 +52,15 @@ import * as RuntimePolicy from "./RuntimePolicy.ts";
 const unrelatedProject = Option.some({
   workspaceRoot: "/nonexistent/t3-rollback-project",
 } as never);
+const admittedSession = (
+  session: Pick<ProviderAdapter.ProviderAdapterV2SessionRuntime, "rollbackThread">,
+) => ({
+  ...session,
+  withRollbackAdmission: ((input, use) =>
+    use(() => session.rollbackThread(input))) satisfies NonNullable<
+    ProviderAdapter.ProviderAdapterV2SessionRuntime["withRollbackAdmission"]
+  >,
+});
 const layerCheckpointRollbackService = CheckpointRollbackService.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
@@ -178,6 +187,7 @@ it.effect.each(["initial", "waiting"])(
 it.effect.each([
   { order: "cleanup-first", restoreFiles: true },
   { order: "rollback-first", restoreFiles: true },
+  { order: "interrupt", restoreFiles: true },
   { order: "cleanup-first", restoreFiles: false, unmanaged: true },
 ])("locks rollback with %s", ({ order, restoreFiles, unmanaged = false }) =>
   Effect.gen(function* () {
@@ -274,6 +284,7 @@ it.effect.each([
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
             getThread: () => Effect.succeed(projection.thread),
             getCheckpointRollbackContext: () => Effect.succeed(projection),
+            hasLiveRun: () => Effect.succeed(false),
             getShellSnapshot: () =>
               Effect.succeed({
                 schemaVersion: 1,
@@ -291,8 +302,9 @@ it.effect.each([
                 }
                 calls.push("session");
                 yield* Deferred.succeed(openEntered, undefined);
-                if (order === "rollback-first") yield* Deferred.await(release);
-                return {} as never;
+                if (order === "rollback-first" || order === "interrupt")
+                  yield* Deferred.await(release);
+                return admittedSession({ rollbackThread: () => Effect.die("unused") }) as never;
               }),
           }),
           Layer.mock(RuntimePolicy.RuntimePolicyV2)({
@@ -322,6 +334,13 @@ it.effect.each([
       const rollback = yield* service
         .execute({ threadId, providerThreadId, checkpointId, scopeId, restoreFiles })
         .pipe(Effect.forkChild({ startImmediately: true }));
+      if (order === "interrupt") {
+        yield* Deferred.await(openEntered);
+        yield* Fiber.interrupt(rollback);
+        yield* cleanupEffect;
+        assert.deepEqual(calls, ["session", "cleanup"]);
+        return;
+      }
       if (order === "cleanup-first") assert.deepEqual(calls, []);
       if (order === "rollback-first") yield* Deferred.await(openEntered);
       const laterCleanup =
@@ -600,13 +619,15 @@ const seedRollbackHistory = Effect.gen(function* () {
         }),
         Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
           open: () =>
-            Effect.succeed({
-              rollbackThread: (input: ProviderAdapter.ProviderAdapterV2RollbackThreadInput) =>
-                Effect.gen(function* () {
-                  rollbackCounts.push(yield* resolveCodexRollbackTurnCount(input));
-                  return { providerThread: input.providerThread };
-                }),
-            } as never),
+            Effect.succeed(
+              admittedSession({
+                rollbackThread: (input: ProviderAdapter.ProviderAdapterV2RollbackThreadInput) =>
+                  Effect.gen(function* () {
+                    rollbackCounts.push(yield* resolveCodexRollbackTurnCount(input));
+                    return { providerThread: input.providerThread };
+                  }),
+              } as never) as never,
+            ),
         }),
         Layer.mock(RuntimePolicy.RuntimePolicyV2)({ resolve: () => Effect.succeed({} as never) }),
       ),
@@ -835,6 +856,7 @@ it.effect.each(["success", "restore-fails"] as const)(
             }),
             Layer.mock(ProjectionStore.ProjectionStoreV2)({
               getThread: () => Effect.succeed(projection.thread),
+              hasLiveRun: () => Effect.succeed(false),
               getCheckpointRollbackContext: () =>
                 Effect.succeed({
                   thread: projection.thread,
@@ -859,24 +881,26 @@ it.effect.each(["success", "restore-fails"] as const)(
             }),
             Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
               open: () =>
-                Effect.succeed({
-                  rollbackThread: (input: ProviderAdapter.ProviderAdapterV2RollbackThreadInput) =>
-                    Effect.gen(function* () {
-                      providerCalls += 1;
-                      const count = yield* resolveCodexRollbackTurnCount(input);
-                      assert.equal(count, 1);
-                      assert.equal(yield* fs.exists(currentFile).pipe(Effect.orDie), false);
-                      assert.equal(
-                        yield* fs.readFileString(restoredFile).pipe(Effect.orDie),
-                        "checkpoint turn",
-                      );
-                      assert.deepEqual((yield* search()).entries, [
-                        { path: "rollback-restored.txt", kind: "file" },
-                      ]);
-                      providerConversation.splice(providerConversation.length - count, count);
-                      return { providerThread };
-                    }),
-                } as never),
+                Effect.succeed(
+                  admittedSession({
+                    rollbackThread: (input: ProviderAdapter.ProviderAdapterV2RollbackThreadInput) =>
+                      Effect.gen(function* () {
+                        providerCalls += 1;
+                        const count = yield* resolveCodexRollbackTurnCount(input);
+                        assert.equal(count, 1);
+                        assert.equal(yield* fs.exists(currentFile).pipe(Effect.orDie), false);
+                        assert.equal(
+                          yield* fs.readFileString(restoredFile).pipe(Effect.orDie),
+                          "checkpoint turn",
+                        );
+                        assert.deepEqual((yield* search()).entries, [
+                          { path: "rollback-restored.txt", kind: "file" },
+                        ]);
+                        providerConversation.splice(providerConversation.length - count, count);
+                        return { providerThread };
+                      }),
+                  } as never) as never,
+                ),
             }),
             Layer.mock(RuntimePolicy.RuntimePolicyV2)({
               resolve: () => Effect.succeed({} as never),
