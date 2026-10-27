@@ -846,7 +846,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
     { restoreFiles: false, admission: true },
     { restoreFiles: true, admission: true, nativeActive: true },
   ])(
-    "requires provider admission for file restore: %s",
+    "restores with or without provider admission: %s",
     ({ restoreFiles, admission, nativeActive = false }) =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem.pipe(Effect.provide(NodeServices.layer));
@@ -890,7 +890,6 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
           Effect.succeed({
             ...(admission
               ? {
-                  canRestoreRollbackFiles: Effect.succeed(false),
                   withRollbackAdmission: (
                     _input: unknown,
                     use: (rollback: typeof rollbackThread) => Effect.Effect<unknown>,
@@ -922,19 +921,23 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
         const commandId = CommandId.make("no-rollback-admission-request");
         yield* rollback(commandId, restoreFiles);
         yield* worker.drain();
-        assert.equal(yield* fs.readFileString(file), "current");
-        assert.equal(restoreSpy.mock.calls.length, 0);
-        assert.equal(providerCalls, restoreFiles ? 0 : 1);
-        if (restoreFiles) {
+        assert.equal(
+          yield* fs.readFileString(file),
+          restoreFiles && !nativeActive ? "checkpoint" : "current",
+        );
+        assert.equal(restoreSpy.mock.calls.length, restoreFiles && !nativeActive ? 1 : 0);
+        assert.equal(providerCalls, nativeActive ? 0 : 1);
+        if (nativeActive) {
           const [effect] = yield* outbox.listByCommandId(commandId);
           assert.equal(effect?.status, "failed");
           assert.equal(effect?.attemptCount, 1);
           assert.equal(
             (yield* orchestrator.getThreadProjection(threadId)).thread.rollbackFailure?.message,
-            nativeActive
-              ? "Cannot restore a checkpoint while a turn is active."
-              : "This provider cannot safely restore files during conversation rollback. Rewind the conversation without restoring files instead.",
+            "Cannot restore a checkpoint while a turn is active.",
           );
+        } else {
+          const [effect] = yield* outbox.listByCommandId(commandId);
+          assert.equal(effect?.status, "succeeded");
         }
       }).pipe(Effect.scoped, Effect.provide(Layer.fresh(layerTest))),
   );

@@ -3286,15 +3286,24 @@ describe("AcpAdapterV2", () => {
         runtimePolicy,
       });
 
-      yield* runtime.rollbackThread({
-        providerThread,
-        providerThreadTurns: [],
-        target: {
-          type: "thread_start",
-          checkpointId: CheckpointId.make("checkpoint-acp-rollback-retry-generation"),
-          appRunOrdinal: 0,
+      assert.isFalse(yield* hasPendingBackgroundWork);
+      const fs = yield* FileSystem.FileSystem;
+      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-acp-rollback-admission-" });
+      const file = path.join(directory, "workspace.txt");
+      yield* fs.writeFileString(file, "current");
+      yield* runtime.withRollbackAdmission!(
+        {
+          providerThread,
+          providerThreadTurns: [],
+          target: {
+            type: "thread_start",
+            checkpointId: CheckpointId.make("checkpoint-acp-rollback-retry-generation"),
+            appRunOrdinal: 0,
+          },
         },
-      });
+        (rollback) => fs.writeFileString(file, "restored").pipe(Effect.andThen(rollback())),
+      );
+      assert.equal(yield* fs.readFileString(file), "restored");
 
       assert.equal(runtimeOrdinalSeen, 3);
       assert.deepEqual(

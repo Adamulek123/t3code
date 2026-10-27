@@ -47,7 +47,6 @@ export class CheckpointRollbackExecutionError extends Schema.TaggedError<Checkpo
       "rollback-target-invalid",
       "active-provider-changed",
       "provider-turn-unavailable",
-      "rollback-admission-unavailable",
       "active-turn",
       "unexpected-failure",
       "shared-workspace",
@@ -66,8 +65,6 @@ export class CheckpointRollbackExecutionError extends Schema.TaggedError<Checkpo
         return `Active provider changed before rollback target ${this.checkpointId} could execute on thread ${this.threadId}.`;
       case "provider-turn-unavailable":
         return `Provider turn for rollback target ${this.checkpointId} is unavailable on provider thread ${this.providerThreadId}.`;
-      case "rollback-admission-unavailable":
-        return "This provider cannot safely restore files during conversation rollback. Rewind the conversation without restoring files instead.";
       case "active-turn":
         return `Cannot restore a checkpoint while a turn is active.`;
       case "shared-workspace":
@@ -137,8 +134,7 @@ const isCheckpointRollbackExecutionError = Schema.is(CheckpointRollbackExecution
 const isProviderAdapterProtocolError = Schema.is(ProviderAdapter.ProviderAdapterProtocolError);
 
 export const isCheckpointRollbackAdmissionRejection = (error: unknown): boolean =>
-  isCheckpointRollbackExecutionError(error) &&
-  (error.reason === "active-turn" || error.reason === "rollback-admission-unavailable");
+  isCheckpointRollbackExecutionError(error) && error.reason === "active-turn";
 
 const isCheckpointRollbackError = Schema.is(
   Schema.Union([
@@ -164,7 +160,7 @@ export function rollbackFailureClientMessage(
     | CheckpointRollbackFinalizationError,
 ): string {
   if (isCheckpointRollbackPostRestoreError(error)) return error.message;
-  if (error.reason === "rollback-admission-unavailable" || error.reason === "active-turn") {
+  if (error.reason === "active-turn") {
     return error.message;
   }
   const restoreCause = isCheckpointRestoreError(error.cause) ? error.cause.cause : undefined;
@@ -369,18 +365,6 @@ export const layer: Layer.Layer<
         rollback: () => ReturnType<typeof session.rollbackThread>,
       ) {
         enteredAdmission = true;
-        if (
-          input.restoreFiles !== false &&
-          session.canRestoreRollbackFiles !== undefined &&
-          !(yield* session.canRestoreRollbackFiles)
-        ) {
-          return yield* new CheckpointRollbackExecutionError({
-            reason: "rollback-admission-unavailable",
-            threadId: input.threadId,
-            providerThreadId: input.providerThreadId,
-            checkpointId: input.checkpointId,
-          });
-        }
         if (yield* projections.hasLiveRun(input.threadId)) {
           return yield* new CheckpointRollbackExecutionError({
             reason: "active-turn",
@@ -543,15 +527,8 @@ export const layer: Layer.Layer<
               ),
           ),
         );
-      } else if (input.restoreFiles === false) {
-        yield* admitted(() => session.rollbackThread(rollbackInput));
       } else {
-        return yield* new CheckpointRollbackExecutionError({
-          reason: "rollback-admission-unavailable",
-          threadId: input.threadId,
-          providerThreadId: input.providerThreadId,
-          checkpointId: input.checkpointId,
-        });
+        yield* admitted(() => session.rollbackThread(rollbackInput));
       }
     });
 

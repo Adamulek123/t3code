@@ -8420,9 +8420,6 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 ),
               ),
           ),
-          canRestoreRollbackFiles: Effect.sync(
-            () => !postSettleContinuationEnabled && !followsAgentWorkState,
-          ),
           withRollbackAdmission: (rollbackInput, use) =>
             runtimeTransitionPermit.withPermit(
               Effect.gen(function* () {

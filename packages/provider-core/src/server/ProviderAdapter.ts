@@ -624,9 +624,7 @@ export interface ProviderAdapterV2SessionRuntime {
   readonly rollbackThread: (
     input: ProviderAdapterV2RollbackThreadInput,
   ) => Effect.Effect<ProviderAdapterV2ThreadSnapshot, ProviderAdapterV2Error>;
-  /** A provider may refuse file restore while still allowing conversation-only rollback. */
-  readonly canRestoreRollbackFiles?: Effect.Effect<boolean>;
-  /** Reject active native work, then hold admission through `use` and its unlocked rollback. Absent means file restore is unsafe. */
+  /** Reject active native work, then hold admission through `use` and its unlocked rollback. */
   readonly withRollbackAdmission?: <A, E, R>(
     input: ProviderAdapterV2RollbackThreadInput,
     use: (
