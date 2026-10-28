@@ -1319,7 +1319,8 @@ export const layerWithOptions = (
           return updated;
         });
 
-      const ensureThreadAttached = (input: {
+      // Callers hold threadAttachment through attachment rollback and any dependent work.
+      const ensureThreadAttachedUnlocked = (input: {
         readonly providerSessionId: ProviderSessionId;
         readonly threadId: ThreadId;
         readonly providerInstanceId: ProviderInstanceId;
@@ -1403,10 +1404,15 @@ export const layerWithOptions = (
                   ),
             ),
           );
-          return threadAttachment
-            .withLock(threadAttachmentKey(input), attach)
-            .pipe(Effect.ensuring(Effect.sync(dropReservation)));
+          return attach.pipe(Effect.ensuring(Effect.sync(dropReservation)));
         });
+
+      const ensureThreadAttached = (input: {
+        readonly providerSessionId: ProviderSessionId;
+        readonly threadId: ThreadId;
+        readonly providerInstanceId: ProviderInstanceId;
+      }) =>
+        threadAttachment.withLock(threadAttachmentKey(input), ensureThreadAttachedUnlocked(input));
 
       const markBusy = (
         runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime,
@@ -1706,32 +1712,73 @@ export const layerWithOptions = (
           input: ProviderAdapter.ProviderAdapterV2TurnInput,
           start: () => Effect.Effect<void, ProviderAdapter.ProviderAdapterV2Error>,
         ) =>
-          observeActivity(
-            providerSessionId,
-            ensureThreadAttached({
-              providerSessionId,
-              threadId: input.threadId,
-              providerInstanceId: runtime.instanceId,
-            }),
-          ).pipe(
-            // Failed or stopped starts may omit turn.terminal; clear their turns so sessions can idle.
-            Effect.andThen(
-              holdThreadLoaded({
-                runtime,
-                threadId: input.threadId,
-                providerThread: input.providerThread,
-              }),
-            ),
-            Effect.andThen(
-              Effect.acquireUseRelease(
-                observeActivity(providerSessionId, markBusy(runtime, input)),
-                start,
-                (_, exit) =>
-                  Exit.isFailure(exit)
-                    ? observeActivity(providerSessionId, markIdle(runtime, input.attemptId))
-                    : Effect.void,
+          Effect.acquireUseRelease(
+            threadAttachment
+              .withLock(
+                threadAttachmentKey({ providerSessionId, threadId: input.threadId }),
+                observeActivity(
+                  providerSessionId,
+                  ensureThreadAttachedUnlocked({
+                    providerSessionId,
+                    threadId: input.threadId,
+                    providerInstanceId: runtime.instanceId,
+                  }),
+                ).pipe(
+                  Effect.andThen(
+                    holdThreadLoaded({
+                      runtime,
+                      threadId: input.threadId,
+                      providerThread: input.providerThread,
+                    }),
+                  ),
+                  Effect.andThen(
+                    Effect.gen(function* () {
+                      if (input.providerThread.nativeThreadRef === null) return;
+                      const providerThreadKey = providerThreadLoadKey({
+                        providerThread: input.providerThread,
+                        modelSelection: input.modelSelection,
+                        runtimePolicy: input.runtimePolicy,
+                      });
+                      const loaded = yield* isProviderThreadLoaded({
+                        providerSessionId,
+                        threadId: input.threadId,
+                        providerThreadKey,
+                      });
+                      if (!loaded) {
+                        const providerThread = yield* runtime.resumeThread({
+                          threadId: input.threadId,
+                          providerThread: input.providerThread,
+                          modelSelection: input.modelSelection,
+                          runtimePolicy: input.runtimePolicy,
+                        });
+                        yield* markProviderThreadLoaded({
+                          providerSessionId,
+                          threadId: input.threadId,
+                          providerThreadKey: providerThreadLoadKey({
+                            providerThread,
+                            modelSelection: input.modelSelection,
+                            runtimePolicy: input.runtimePolicy,
+                          }),
+                        });
+                      }
+                    }),
+                  ),
+                  Effect.andThen(observeActivity(providerSessionId, markBusy(runtime, input))),
+                ),
+              )
+              .pipe(
+                // Waiting for an unload must remain interruptible; clean up if interrupted after registration.
+                Effect.interruptible,
+                Effect.onError(() =>
+                  observeActivity(providerSessionId, markIdle(runtime, input.attemptId)),
+                ),
               ),
-            ),
+            start,
+            // Failed or interrupted starts may never emit turn.terminal.
+            (_, exit) =>
+              Exit.isFailure(exit)
+                ? observeActivity(providerSessionId, markIdle(runtime, input.attemptId))
+                : Effect.void,
           );
         return {
           ...runtime,
@@ -1773,41 +1820,44 @@ export const layerWithOptions = (
                 : { modelSelection: input.modelSelection }),
               ...(input.runtimePolicy === undefined ? {} : { runtimePolicy: input.runtimePolicy }),
             });
-            return observeActivity(
-              providerSessionId,
-              ensureThreadAttached({
+            return threadAttachment.withLock(
+              threadAttachmentKey({ providerSessionId, threadId }),
+              observeActivity(
                 providerSessionId,
-                threadId,
-                providerInstanceId: runtime.instanceId,
-              }),
-            ).pipe(
-              Effect.andThen(
-                holdThreadLoaded({
-                  runtime,
-                  threadId,
-                  providerThread: input.providerThread,
-                }),
-              ),
-              Effect.andThen(
-                isProviderThreadLoaded({ providerSessionId, threadId, providerThreadKey }),
-              ),
-              Effect.flatMap((loaded) =>
-                loaded ? Effect.succeed(input.providerThread) : runtime.resumeThread(input),
-              ),
-              Effect.tap((providerThread) =>
-                markProviderThreadLoaded({
+                ensureThreadAttachedUnlocked({
                   providerSessionId,
                   threadId,
-                  providerThreadKey: providerThreadLoadKey({
-                    providerThread,
-                    ...(input.modelSelection === undefined
-                      ? {}
-                      : { modelSelection: input.modelSelection }),
-                    ...(input.runtimePolicy === undefined
-                      ? {}
-                      : { runtimePolicy: input.runtimePolicy }),
-                  }),
+                  providerInstanceId: runtime.instanceId,
                 }),
+              ).pipe(
+                Effect.andThen(
+                  holdThreadLoaded({
+                    runtime,
+                    threadId,
+                    providerThread: input.providerThread,
+                  }),
+                ),
+                Effect.andThen(
+                  isProviderThreadLoaded({ providerSessionId, threadId, providerThreadKey }),
+                ),
+                Effect.flatMap((loaded) =>
+                  loaded ? Effect.succeed(input.providerThread) : runtime.resumeThread(input),
+                ),
+                Effect.tap((providerThread) =>
+                  markProviderThreadLoaded({
+                    providerSessionId,
+                    threadId,
+                    providerThreadKey: providerThreadLoadKey({
+                      providerThread,
+                      ...(input.modelSelection === undefined
+                        ? {}
+                        : { modelSelection: input.modelSelection }),
+                      ...(input.runtimePolicy === undefined
+                        ? {}
+                        : { runtimePolicy: input.runtimePolicy }),
+                    }),
+                  }),
+                ),
               ),
             );
           },

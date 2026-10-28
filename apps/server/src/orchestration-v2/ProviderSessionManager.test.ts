@@ -334,6 +334,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
     readonly hangSessionScopeClose?: boolean;
     readonly startTurn?: Effect.Effect<void, ProviderAdapter.ProviderAdapterV2Error>;
     readonly beforeUnload?: Effect.Effect<void>;
+    readonly beforeResume?: Effect.Effect<void>;
     readonly spawnBeforeOpen?: boolean;
     readonly scopeCloseReached?: Deferred.Deferred<void>;
   } = {},
@@ -422,10 +423,15 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
               }),
           ensureThread: () => unimplemented("ensureThread unused in test"),
           resumeThread: (threadInput) =>
-            Ref.update(state, (current) => ({
-              ...current,
-              resumeCount: current.resumeCount + 1,
-            })).pipe(Effect.as(threadInput.providerThread)),
+            (options.beforeResume ?? Effect.void).pipe(
+              Effect.andThen(
+                Ref.update(state, (current) => ({
+                  ...current,
+                  resumeCount: current.resumeCount + 1,
+                })),
+              ),
+              Effect.as(threadInput.providerThread),
+            ),
           startTurn: () => options.startTurn ?? Effect.void,
           compactThread: () => options.startTurn ?? Effect.void,
           steerTurn: () => Effect.void,
@@ -482,6 +488,7 @@ function layerTest(input: {
   readonly hangSessionScopeClose?: boolean;
   readonly startTurn?: Effect.Effect<void, ProviderAdapter.ProviderAdapterV2Error>;
   readonly beforeUnload?: Effect.Effect<void>;
+  readonly beforeResume?: Effect.Effect<void>;
   readonly spawnBeforeOpen?: boolean;
   readonly scopeCloseReached?: Deferred.Deferred<void>;
   readonly serverSettingsLayer?: ReturnType<typeof ServerSettings.layerTest>;
@@ -517,6 +524,7 @@ function layerTest(input: {
         : { hangSessionScopeClose: input.hangSessionScopeClose }),
       ...(input.startTurn === undefined ? {} : { startTurn: input.startTurn }),
       ...(input.beforeUnload === undefined ? {} : { beforeUnload: input.beforeUnload }),
+      ...(input.beforeResume === undefined ? {} : { beforeResume: input.beforeResume }),
       ...(input.spawnBeforeOpen === undefined ? {} : { spawnBeforeOpen: input.spawnBeforeOpen }),
       ...(input.scopeCloseReached === undefined
         ? {}
@@ -1347,6 +1355,119 @@ it.effect.each([false, true])(
         yield* fixture.assertSettled;
       }).pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 1000 })));
     }),
+);
+
+it.effect.each(["resume", "start"] as const)(
+  "ProviderSessionManagerV2 reloads after an in-flight idle unload via %s",
+  (operation) =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const unloading = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      yield* Effect.gen(function* () {
+        const fixture = yield* makeAttemptActivityFixture(state, true);
+        yield* fixture.runtime.startTurn(fixture.first);
+        const initialResumes = (yield* Ref.get(state)).resumeCount;
+        yield* fixture.snapshot(fixture.first);
+        yield* fixture.terminal(fixture.first);
+        const clock = yield* TestClock.adjust("1 second").pipe(Effect.forkChild);
+        yield* Deferred.await(unloading);
+        const interrupted = yield* fixture.runtime.startTurn(fixture.second).pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        yield* Fiber.interrupt(interrupted);
+        const next = yield* (
+          operation === "resume"
+            ? fixture.runtime
+                .resumeThread({
+                  threadId: fixture.first.threadId,
+                  providerThread: fixture.first.providerThread,
+                  modelSelection,
+                  runtimePolicy,
+                })
+                .pipe(Effect.asVoid)
+            : fixture.runtime.startTurn(fixture.second)
+        ).pipe(Effect.forkChild);
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.join(clock);
+        yield* Fiber.join(next);
+        const count = (yield* Ref.get(state)).resumeCount;
+        assert.equal(count, initialResumes + 1);
+        if (operation === "resume") yield* fixture.runtime.startTurn(fixture.second);
+        assert.equal((yield* Ref.get(state)).resumeCount, count);
+        assert.deepEqual((yield* Ref.get(state)).unloadedNativeThreadIds, [
+          `native-${fixture.first.threadId}`,
+        ]);
+        yield* TestClock.adjust("2 seconds");
+        assert.deepEqual((yield* Ref.get(state)).unloadedNativeThreadIds, [
+          `native-${fixture.first.threadId}`,
+        ]);
+      }).pipe(
+        Effect.provide(
+          layerTest({
+            state,
+            idleTimeoutMs: 1000,
+            beforeUnload: Deferred.succeed(unloading, undefined).pipe(
+              Effect.andThen(Deferred.await(release)),
+            ),
+          }),
+        ),
+      );
+    }),
+);
+
+it.effect("ProviderSessionManagerV2 serializes a queued idle unload with resume and start", () =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    const armed = yield* Ref.make(false);
+    const entered = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    yield* Effect.gen(function* () {
+      const fixture = yield* makeAttemptActivityFixture(state, true);
+      yield* fixture.runtime.startTurn(fixture.first);
+      yield* fixture.snapshot(fixture.first);
+      yield* Ref.set(armed, true);
+      const changedThread = {
+        ...fixture.first.providerThread,
+        nativeThreadRef: {
+          ...fixture.first.providerThread.nativeThreadRef!,
+          nativeId: "another-native",
+        },
+      };
+      const resume = yield* fixture.runtime
+        .resumeThread({
+          threadId: fixture.first.threadId,
+          providerThread: changedThread,
+          modelSelection,
+          runtimePolicy,
+        })
+        .pipe(Effect.forkChild);
+      yield* Deferred.await(entered);
+      const start = yield* fixture.runtime.startTurn(fixture.second).pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      assert.isUndefined(start.pollUnsafe(), "start must wait for the in-flight resume");
+      yield* fixture.terminal(fixture.first);
+      yield* TestClock.adjust("1 second");
+      yield* Ref.set(armed, false);
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(resume);
+      yield* Fiber.join(start);
+      yield* fixture.assertBusy;
+    }).pipe(
+      Effect.provide(
+        layerTest({
+          state,
+          idleTimeoutMs: 1000,
+          beforeResume: Ref.get(armed).pipe(
+            Effect.flatMap((hold) =>
+              hold
+                ? Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release)))
+                : Effect.void,
+            ),
+          ),
+        }),
+      ),
+    );
+  }),
 );
 
 it.effect("ProviderSessionManagerV2 unloads a shared thread after compaction settles", () =>
