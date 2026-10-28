@@ -3,6 +3,7 @@ import { type ReactNode, useRef, useState } from "react";
 import { expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 
+import "../../index.css";
 import { render } from "../../../test/render";
 import { ComposerHandleContext, type ComposerHandleRef } from "../../composerHandleContext";
 import { Menu, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from "../ui/menu";
@@ -85,6 +86,26 @@ it("marks the current mode as checked and closes on Escape", async () => {
   await userEvent.keyboard("{Escape}");
   await expect.element(fullAccess).not.toBeInTheDocument();
   await expect.element(screen.getByRole("button", { name: "Effort" })).toHaveFocus();
+});
+
+it("keeps the space between permission options clickable", async () => {
+  await using screen = await render(<EffortMenu />, { router: false });
+  await userEvent.click(screen.getByRole("button", { name: "Effort" }));
+  const items = options.map((option) =>
+    page.getByRole("menuitemradio", { name: option.label }).element(),
+  );
+
+  for (let i = 0; i < items.length - 1; i++) {
+    const left = items[i]!;
+    const right = items[i + 1]!;
+    const leftRect = left.getBoundingClientRect();
+    const rightRect = right.getBoundingClientRect();
+    expect(rightRect.left - leftRect.right).toBeLessThanOrEqual(0);
+    for (const y of [leftRect.top + 1, leftRect.top + leftRect.height / 2]) {
+      expect(left.contains(document.elementFromPoint(leftRect.right - 1.5, y))).toBe(true);
+      expect(right.contains(document.elementFromPoint(rightRect.left + 1.5, y))).toBe(true);
+    }
+  }
 });
 
 // The real composer menu focus rule (useComposerMenuProps), with a stub composer handle.
