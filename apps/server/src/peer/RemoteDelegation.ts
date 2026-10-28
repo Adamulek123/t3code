@@ -445,11 +445,15 @@ const make = Effect.gen(function* () {
     let reply: OrchestratorMcpThreadTimelineItem | undefined;
     let error: OrchestratorMcpThreadTimelineItem | undefined;
     let afterPosition: number | undefined;
+    let remainingItems = 0;
     while (true) {
       const read = yield* forwarding.readThread(scope, remote.environmentId, {
         threadId: remote.threadId,
         view: failed ? "activity" : "messages",
         limit: 100,
+        // Keep the first and expected final activity pages whole. A result on a
+        // middle page then needs an extra text read after the scan.
+        ...(failed && remainingItems > 100 ? { maxCharsPerItem: 1 } : {}),
         ...(afterPosition === undefined ? {} : { afterPosition }),
       });
       reply =
@@ -464,6 +468,7 @@ const make = Effect.gen(function* () {
       }
       if (!read.hasMore || read.nextPosition === null) break;
       afterPosition = read.nextPosition;
+      remainingItems = read.thread.itemCount - afterPosition - 1;
     }
     reply = error ?? reply;
     if (reply === undefined) return undefined;
