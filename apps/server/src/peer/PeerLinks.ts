@@ -15,6 +15,7 @@ import {
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Base64Url from "effect/encoding/Base64Url";
@@ -35,6 +36,7 @@ import * as ServerSettings from "../serverSettings.ts";
 
 /** The redirect registered for a link. Nothing ever listens there: the code comes back in the response. */
 const LINK_REDIRECT_URI = "http://127.0.0.1/t3code-peer-link";
+const STATUS_FALLBACK_DELAY = Duration.millis(100);
 /**
  * How long a peer's descriptor may take before a route counts as unreachable.
  * A tailnet or relayed route to a machine that is waking up takes longer.
@@ -494,24 +496,49 @@ const make = Effect.gen(function* () {
       Effect.orElseSucceed(() => Option.none()),
     );
 
+  const findStatusRoute = (urls: ReadonlyArray<string>, environmentId: EnvironmentId) =>
+    Effect.findFirst(urls, (url) =>
+      describe(url).pipe(
+        Effect.map((found) => Option.isSome(found) && found.value.environmentId === environmentId),
+      ),
+    );
+
   const statusOf = (link: PeerLink, now: DateTime.Utc) => {
     if (DateTime.isLessThanOrEqualTo(link.expiresAt, now)) {
       return Effect.succeed<PeerLinkStatus>("expired");
     }
     const preferred = link.urls.length > 1 ? preferredRoutes?.get(link.environmentId) : undefined;
-    const urls =
+    const active =
       preferred !== undefined &&
       preferred.until > DateTime.toEpochMillis(now) &&
       link.urls.includes(preferred.url)
-        ? [preferred.url, ...link.urls.filter((url) => url !== preferred.url)]
-        : link.urls;
-    return Effect.findFirst(urls, (url) =>
-      describe(url).pipe(
-        Effect.map(
-          (found) => Option.isSome(found) && found.value.environmentId === link.environmentId,
-        ),
-      ),
-    ).pipe(
+        ? preferred
+        : undefined;
+    const answering =
+      active === undefined
+        ? findStatusRoute(link.urls, link.environmentId)
+        : Effect.gen(function* () {
+            const failed = yield* Deferred.make<void>();
+            const check = (urls: ReadonlyArray<string>) =>
+              findStatusRoute(urls, link.environmentId).pipe(
+                Effect.filterOrFail(Option.isSome),
+                Effect.map((found) => found.value),
+              );
+            const preferredProbe = check([active.url]).pipe(
+              Effect.tapError(() => Deferred.succeed(failed, undefined)),
+            );
+            // Fast preferred routes still need one request. Slow ones must not
+            // add their entire timeout before the configured routes can start.
+            const otherProbes = Deferred.await(failed).pipe(
+              Effect.timeoutOrElse({
+                duration: STATUS_FALLBACK_DELAY,
+                orElse: () => Effect.void,
+              }),
+              Effect.andThen(check(link.urls.filter((url) => url !== active.url))),
+            );
+            return yield* Effect.race(preferredProbe, otherProbes).pipe(Effect.option);
+          });
+    return answering.pipe(
       Effect.map((answered): PeerLinkStatus => {
         if (
           preferred !== undefined &&
