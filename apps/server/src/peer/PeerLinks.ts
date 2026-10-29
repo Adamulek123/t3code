@@ -503,13 +503,14 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  const statusOf = (link: PeerLink, now: DateTime.Utc) => {
+  const statusOf = (link: PeerLink, secretName: string, now: DateTime.Utc) => {
     if (DateTime.isLessThanOrEqualTo(link.expiresAt, now)) {
       return Effect.succeed<PeerLinkStatus>("expired");
     }
     const preferred = link.urls.length > 1 ? preferredRoutes?.get(link.environmentId) : undefined;
     const active =
       preferred !== undefined &&
+      preferred.secretName === secretName &&
       preferred.until > DateTime.toEpochMillis(now) &&
       link.urls.includes(preferred.url)
         ? preferred
@@ -554,11 +555,14 @@ const make = Effect.gen(function* () {
   };
 
   const list: PeerLinks["Service"]["list"] = Effect.gen(function* () {
-    const links = yield* Effect.forEach(yield* readRows, toLink);
+    const links = yield* Effect.forEach(yield* readRows, (row) =>
+      toLink(row).pipe(Effect.map((link) => ({ link, secretName: row.secret_name }))),
+    );
     const now = yield* DateTime.now;
     return yield* Effect.forEach(
       links,
-      (link) => statusOf(link, now).pipe(Effect.map((status) => ({ ...link, status }))),
+      ({ link, secretName }) =>
+        statusOf(link, secretName, now).pipe(Effect.map((status) => ({ ...link, status }))),
       { concurrency: "unbounded" },
     );
   });
