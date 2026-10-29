@@ -512,9 +512,17 @@ const make = Effect.gen(function* () {
         ),
       ),
     ).pipe(
-      Effect.map((answered): PeerLinkStatus =>
-        Option.isSome(answered) ? "reachable" : "unreachable",
-      ),
+      Effect.map((answered): PeerLinkStatus => {
+        if (
+          preferred !== undefined &&
+          Option.isSome(answered) &&
+          answered.value !== preferred.url &&
+          preferredRoutes?.get(link.environmentId) === preferred
+        ) {
+          preferredRoutes.delete(link.environmentId);
+        }
+        return Option.isSome(answered) ? "reachable" : "unreachable";
+      }),
     );
   };
 
