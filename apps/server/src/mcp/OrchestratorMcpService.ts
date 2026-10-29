@@ -1140,6 +1140,28 @@ const make = Effect.gen(function* () {
     return { ...caller, target } as const;
   });
 
+  const loadWaitThread = Effect.fn("OrchestratorMcpService.loadWaitThread")(function* (
+    scope: McpInvocationScope,
+    threadId: ThreadId,
+  ) {
+    const { parent } = yield* loadCaller(scope);
+    if (parent !== undefined && threadId === parent.thread.id) {
+      return { parent, target: parent };
+    }
+    const shell = yield* threadManagement
+      .getThreadShell(threadId)
+      .pipe(Effect.mapError(threadManagementFailure));
+    if (shell === null || shell.deletedAt !== null) {
+      return yield* threadNotFound(threadManagement, threadId, `Thread ${threadId} was not found.`);
+    }
+    // Native wait loads the records its outcome needs; this read keeps the
+    // legacy import and project/deletion checks without hydrating history twice.
+    const target = yield* threadManagement
+      .getProjectThreadRecords({ projectId: shell.projectId, threadId }, [])
+      .pipe(Effect.mapError(threadManagementFailure));
+    return { parent, target };
+  });
+
   /** Cross-thread writes require a live caller run; stale session credentials cannot authorize them. */
   const assertLiveCallerForOtherThread = (
     scope: McpInvocationScope,
@@ -2960,7 +2982,7 @@ const make = Effect.gen(function* () {
       } satisfies OrchestratorMcpThreadSendResult;
     }),
     waitForThread: Effect.fn("OrchestratorMcpService.waitForThread")(function* (scope, input) {
-      const { parent, target } = yield* loadScopedThread(scope, input.threadId);
+      const { parent, target } = yield* loadWaitThread(scope, input.threadId);
       const result = yield* threadManagement
         .waitForThread({
           projectId: target.thread.projectId,
