@@ -532,7 +532,7 @@ it.effect.each(["bare", "unborn"] as const)(
           .pipe(Effect.result);
         assert.equal(Result.isSuccess(result), state === "bare");
         if (Result.isFailure(result)) {
-          assert.equal(result.failure.operation, "GitVcsDriver.createWorktree");
+          assert.equal(result.failure.operation, "GitVcsDriver.createWorktree.createBranch");
           assert.equal(result.failure.detail, "git worktree add failed");
         }
         assert.equal(spawnedArgs.filter((args) => args.includes("--git-common-dir")).length, 1);
